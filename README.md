@@ -4,8 +4,29 @@
 
 ---
 
+## 下载安装
+
+### Windows 用户
+
+前往 GitHub Release 页面下载最新安装包：
+
+- **Release 页面**：https://github.com/Asanagl/college-student-toolkit/releases
+- **最新版本直链**：https://github.com/Asanagl/college-student-toolkit/releases/latest
+
+下载 `college-student-toolkit Setup x.x.x.exe`（约 194 MB）后双击运行即可完成安装。安装包为 NSIS 格式，支持自动卸载与增量更新。
+
+### 当前版本
+
+| 版本 | 主要特性 |
+|------|---------|
+| v0.2.0 | 外观自定义（亚克力材质 + 自定义背景图 + 模糊度/清晰度调节） |
+| v0.1.0 | 课程表/考试/实验/成绩管理 + 教务系统自动导入 |
+
+---
+
 ## 目录
 
+- [下载安装](#下载安装)
 - [课程表自动导入使用指南](#课程表自动导入使用指南)
 - [ImportBrowserService IPC 接口文档](#importbrowserservice-ipc-接口文档)
 - [变更摘要](#变更摘要)
