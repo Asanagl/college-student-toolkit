@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": [
+    {
+      "name": "agent-output-validator",
+      "description": "验证Agent输出是否符合结构化JSON契约，不符合则标记为格式错误",
+      "event": "postToolCall",
+      "matcher": "Task",
+      "command": "node .claude/hooks/validate-agent-output.js",
+      "enabled": true,
+      "config": {
+        "required_fields": ["message_id", "from_agent", "to_agent", "payload"],
+        "schema_validation": true
+      }
+    },
+    {
+      "name": "code-review-gate",
+      "description": "代码审查Agent输出后检测pass字段，false且存在严重问题时触发重新思考",
+      "event": "postToolCall",
+      "matcher": "Task",
+      "command": "node .claude/hooks/gate-check.js",
+      "enabled": true,
+      "config": {
+        "gate_type": "code_review",
+        "trigger_condition": "output.pass === false && output.issues.some(i => i.severity === '严重')",
+        "target_agent": "代码生成Agent",
+        "max_retries": 3
+      }
+    },
+    {
+      "name": "security-audit-gate",
+      "description": "安全审计Agent输出后检测是否有高危漏洞，有则触发重新思考并阻断流程",
+      "event": "postToolCall",
+      "matcher": "Task",
+      "command": "node .claude/hooks/gate-check.js",
+      "enabled": true,
+      "config": {
+        "gate_type": "security_audit",
+        "trigger_condition": "output.vulnerabilities.some(v => v.severity === '高危')",
+        "target_agent": "代码生成Agent",
+        "block_on_failure": true,
+        "max_retries": 3
+      }
+    },
+    {
+      "name": "test-coverage-gate",
+      "description": "测试生成Agent输出后检测分支覆盖率，低于80%触发代码生成Agent重新思考",
+      "event": "postToolCall",
+      "matcher": "Task",
+      "command": "node .claude/hooks/gate-check.js",
+      "enabled": true,
+      "config": {
+        "gate_type": "test_coverage",
+        "trigger_condition": "parseInt(output.coverage_report.expected_branch_coverage) < 80",
+        "target_agent": "代码生成Agent",
+        "max_retries": 3
+      }
+    },
+    {
+      "name": "performance-gate",
+      "description": "性能优化Agent输出后检测优化效果，不达标触发重新思考",
+      "event": "postToolCall",
+      "matcher": "Task",
+      "command": "node .claude/hooks/gate-check.js",
+      "enabled": true,
+      "config": {
+        "gate_type": "performance",
+        "trigger_condition": "output.bottlenecks.some(b => !b.resolved)",
+        "target_agent": "代码生成Agent",
+        "max_retries": 3
+      }
+    },
+    {
+      "name": "user-negation-detector",
+      "description": "检测用户输入中的否定关键词，触发最近一次Agent的重新思考",
+      "event": "userPromptSubmit",
+      "matcher": "*",
+      "command": "node .claude/hooks/negation-detector.js",
+      "enabled": true,
+      "config": {
+        "strong_negation_keywords": [
+          "不对", "错了", "不正确", "有问题",
+          "重新来", "重来", "再来一次", "重做",
+          "不是这样", "不是我要的", "不符合", "偏离了",
+          "完全错误", "全错了", "根本不对"
+        ],
+        "weak_negation_keywords": [
+          "改一下", "修改", "调整", "优化一下",
+          "太复杂了", "太简单了", "不够", "多了",
+          "能不能换一种", "还有别的方案吗",
+          "感觉不太对", "好像有问题"
+        ],
+        "negation_patterns": [
+          "连续两次同类修改请求",
+          "Agent输出后短句回复(<10字且无肯定词)",
+          "包含?且质疑Agent正确性"
+        ]
+      }
+    },
+    {
+      "name": "rethink-orchestrator",
+      "description": "协调重新思考流程，生成修正指令并路由到目标Agent",
+      "event": "postToolCall",
+      "matcher": "Task",
+      "command": "node .claude/hooks/rethink-orchestrator.js",
+      "enabled": true,
+      "config": {
+        "rethink_protocol": {
+          "hook_type": "重新思考",
+          "max_attempts": 3,
+          "instruction_template": "【重新思考指令】\n你之前的输出被{triggered_by}否定，原因如下：\n{reasons}\n\n历史尝试记录：\n{history}\n\n要求：\n- 必须修复上述所有问题\n- 避免重复之前尝试中的错误\n- 如果无法修复，明确说明阻塞原因\n- 剩余重试次数：{remaining}/3",
+          "output_prefix": "[重新思考第{attempt}次]"
+        },
+        "escalation_policy": {
+          "on_max_retries": "标记任务阻塞，协调者Agent决定降级方案/转人工/终止任务"
+        }
+      }
+    },
+    {
+      "name": "retry-limit-guard",
+      "description": "监控重试次数，超过3次则标记阻塞并请求人工介入",
+      "event": "postToolCall",
+      "matcher": "Task",
+      "command": "node .claude/hooks/retry-guard.js",
+      "enabled": true,
+      "config": {
+        "max_retries": 3,
+        "on_exceeded": {
+          "action": "block",
+          "message": "任务已重试3次仍未通过，标记为阻塞状态。请人工介入或选择降级方案。"
+        }
+      }
+    },
+    {
+      "name": "architecture-conflict-detector",
+      "description": "协调者Agent检测到架构模块接口冲突时触发架构设计Agent重新思考",
+      "event": "postToolCall",
+      "matcher": "Task",
+      "command": "node .claude/hooks/gate-check.js",
+      "enabled": true,
+      "config": {
+        "gate_type": "architecture",
+        "trigger_condition": "output.module_conflicts || output.interface_mismatches",
+        "target_agent": "架构设计Agent",
+        "max_retries": 3
+      }
+    }
+  ]
+}

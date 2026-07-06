@@ -1,0 +1,42 @@
+appId: com.collegestudent.toolkit
+productName: 大学生工具组
+directories:
+  output: release
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - resources/**/*
+# 应用图标：
+# - Windows 使用 icon.ico（256x256 多分辨率）
+# - Linux 使用 icon.png（512x512）
+# 当前仅有 icon.png，electron-builder 会自动转换；后续制作 .ico 时替换即可
+icon: resources/icon.png
+asar: true
+# Windows 安装包：NSIS（允许用户选择安装目录、创建快捷方式）
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 签名相关字段留空，发布时通过环境变量 CSC_LINK/CSC_KEY_PASSWORD 注入
+  # signingHashAlgorithms: ['sha256']
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 大学生工具组
+  # 卸载时清理用户数据需用户确认，默认保留
+  deleteAppDataOnUninstall: false
+# Linux 可选：AppImage 便于跨发行版分发
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Education
+publish:
+  provider: github
+  owner: Asanagl
+  repo: college-student-toolkit

@@ -1,0 +1,56 @@
+{
+  "name": "college-student-toolkit",
+  "version": "0.1.0",
+  "description": "大学生 AI 工具组桌面应用",
+  "main": "dist-electron/main/main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "dev:electron": "concurrently \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "build": "tsc && vite build",
+    "build:electron": "tsc -p tsconfig.node.json && vite build",
+    "package": "electron-builder",
+    "package:win": "electron-builder --win"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.3.7",
+    "antd": "^5.17.4",
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^11.0.0",
+    "cheerio": "^1.0.0",
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.2.1",
+    "expr-eval": "^2.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.23.1",
+    "tesseract.js": "^5.1.0",
+    "unzip-stream": "^0.3.2"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.2",
+    "@types/better-sqlite3": "^7.6.10",
+    "@types/node": "^20.14.2",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/unzip-stream": "^0.3.4",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^30.5.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.12",
+    "vite-plugin-electron": "^0.28.7",
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "resources/**/*"
+    ]
+  }
+}

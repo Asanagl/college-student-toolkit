@@ -1,0 +1,46 @@
+/* 全局样式重置
+   保证 html/body/#root 撑满整个窗口，避免滚动条与白边 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* 隐藏 Electron 中残留的滚动条，但保留滚动能力 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* 自定义标题栏拖拽区域：使 Header 可拖拽移动窗口 */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+
+/* 拖拽区域内的交互元素需排除，否则按钮无法点击 */
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+}
