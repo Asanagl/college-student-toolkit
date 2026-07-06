@@ -30,6 +30,10 @@ yarn-error.log*
 *.swo
 *~
 
+# Agent 工程配置（本地专用，不入仓库）
+CLAUDE.md
+AGENTS.md
+
 # OS
 .DS_Store
 Thumbs.db
