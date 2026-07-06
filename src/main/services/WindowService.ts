@@ -12,6 +12,7 @@ import {
   type WebContents,
 } from 'electron';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import Store from 'electron-store';
 import { IPC_CHANNELS } from '../../shared/types';
 
@@ -90,6 +91,8 @@ export class WindowService {
       title: '大学生工具组',
       show: false,
       autoHideMenuBar: true,
+      // 透明背景色，配合亚克力材质效果（Win11 backgroundMaterial 生效时需要）
+      backgroundColor: '#00000000',
       // Windows 11 自定义标题栏：隐藏原生标题栏但保留窗口控制按钮
       // 配合 titleBarOverlay 使最小化/最大化/关闭按钮仍可用
       titleBarStyle: 'hidden',
@@ -347,6 +350,38 @@ export class WindowService {
     }
 
     return items;
+  }
+
+  // ==================== 亚克力材质（Win11 原生） ====================
+
+  /**
+   * 检测当前系统是否支持原生亚克力材质。
+   * Windows 11 22H2+ (build >= 22621) 支持 Electron 的 setBackgroundMaterial API。
+   */
+  static isAcrylicSupported(): boolean {
+    if (process.platform !== 'win32') return false;
+    const release = os.release();
+    // Windows release 格式为 "MajorVersion.MinorVersion.BuildNumber"
+    const parts = release.split('.');
+    const build = parts.length >= 3 ? parseInt(parts[2], 10) : 0;
+    return build >= 22621;
+  }
+
+  /**
+   * 设置主窗口的背景材质。
+   * 仅 Windows 11 22H2+ 生效，其他系统静默忽略。
+   * acrylic 模式下窗口背景半透明，透出桌面壁纸。
+   */
+  setBackgroundMaterial(material: 'none' | 'acrylic'): void {
+    const win = this.mainWindow;
+    if (!win) return;
+    if (!WindowService.isAcrylicSupported()) return;
+    try {
+      // Electron 30+ 原生 API，类型定义在 30.0+ 已包含
+      win.setBackgroundMaterial(material);
+    } catch (err) {
+      console.warn(`[WindowService] setBackgroundMaterial 失败: ${(err as Error).message}`);
+    }
   }
 
   // ==================== 主题相关窗口操作 ====================

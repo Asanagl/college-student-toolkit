@@ -227,6 +227,24 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 /** 实际生效的主题（解析 system 后的结果） */
 export type ResolvedTheme = 'light' | 'dark';
 
+// ==================== 外观 ====================
+
+/** 材质模式：none=标准 / acrylic=亚克力（Win11 原生，其他系统 CSS 降级） */
+export type MaterialMode = 'none' | 'acrylic';
+
+/** 外观配置，由 AppearanceService 持久化并广播给渲染进程 */
+export interface AppearanceConfig {
+  material: MaterialMode;
+  /** 背景图文件名（存储在 userData/backgrounds/），null 表示无背景图 */
+  backgroundImage: string | null;
+  /** 模糊度 0-50px */
+  blurRadius: number;
+  /** 清晰度 0-100（百分比，控制背景图 opacity） */
+  clarity: number;
+  /** 运行时检测：当前系统是否支持原生亚克力效果 */
+  acrylicSupported: boolean;
+}
+
 // ==================== IPC 通道常量 ====================
 // 命名规范：<域>:<资源>:<动作>
 // 注意：timetable 通道对应 courses 表，period 通道对应 period_config 表
@@ -303,6 +321,14 @@ export const IPC_CHANNELS = {
   THEME_SET: 'theme:set',
   THEME_GET_RESOLVED: 'theme:getResolved',
   THEME_ON_CHANGE: 'theme:onChange',
+  // 外观（材质模式 + 背景图 + 模糊度 + 清晰度）
+  APPEARANCE_GET: 'appearance:get',
+  APPEARANCE_SET_MATERIAL: 'appearance:setMaterial',
+  APPEARANCE_UPLOAD_BG: 'appearance:uploadBackground',
+  APPEARANCE_CLEAR_BG: 'appearance:clearBackground',
+  APPEARANCE_SET_BLUR: 'appearance:setBlur',
+  APPEARANCE_SET_CLARITY: 'appearance:setClarity',
+  APPEARANCE_ON_CHANGE: 'appearance:onChange',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
@@ -405,6 +431,15 @@ export interface RendererApi {
     set: (mode: ThemeMode) => Promise<IpcResult<boolean>>;
     getResolved: () => Promise<IpcResult<ResolvedTheme>>;
     onChange: (callback: (resolved: ResolvedTheme) => void) => void;
+  };
+  appearance: {
+    get: () => Promise<IpcResult<AppearanceConfig>>;
+    setMaterial: (mode: MaterialMode) => Promise<IpcResult<boolean>>;
+    uploadBackground: (filePath: string) => Promise<IpcResult<string>>;
+    clearBackground: () => Promise<IpcResult<boolean>>;
+    setBlur: (value: number) => Promise<IpcResult<boolean>>;
+    setClarity: (value: number) => Promise<IpcResult<boolean>>;
+    onChange: (callback: (config: AppearanceConfig) => void) => void;
   };
 }
 

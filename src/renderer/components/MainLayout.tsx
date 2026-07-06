@@ -12,9 +12,11 @@ import {
   BulbOutlined,
   BulbFilled,
   DownOutlined,
+  BgColorsOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import type { ThemeMode } from '../../shared/types';
+import AppearanceSettingsModal from './AppearanceSettingsModal';
 
 const { Header, Sider, Content } = Layout;
 
@@ -32,12 +34,15 @@ const THEME_OPTIONS: MenuProps['items'] = [
   { key: 'system', icon: <DesktopOutlined />, label: '跟随系统' },
   { key: 'light', icon: <BulbOutlined />, label: '亮色模式' },
   { key: 'dark', icon: <BulbFilled />, label: '暗黑模式' },
+  { type: 'divider' },
+  { key: 'appearance', icon: <BgColorsOutlined />, label: '外观设置' },
 ];
 
 export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [themeMode, setThemeMode] = useState<ThemeMode>('system');
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
 
   // 启动时从主进程读取已持久化的主题偏好
   useEffect(() => {
@@ -63,6 +68,10 @@ export default function MainLayout() {
   };
 
   const handleThemeChange: MenuProps['onClick'] = ({ key }) => {
+    if (key === 'appearance') {
+      setAppearanceOpen(true);
+      return;
+    }
     const mode = key as ThemeMode;
     setThemeMode(mode);
     window.api.theme.set(mode);
@@ -133,6 +142,7 @@ export default function MainLayout() {
           <Outlet />
         </Content>
       </Layout>
+      <AppearanceSettingsModal open={appearanceOpen} onClose={() => setAppearanceOpen(false)} />
     </Layout>
   );
 }

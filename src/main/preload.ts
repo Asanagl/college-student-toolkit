@@ -2,7 +2,7 @@
 // 职责：通过 contextBridge 安全地暴露主进程能力给渲染进程
 // 严格遵守 Electron 安全最佳实践：contextIsolation + 不直接暴露 require/ipcRenderer
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHANNELS } from '../shared/types';
+import { IPC_CHANNELS, type AppearanceConfig } from '../shared/types';
 
 // 统一的 invoke 封装，避免每个通道手写一遍 ipcRenderer.invoke
 function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
@@ -104,6 +104,18 @@ const api = {
     onChange: (callback: (resolved: 'light' | 'dark') => void) => {
       const handler = (_e: unknown, resolved: 'light' | 'dark') => callback(resolved);
       ipcRenderer.on(IPC_CHANNELS.THEME_ON_CHANGE, handler);
+    },
+  },
+  appearance: {
+    get: () => invoke(IPC_CHANNELS.APPEARANCE_GET),
+    setMaterial: (mode: 'none' | 'acrylic') => invoke(IPC_CHANNELS.APPEARANCE_SET_MATERIAL, mode),
+    uploadBackground: (filePath: string) => invoke(IPC_CHANNELS.APPEARANCE_UPLOAD_BG, filePath),
+    clearBackground: () => invoke(IPC_CHANNELS.APPEARANCE_CLEAR_BG),
+    setBlur: (value: number) => invoke(IPC_CHANNELS.APPEARANCE_SET_BLUR, value),
+    setClarity: (value: number) => invoke(IPC_CHANNELS.APPEARANCE_SET_CLARITY, value),
+    onChange: (callback: (config: AppearanceConfig) => void) => {
+      const handler = (_e: unknown, config: AppearanceConfig) => callback(config);
+      ipcRenderer.on(IPC_CHANNELS.APPEARANCE_ON_CHANGE, handler);
     },
   },
 };

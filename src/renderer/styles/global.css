@@ -44,3 +44,23 @@ body {
 .titlebar-no-drag {
   -webkit-app-region: no-drag;
 }
+
+/* 亚克力材质模式：让 html/body/#root 背景透明，透出原生亚克力效果 */
+body.acrylic-mode,
+body.acrylic-mode #root {
+  background: transparent !important;
+}
+
+/* 背景图层：固定定位覆盖整个窗口，位于所有内容之下 */
+.appearance-background {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -1;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}

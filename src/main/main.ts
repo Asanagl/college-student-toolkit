@@ -3,7 +3,7 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'node:path';
 import * as url from 'node:url';
-import { IPC_CHANNELS, type IpcResult, type ThemeMode, type ResolvedTheme } from '../shared/types';
+import { IPC_CHANNELS, type IpcResult, type ThemeMode, type ResolvedTheme, type MaterialMode } from '../shared/types';
 import { dataService } from './services/DataService';
 import { notificationService } from './services/NotificationService';
 import { scheduleService } from './services/ScheduleService';
@@ -14,6 +14,7 @@ import { gradeService } from './services/GradeService';
 import { updateService } from './services/UpdateService';
 import { windowService } from './services/WindowService';
 import { themeService } from './services/ThemeService';
+import { appearanceService } from './services/AppearanceService';
 import { importBrowserService, registerImportBrowserIpcHandlers } from './services/ImportBrowserService';
 import { ocrService } from './services/OcrService';
 import { parseDomWithAllParsers } from './services/parsers';
@@ -27,6 +28,7 @@ import { parseOcrToLabs } from './services/LabOcrParser';
 const services = [
   windowService,
   themeService,
+  appearanceService,
   dataService,
   notificationService,
   scheduleService,
@@ -259,6 +261,36 @@ function registerIpcHandlers(): void {
     ok: true,
     data: themeService.getResolved() as ResolvedTheme,
   }));
+
+  // ===== 外观（材质 + 背景图 + 模糊/清晰度）=====
+  ipcMain.handle(IPC_CHANNELS.APPEARANCE_GET, () => ({
+    ok: true,
+    data: appearanceService.getConfig(),
+  }));
+  ipcMain.handle(IPC_CHANNELS.APPEARANCE_SET_MATERIAL, (_e, mode: MaterialMode) => {
+    appearanceService.setMaterial(mode);
+    return { ok: true, data: true };
+  });
+  ipcMain.handle(IPC_CHANNELS.APPEARANCE_UPLOAD_BG, async (_e, filePath: string) => {
+    try {
+      const fileName = await appearanceService.uploadBackgroundImage(filePath);
+      return { ok: true, data: fileName };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle(IPC_CHANNELS.APPEARANCE_CLEAR_BG, async () => {
+    await appearanceService.clearBackgroundImage();
+    return { ok: true, data: true };
+  });
+  ipcMain.handle(IPC_CHANNELS.APPEARANCE_SET_BLUR, (_e, value: number) => {
+    appearanceService.setBlurRadius(value);
+    return { ok: true, data: true };
+  });
+  ipcMain.handle(IPC_CHANNELS.APPEARANCE_SET_CLARITY, (_e, value: number) => {
+    appearanceService.setClarity(value);
+    return { ok: true, data: true };
+  });
 }
 
 // 应用退出时按依赖逆序释放资源
