@@ -3,15 +3,31 @@ productName: 大学生工具组
 directories:
   output: release
 files:
-  - dist/**/*
+  # 前端构建产物（精确指定，避免把 win-unpacked 打包进 asar）
+  - dist/assets/**/*
+  - dist/index.html
+  # 主进程 / preload 编译产物
   - dist-electron/**/*
+  # 应用资源
   - resources/**/*
-# 应用图标：
-# - Windows 使用 icon.ico（256x256 多分辨率）
-# - Linux 使用 icon.png（512x512）
-# 当前仅有 icon.png，electron-builder 会自动转换；后续制作 .ico 时替换即可
-icon: resources/icon.png
+  # 依赖打包规则：排除文档/测试/源码/类型定义等无用文件
+  - "!**/node_modules/**/{README,readme,CHANGELOG,changelog,HISTORY,history,LICENSE,license,LICENCE,licence}*"
+  - "!**/node_modules/**/{test,tests,__tests__,docs,doc,examples,example,coverage,*.md,*.markdown,*.ts,*.flow,*.coffee,*.map}"
+  - "!**/node_modules/**/{*.tsbuildinfo,*.tar.gz,*.tgz,*.zip}"
+  # better-sqlite3：只保留 prebuilds（预编译二进制），排除源码和构建中间产物
+  - "!**/node_modules/better-sqlite3/{src,build,deps}/**"
+  # tesseract.js：排除文档
+  - "!**/node_modules/tesseract.js/docs/**"
+  # 排除杂项文件
+  - "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}"
+  - "!.editorconfig"
+  - "!**/._*"
+# 启用 asar 打包（应用代码单文件，减少碎片）
 asar: true
+# Electron 语言包只保留中文和英文（默认 56 种语言约 37MB → 约 1MB）
+electronLanguages:
+  - zh-CN
+  - en-US
 # Windows 安装包：NSIS（允许用户选择安装目录、创建快捷方式）
 win:
   target:

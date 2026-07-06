@@ -48,7 +48,9 @@ export default defineConfig({
   ],
   build: {
     outDir: 'dist',
-    emptyOutDir: true,
+    // 不清空 dist 目录：electron-builder 旧产物 win-unpacked 可能残留且被占用导致删除失败
+    // vite 只写入 dist/assets 和 dist/index.html，不影响其他子目录
+    emptyOutDir: false,
   },
   resolve: {
     alias: {
