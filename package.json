@@ -1,6 +1,6 @@
 {
   "name": "college-student-toolkit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "大学生 AI 工具组桌面应用",
   "main": "dist-electron/main/main.js",
   "author": "",
