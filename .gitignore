@@ -39,5 +39,12 @@ desktop.ini
 .dbg/
 .trae/documents/plan-*.md
 
+# Test artifacts
+dist-test/
+
+# OCR model files (downloaded at runtime by tesseract.js)
+chi_sim.traineddata
+*.traineddata
+
 # TypeScript cache
 *.tsbuildinfo
