@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>大学生工具组隐私政策 | Privacy Policy</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.65; }
+    body { margin: 0; color: #202124; background: #f7f8fa; }
+    main { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; background: #fff; }
+    h1 { line-height: 1.2; }
+    h2 { margin-top: 2rem; border-bottom: 1px solid #e3e6ea; padding-bottom: .3rem; }
+    a { color: #075985; }
+    .meta { color: #5f6368; }
+    .notice { border-left: 4px solid #1677ff; padding: .75rem 1rem; background: #eef6ff; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>大学生工具组隐私政策</h1>
+  <p class="meta">适用版本：大学生工具组 v0.3.0（Windows Microsoft Store/MSIX）<br>生效日期：2026-08-23<br>最后更新：2026-08-23</p>
+
+  <h2>运营者与联系方式</h2>
+  <p>本应用由 GitHub 账号 <a href="https://github.com/Asanagl">Asanagl</a> 维护和发布。</p>
+  <p>隐私请求和支持入口：<a href="https://github.com/Asanagl/college-student-toolkit/issues">college-student-toolkit GitHub Issues</a>。请不要在公开 issue 中发布密码、Cookie、成绩明细、数据库、备份文件或完整教务页面；如需提交隐私请求，请先只描述请求类型，等待维护者提供安全的后续方式。</p>
+
+  <div class="notice">大学生工具组是本地优先的 Windows 桌面应用。应用不要求用户创建本应用账号，也没有面向开发者的数据同步后台。</div>
+
+  <h2>应用处理哪些信息</h2>
+  <p>用户可以主动输入或导入课程表、日程、考试、实验、成绩、GPA 公式、学期日期、提醒、免打扰设置、通知历史、主题、外观设置和用户主动选择的背景图片。这些内容默认保存在用户设备上的应用数据目录中，用于提供应用功能。</p>
+  <p>应用不会因为启动或打开普通页面而把上述学习资料上传给应用维护者。用户应当把本地数据库和未加密备份视为个人数据并妥善保护。</p>
+
+  <h2>教务系统导入</h2>
+  <p>只有当用户主动打开导入功能并导航到指定页面时，应用才会在隔离的远程视图中加载教务系统。用户本人在该页面完成登录；应用维护者不会收到或保存教务密码。应用优先读取页面 DOM，并将用户确认的结构化结果写入本机数据库。</p>
+  <p>关闭、取消或完成导入后，应用会尝试清理临时远程视图、Cookie、网页存储和缓存。网络请求仍可能由用户访问的教务系统、操作系统和网络服务商按照其自身政策处理。</p>
+
+  <h2>可选 OCR 组件</h2>
+  <p>OCR 不是启动必需组件。用户可以只使用 DOM 导入或手动录入；只有用户明确选择安装时，应用才会从固定的公开 GitHub Release 地址下载版本为 1.0.0 的中文简体 Tesseract.js 语言数据。组件在本机处理图片和文本，不把识别内容发送给 OCR 服务。下载和安装会校验固定的压缩与解压文件哈希。</p>
+
+  <h2>备份与共享</h2>
+  <p>应用可以导出 v2 ZIP 备份。备份可能包含课程、日程、考试、实验、成绩、GPA 公式、通知历史、主题、学期设置和背景图片。备份目前未加密，用户应只将其保存或发送给可信对象。</p>
+  <p>备份不包含应用密码、教务 Cookie、登录会话、浏览器缓存、窗口坐标、机器绝对路径、更新缓存或 OCR 组件。应用不会自动把备份上传给维护者。</p>
+
+  <h2>第三方服务</h2>
+  <p>Microsoft Store 负责本应用的安装、分发、签名和更新，并可能按照 Microsoft 的相关隐私声明处理其自身的技术数据。OCR 组件下载使用 GitHub Release。用户访问的教务系统、Windows、GitHub、网络运营商和其他第三方服务各自适用其自己的条款和隐私政策。本政策不替代这些第三方政策。</p>
+
+  <h2>保存期限、删除和隐私请求</h2>
+  <p>本地学习数据、设置和背景图片会保留到用户在应用中删除、导入覆盖、清理应用数据或按照 Windows/Store 的行为处理为止。导出的备份由用户自行控制。卸载或重装前请先导出备份，因为不同 Windows 版本和 Store 行为可能影响用户数据保留。</p>
+  <p>如需提出由维护者控制的信息访问、更正或删除请求，请使用本页顶部的 GitHub Issues 入口。由于应用主要在本地处理资料，许多删除操作需要用户在自己的设备上完成；维护者不会要求用户发送密码、Cookie、数据库、备份 ZIP 或完整教务页面。</p>
+
+  <h2>安全与限制</h2>
+  <p>应用使用本地数据库、输入校验、隔离的远程导入视图、受限协议和备份完整性检查降低风险，但本地文件、未加密备份、操作系统账户和第三方网站都不能保证绝对安全。请使用受支持的 Windows 更新、设备锁和可信存储位置。</p>
+
+  <h2>儿童隐私</h2>
+  <p>本应用面向大学生学习管理，不以儿童为目标用户，也不要求用户创建账号。若监护人认为未成年人向维护者提交了不应公开的信息，请通过 GitHub Issues 联系，并不要在公开内容中附带该信息。</p>
+
+  <h2>政策变更</h2>
+  <p>如果数据处理方式发生实质变化，维护者会更新本页面的版本和日期，并在适用情况下通过应用或 Microsoft Store 一览告知用户。</p>
+
+  <hr>
+  <h1 lang="en">College Student Toolkit Privacy Policy</h1>
+  <p class="meta" lang="en">Applies to College Student Toolkit v0.3.0 for Windows Microsoft Store/MSIX. Effective and last updated: 2026-08-23.</p>
+  <p lang="en">College Student Toolkit is maintained and published by the GitHub account <a href="https://github.com/Asanagl">Asanagl</a>. Privacy requests and support are handled through the <a href="https://github.com/Asanagl/college-student-toolkit/issues">public GitHub Issues page</a>. Do not post passwords, cookies, grades, databases, backup archives, or full academic-system pages in a public issue.</p>
+  <p lang="en">This is a local-first Windows desktop application. It does not require an application account and has no developer-hosted learning-data sync service. Classes, schedules, exams, labs, grades, GPA formulas, reminders, settings, notification history, themes, and user-selected backgrounds are normally stored on the user's device. The application does not intentionally upload these learning records to its maintainer.</p>
+  <p lang="en">Academic-system import is user initiated. The user logs in inside an isolated remote view; the maintainer does not receive or store the academic password. DOM data is preferred, and temporary cookies, web storage, cache, and the remote view are cleared on close, cancellation, or completion when cleanup succeeds.</p>
+  <p lang="en">OCR is optional and is never required at startup. When the user explicitly installs it, a pinned Chinese Simplified Tesseract.js language asset is downloaded from a public GitHub Release and processed locally. OCR content is not sent to an OCR service.</p>
+  <p lang="en">Version 2 backups are unencrypted ZIP archives that may contain personal study data. They exclude passwords, academic cookies, login sessions, browser cache, machine absolute paths, update cache, and OCR components. Users should store backups securely.</p>
+  <p lang="en">Microsoft Store, GitHub, Windows, academic systems, network providers, and other third parties may process technical data under their own policies. Local data is retained until the user deletes or replaces it, clears application data, or Windows/Store handles uninstall data. Users should export a backup before uninstalling. The policy may change when data practices materially change; the effective date will be updated.</p>
+</main>
+</body>
+</html>
