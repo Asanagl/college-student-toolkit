@@ -95,4 +95,24 @@ export abstract class ParserBase {
       .replace(/\s+/g, ' ')
       .trim();
   }
+
+  protected isHeaderLabel(text: string): boolean {
+    return /^(节次|占位|星期[一二三四五六日天]|周[一二三四五六日天])$/.test(text);
+  }
+
+  protected splitCourseFields(text: string): string[] {
+    const protectedWeeks: string[] = [];
+    const protectedText = text.replace(/\d+(?:\s*[,，、]\s*\d+)+\s*周/g, (match) => {
+      const index = protectedWeeks.push(match) - 1;
+      return `__WEEK_${index}__`;
+    });
+    return protectedText
+      .split(/\n|，|,| {2,}/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const match = /^__WEEK_(\d+)__$/.exec(item);
+        return match ? protectedWeeks[Number(match[1])] : item;
+      });
+  }
 }

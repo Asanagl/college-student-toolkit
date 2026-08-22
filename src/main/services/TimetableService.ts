@@ -2,26 +2,28 @@
 // CRUD 由 main.ts 中直接调用 DataService.courses 仓库完成（IPC 层），
 // 本服务负责启动每分钟提醒调度器，按当前周次与节次配置计算触发时机并调用 NotificationService。
 // 实现阶段：Phase 3
-import Store from 'electron-store';
-import type { Course, NotificationPayload, PeriodConfig } from '../../shared/types';
-import { DataService } from './DataService';
-import { NotificationService } from './NotificationService';
+import Store from "electron-store";
+import type {
+  Course,
+  IpcResult,
+  NotificationPayload,
+  PeriodConfig,
+  TimetablePreferences,
+} from "../../shared/types";
+import { DataService } from "./DataService";
+import { NotificationService } from "./NotificationService";
+import { portableSettingsService } from "./PortableSettingsService";
 
-/** 调度器检查间隔：每分钟一次 */
-const TICK_INTERVAL_MS = 60_000;
 /** 触发时间窗口：与理想触发时间相差 ±1 分钟内视为应当触发 */
 const TRIGGER_WINDOW_MS = 60_000;
-/** 默认学期开始日期，可由用户在设置中覆盖；未设置时退化为按周数取模推断 */
-const DEFAULT_SEMESTER_START = '2025-09-01';
-
 interface TimetableStoreSchema {
-  semesterStart: string; // YYYY-MM-DD
+  semesterStart: string | null; // YYYY-MM-DD
 }
 
 function todayKey(d: Date): string {
   const y = d.getFullYear();
-  const m = (d.getMonth() + 1).toString().padStart(2, '0');
-  const day = d.getDate().toString().padStart(2, '0');
+  const m = (d.getMonth() + 1).toString().padStart(2, "0");
+  const day = d.getDate().toString().padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
 
@@ -56,15 +58,32 @@ export class TimetableService {
     if (this.initialized) return;
     // 用 electron-store 持久化学期开始日期；默认值兜底
     this.store = new Store<TimetableStoreSchema>({
-      name: 'timetable',
-      defaults: { semesterStart: DEFAULT_SEMESTER_START },
+      name: "timetable",
+      defaults: { semesterStart: null },
     });
-    this.timer = setInterval(() => {
-      void this.tick();
-    }, TICK_INTERVAL_MS);
-    // 启动后立即检查一次，避免第一分钟内遗漏即将开始的课程
-    void this.tick();
+    this.store.set(
+      "semesterStart",
+      portableSettingsService.get().timetable.semesterStart,
+    );
     this.initialized = true;
+  }
+
+  getPreferences(): IpcResult<TimetablePreferences> {
+    return {
+      ok: true,
+      data: { semesterStart: this.store?.get("semesterStart", null) ?? null },
+    };
+  }
+
+  setSemesterStart(value: string | null): IpcResult<TimetablePreferences> {
+    this.store?.set("semesterStart", value);
+    portableSettingsService.update({ timetable: { semesterStart: value } });
+    return this.getPreferences();
+  }
+
+  applyPortableSettings(): void {
+    const value = portableSettingsService.get().timetable.semesterStart;
+    this.store?.set("semesterStart", value);
   }
 
   async dispose(): Promise<void> {
@@ -73,6 +92,7 @@ export class TimetableService {
       this.timer = null;
     }
     this.triggeredRecords.clear();
+    this.store = null;
     this.initialized = false;
   }
 
@@ -104,7 +124,7 @@ export class TimetableService {
     course: Course,
     periods: PeriodConfig[],
     now: Date,
-    currentWeek: number
+    currentWeek: number,
   ): Promise<void> {
     // 周次过滤：当前周不在课程周次范围内则跳过
     if (currentWeek < course.startWeek || currentWeek > course.endWeek) return;
@@ -128,9 +148,9 @@ export class TimetableService {
     this.markTriggered(course.id, key);
 
     const payload: NotificationPayload = {
-      title: '课程提醒',
-      body: `${course.name} ${course.location ?? ''} 第${course.startPeriod}节 ${period.startTime}`,
-      source: 'timetable',
+      title: "课程提醒",
+      body: `${course.name} ${course.location ?? ""} 第${course.startPeriod}节 ${period.startTime}`,
+      source: "timetable",
       refId: course.id,
     };
     await NotificationService.getInstance().send(payload);
@@ -138,14 +158,17 @@ export class TimetableService {
 
   /**
    * 计算当前周次：基于学期开始日期。
-   * 若 semesterStart 未设置或解析失败，回退到 1。
+   * 若 semesterStart 未设置或解析失败，返回 0，表示课程提醒暂停。
    * 周次从 1 开始：semesterStart 那一周为第 1 周。
    */
   private computeCurrentWeek(now: Date): number {
-    if (!this.store) return 1;
-    const startStr = this.store.get('semesterStart', DEFAULT_SEMESTER_START);
-    const start = new Date(startStr);
-    if (Number.isNaN(start.getTime())) return 1;
+    if (!this.store) return 0;
+    const startStr = this.store.get("semesterStart", null);
+    if (!startStr) return 0;
+    // Parse a date-only preference as local midnight; Date("YYYY-MM-DD") is
+    // UTC and shifts the weekday on machines east or west of UTC.
+    const start = new Date(`${startStr}T00:00:00`);
+    if (Number.isNaN(start.getTime())) return 0;
     const diffMs = now.getTime() - start.getTime();
     if (diffMs < 0) return 1;
     const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));

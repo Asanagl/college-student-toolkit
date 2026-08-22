@@ -64,7 +64,7 @@ export abstract class ExamParserBase {
    */
   protected parseSeat(text: string): string | null {
     if (!text) return null;
-    const match = /(?:座位号|座位|座号)[:：]?\s*([A-Za-z0-9\-]{1,10})/.exec(text);
+    const match = /(?:座位号|座位|座号)[:：]?\s*([A-Za-z0-9-]{1,10})/.exec(text);
     if (match) return match[1];
     return null;
   }

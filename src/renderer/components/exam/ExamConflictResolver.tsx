@@ -152,7 +152,6 @@ export default function ExamConflictResolver({
         ),
       },
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [slots]
   );
 

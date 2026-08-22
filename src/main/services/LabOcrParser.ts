@@ -33,7 +33,7 @@ function parseLabLine(line: string): ParsedLab | null {
   if (line.length < 2) return null;
   const lab: ParsedLab = {};
   // 实验名：行首非数字的中英文片段
-  const nameMatch = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9（）()·\-]{1,40}/.exec(line);
+  const nameMatch = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9（）()·-]{1,40}/.exec(line);
   if (nameMatch) {
     lab.name = nameMatch[0].trim();
   }

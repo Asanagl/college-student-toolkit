@@ -1,0 +1,333 @@
+{
+  "schemaVersion": 1,
+  "status": "completed",
+  "startedAt": "2026-08-22T08:03:07.629Z",
+  "executable": "release-v0.3.0-msix-local/win-unpacked/大学生工具组.exe",
+  "host": {
+    "platform": "win32",
+    "release": "10.0.26200",
+    "arch": "x64",
+    "cpu": "Intel(R) Core(TM) Ultra 5 225H",
+    "memoryMiB": 32189,
+    "node": "v20.16.0"
+  },
+  "dataset": {
+    "schedules": 1000,
+    "courses": 500,
+    "exams": 1000,
+    "labs": 1000,
+    "grades": 10000
+  },
+  "sampling": {
+    "iterations": 30,
+    "warmups": 5,
+    "idleMinutes": 5,
+    "soakMinutes": 30,
+    "soakIntervalMs": 10000,
+    "enforce": true
+  },
+  "thresholds": {
+    "sqliteQueryMs": 100,
+    "sqliteCrudMs": 100,
+    "ipcListMs": 1000,
+    "ipcCrudMs": 150,
+    "pageSwitchMs": 300,
+    "coldStartMs": 3000,
+    "reminderP95Ms": 1000,
+    "reminderMaxMs": 1500,
+    "backupMs": 5000,
+    "idleRssMiB": 300,
+    "soakGrowthRatio": 0.1
+  },
+  "metrics": {
+    "sqlite": {
+      "query": {
+        "sampleCount": 30,
+        "p50Ms": 2.62,
+        "p95Ms": 3.27,
+        "maxMs": 3.34,
+        "thresholds": {
+          "p95Ms": 100
+        },
+        "pass": true
+      },
+      "crud": {
+        "sampleCount": 30,
+        "p50Ms": 0.02,
+        "p95Ms": 0.06,
+        "maxMs": 0.09,
+        "thresholds": {
+          "p95Ms": 100
+        },
+        "pass": true
+      }
+    },
+    "ipc": {
+      "lists": {
+        "schedules": {
+          "sampleCount": 30,
+          "p50Ms": 46.58,
+          "p95Ms": 54.02,
+          "maxMs": 55.66,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "courses": {
+          "sampleCount": 30,
+          "p50Ms": 30.97,
+          "p95Ms": 41.29,
+          "maxMs": 46.53,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "exams": {
+          "sampleCount": 30,
+          "p50Ms": 61.99,
+          "p95Ms": 77.42,
+          "maxMs": 78.96,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "labs": {
+          "sampleCount": 30,
+          "p50Ms": 61.36,
+          "p95Ms": 76.49,
+          "maxMs": 78.69,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "grades": {
+          "sampleCount": 30,
+          "p50Ms": 15.44,
+          "p95Ms": 16.21,
+          "maxMs": 16.37,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "gradeDashboard": {
+          "sampleCount": 30,
+          "p50Ms": 15.53,
+          "p95Ms": 16.16,
+          "maxMs": 16.23,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        }
+      },
+      "crud": {
+        "sampleCount": 30,
+        "p50Ms": 46.22,
+        "p95Ms": 48,
+        "maxMs": 54.13,
+        "thresholds": {
+          "p95Ms": 150
+        },
+        "pass": true
+      }
+    },
+    "pageSwitch": {
+      "overall": {
+        "sampleCount": 30,
+        "p50Ms": 232.27,
+        "p95Ms": 248.18,
+        "maxMs": 249.69,
+        "thresholds": {
+          "p95Ms": 300
+        },
+        "pass": true
+      },
+      "byRoute": {
+        "/schedule": {
+          "sampleCount": 6,
+          "p50Ms": 201.51,
+          "p95Ms": 217.06,
+          "maxMs": 217.06,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "pass": true
+        },
+        "/timetable": {
+          "sampleCount": 6,
+          "p50Ms": 233.04,
+          "p95Ms": 234.56,
+          "maxMs": 234.56,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "pass": true
+        },
+        "/exam": {
+          "sampleCount": 6,
+          "p50Ms": 247.02,
+          "p95Ms": 248.18,
+          "maxMs": 248.18,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "pass": true
+        },
+        "/lab": {
+          "sampleCount": 6,
+          "p50Ms": 230.69,
+          "p95Ms": 247.46,
+          "maxMs": 247.46,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "pass": true
+        },
+        "/grade": {
+          "sampleCount": 6,
+          "p50Ms": 230.56,
+          "p95Ms": 249.69,
+          "maxMs": 249.69,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "pass": true
+        }
+      }
+    },
+    "reminder": {
+      "sampleCount": 30,
+      "p50Ms": 15.52,
+      "p95Ms": 16.08,
+      "maxMs": 16.09,
+      "thresholds": {
+        "p95Ms": 1000,
+        "maxMs": 1500
+      },
+      "pass": true
+    },
+    "backup": {
+      "archiveBytes": 11430293,
+      "export": {
+        "sampleCount": 30,
+        "p50Ms": 375.33,
+        "p95Ms": 529.82,
+        "maxMs": 558.21,
+        "thresholds": {
+          "p95Ms": 5000,
+          "maxMs": 5000
+        },
+        "pass": true
+      },
+      "import": {
+        "sampleCount": 30,
+        "p50Ms": 263.84,
+        "p95Ms": 512.62,
+        "maxMs": 540.68,
+        "thresholds": {
+          "p95Ms": 5000,
+          "maxMs": 5000
+        },
+        "pass": true
+      }
+    },
+    "coldStart": {
+      "sampleCount": 30,
+      "p50Ms": 1033.87,
+      "p95Ms": 1108.44,
+      "maxMs": 1112.01,
+      "thresholds": {
+        "p95Ms": 3000
+      },
+      "pass": true
+    },
+    "ocr": {
+      "id": "ocr-chi-sim",
+      "version": "1.0.0",
+      "state": "not-installed",
+      "currentBytes": 0,
+      "totalBytes": 2471033,
+      "progress": 0,
+      "skipped": true,
+      "reason": "未提供真实 OCR Release 资产和识别图片；不伪造线上 OCR 性能证据"
+    },
+    "idleRss": {
+      "skipped": false,
+      "rssBasis": "Browser+Tab+Utility（排除 GPU compositor）",
+      "baselineMiB": 316.77,
+      "finalMiB": 292.18,
+      "baselineTotalMiB": 560.23,
+      "finalTotalMiB": 490.1,
+      "baselineGpuMiB": 243.46,
+      "finalGpuMiB": 197.93,
+      "baselineProcesses": [
+        {
+          "type": "Browser",
+          "pid": 24292,
+          "workingSetSize": 169344
+        },
+        {
+          "type": "GPU",
+          "pid": 26320,
+          "workingSetSize": 249300
+        },
+        {
+          "type": "Utility",
+          "pid": 35716,
+          "workingSetSize": 47788
+        },
+        {
+          "type": "Tab",
+          "pid": 2696,
+          "workingSetSize": 107244
+        }
+      ],
+      "finalProcesses": [
+        {
+          "type": "Browser",
+          "pid": 24292,
+          "workingSetSize": 156648
+        },
+        {
+          "type": "GPU",
+          "pid": 26320,
+          "workingSetSize": 202676
+        },
+        {
+          "type": "Utility",
+          "pid": 35716,
+          "workingSetSize": 47896
+        },
+        {
+          "type": "Tab",
+          "pid": 2696,
+          "workingSetSize": 94644
+        }
+      ],
+      "pass": true,
+      "thresholdMiB": 300
+    },
+    "soak": {
+      "skipped": false,
+      "cycles": 180,
+      "intervalMs": 10000,
+      "baselineMiB": 292.18,
+      "finalMiB": 302.84,
+      "peakMiB": 312.26,
+      "growthRatio": 0.0365,
+      "pass": true,
+      "thresholdGrowthRatio": 0.1
+    },
+    "shutdown": {
+      "backupAppClosed": true,
+      "soakAppClosed": true
+    }
+  },
+  "failures": [],
+  "finishedAt": "2026-08-22T08:39:38.455Z"
+}

@@ -47,6 +47,10 @@ class GenericTableParser extends ParserBase {
       for (const cell of cells) {
         const $cell = $(cell);
         const text = this.cleanText($cell.text());
+        if (this.isHeaderLabel(text)) {
+          colIndex++;
+          continue;
+        }
         if (/^第?\d+$/.test(text) || /^第[一二三四五六七八九十\d]+节/.test(text)) {
           const periods = this.parsePeriods(text);
           if (periods) {
@@ -56,14 +60,11 @@ class GenericTableParser extends ParserBase {
           }
         }
         colIndex++;
-        const weekday = colIndex - 1;
+        const weekday = colIndex - 2;
         if (weekday < 1 || weekday > 7) continue;
         if (!text || text.length < 2) continue;
         // 启发式：单元格内第一段为课程名
-        const lines = text
-          .split(/\n|，|,| {2,}/)
-          .map((s) => s.trim())
-          .filter(Boolean);
+        const lines = this.splitCourseFields(text);
         if (lines.length === 0) continue;
         const course: ParsedCourse = {
           name: lines[0],
@@ -73,6 +74,10 @@ class GenericTableParser extends ParserBase {
         };
         for (let i = 1; i < lines.length; i++) {
           const line = lines[i];
+          if (!course.location && /楼|室|号|栋|层/.test(line)) {
+            course.location = line;
+            continue;
+          }
           const weeks = this.parseWeeks(line);
           if (weeks && course.startWeek === undefined) {
             course.startWeek = weeks[0];

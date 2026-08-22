@@ -1,8 +1,13 @@
 // 更新服务：基于 electron-updater 实现自动更新检查与安装。
 // 实现阶段：Phase 7
-import { app, BrowserWindow } from 'electron';
-import { autoUpdater } from 'electron-updater';
-import { IPC_CHANNELS, type IpcResult } from '../../shared/types';
+import { app, BrowserWindow } from "electron";
+import { autoUpdater } from "electron-updater";
+import {
+  IPC_CHANNELS,
+  type IpcResult,
+  type UpdateChannel,
+} from "../../shared/types";
+import { resolveUpdateChannel } from "./UpdateChannel";
 
 /**
  * 推送给渲染进程的更新状态载荷。
@@ -11,7 +16,13 @@ import { IPC_CHANNELS, type IpcResult } from '../../shared/types';
  * 渲染进程需自行做类型还原（见 UpdateNotifier.tsx）。
  */
 export interface UpdateStatusPayload {
-  status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
+  status:
+    | "checking"
+    | "available"
+    | "not-available"
+    | "downloading"
+    | "downloaded"
+    | "error";
   data?: {
     version?: string;
     percent?: number;
@@ -35,6 +46,7 @@ function broadcastStatus(payload: UpdateStatusPayload): void {
 export class UpdateService {
   private static instance: UpdateService | null = null;
   private initialized = false;
+  private checkTimer: NodeJS.Timeout | null = null;
 
   private constructor() {}
 
@@ -48,10 +60,18 @@ export class UpdateService {
   async init(): Promise<void> {
     if (this.initialized) return;
 
+    const channel = this.getChannel();
+
     // 开发模式下 electron-updater 找不到 app-update.yml 会抛错，
     // 直接跳过更新检查，避免阻塞开发流程
-    if (!app.isPackaged) {
-      console.log('[UpdateService] 开发模式不检查更新');
+    if (channel === "development") {
+      console.log("[UpdateService] 开发模式不检查更新");
+      this.initialized = true;
+      return;
+    }
+
+    if (channel === "microsoft-store") {
+      console.log("[UpdateService] Microsoft Store 包由 Store 管理更新");
       this.initialized = true;
       return;
     }
@@ -59,15 +79,22 @@ export class UpdateService {
     // 自动后台下载；下载完成后不自动安装，由用户在 UI 确认
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = false;
+    // Stable 通道不接受预发布版本或降级，避免把测试包推给正式用户。
+    autoUpdater.allowPrerelease = false;
+    autoUpdater.allowDowngrade = false;
+    autoUpdater.channel = "latest";
 
     this.registerListeners();
 
     this.initialized = true;
 
     // 启动后延迟 5 秒自动检查一次，避免与窗口创建、服务初始化抢资源
-    setTimeout(() => {
+    this.checkTimer = setTimeout(() => {
+      this.checkTimer = null;
       autoUpdater.checkForUpdates().catch((err: unknown) => {
-        console.error(`[UpdateService] 自动检查更新失败: ${(err as Error).message}`);
+        console.error(
+          `[UpdateService] 自动检查更新失败: ${(err as Error).message}`,
+        );
       });
     }, 5000);
   }
@@ -77,24 +104,24 @@ export class UpdateService {
    * 每个事件对应 UpdateStatusPayload.status 的一个取值。
    */
   private registerListeners(): void {
-    autoUpdater.on('checking-for-update', () => {
-      broadcastStatus({ status: 'checking' });
+    autoUpdater.on("checking-for-update", () => {
+      broadcastStatus({ status: "checking" });
     });
 
-    autoUpdater.on('update-available', (info) => {
+    autoUpdater.on("update-available", (info) => {
       broadcastStatus({
-        status: 'available',
+        status: "available",
         data: { version: info.version },
       });
     });
 
-    autoUpdater.on('update-not-available', () => {
-      broadcastStatus({ status: 'not-available' });
+    autoUpdater.on("update-not-available", () => {
+      broadcastStatus({ status: "not-available" });
     });
 
-    autoUpdater.on('download-progress', (progress) => {
+    autoUpdater.on("download-progress", (progress) => {
       broadcastStatus({
-        status: 'downloading',
+        status: "downloading",
         data: {
           percent: progress.percent,
           transferred: progress.transferred,
@@ -103,13 +130,13 @@ export class UpdateService {
       });
     });
 
-    autoUpdater.on('update-downloaded', () => {
-      broadcastStatus({ status: 'downloaded' });
+    autoUpdater.on("update-downloaded", () => {
+      broadcastStatus({ status: "downloaded" });
     });
 
-    autoUpdater.on('error', (err) => {
+    autoUpdater.on("error", (err) => {
       broadcastStatus({
-        status: 'error',
+        status: "error",
         data: { error: err?.message ?? String(err) },
       });
     });
@@ -117,9 +144,11 @@ export class UpdateService {
 
   /** 手动触发更新检查（由渲染进程通过 update:check IPC 调用） */
   async checkManual(): Promise<IpcResult<boolean>> {
-    if (!app.isPackaged) {
-      return { ok: false, error: '开发模式不支持检查更新' };
+    const channel = this.getChannel();
+    if (channel === "development") {
+      return { ok: false, error: "开发模式不支持检查更新" };
     }
+    if (channel === "microsoft-store") return this.storeManagedResult();
     try {
       const result = await autoUpdater.checkForUpdates();
       return { ok: true, data: !!result?.updateInfo };
@@ -133,12 +162,31 @@ export class UpdateService {
    * 注意：quitAndInstaller 会退出当前应用，正常情况下不会返回。
    */
   async installUpdate(): Promise<IpcResult<boolean>> {
+    if (this.getChannel() === "microsoft-store")
+      return this.storeManagedResult();
     try {
       autoUpdater.quitAndInstall();
       return { ok: true, data: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
+  }
+
+  getChannel(): UpdateChannel {
+    const storeSmokeOverride = process.env.COLLEGE_TOOLKIT_STORE_SMOKE === "1";
+    return resolveUpdateChannel(
+      app.isPackaged,
+      process.windowsStore === true || storeSmokeOverride,
+    );
+  }
+
+  private storeManagedResult(): IpcResult<boolean> {
+    return {
+      ok: false,
+      error:
+        "Microsoft Store 版本由 Microsoft Store 管理更新，请在 Store 中更新。",
+      errorCode: "UPDATE_MANAGED_BY_STORE",
+    };
   }
 
   /**
@@ -152,6 +200,8 @@ export class UpdateService {
   }
 
   async dispose(): Promise<void> {
+    if (this.checkTimer) clearTimeout(this.checkTimer);
+    this.checkTimer = null;
     // 移除所有监听器避免内存泄漏
     try {
       autoUpdater.removeAllListeners();

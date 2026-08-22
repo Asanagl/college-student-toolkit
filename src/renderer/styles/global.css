@@ -35,6 +35,16 @@ body {
   background: rgba(0, 0, 0, 0.35);
 }
 
+/* 暗色主题下深色滑块几乎与背景同色，需反转为浅色。
+   主题可被用户手动强制，故用 body class 判断而非 prefers-color-scheme */
+body.theme-dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+body.theme-dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
 /* 自定义标题栏拖拽区域：使 Header 可拖拽移动窗口 */
 .titlebar-drag {
   -webkit-app-region: drag;
@@ -51,16 +61,32 @@ body.acrylic-mode #root {
   background: transparent !important;
 }
 
-/* 背景图层：固定定位覆盖整个窗口，位于所有内容之下 */
-.appearance-background {
+/* 外观层：三层固定定位的兄弟节点覆盖整个窗口，z-index 为负故位于所有内容之下。
+   能透出来的前提是 antd Layout 的 bodyBg 已被置为 transparent（见 main.tsx），
+   否则 .ant-layout 的不透明底色会盖在它们之上。
+   用 inset 而非 100vw/100vh：后者含滚动条宽度会溢出，且模糊时需要按 inset 向外扩边 */
+.appearance-base,
+.appearance-background,
+.appearance-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* 底色层：垫在背景图之下，提供跟随主题的不透明基准色 */
+.appearance-base {
+  z-index: -3;
+}
+
+/* 背景图层 */
+.appearance-background {
+  z-index: -2;
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  pointer-events: none;
+}
+
+/* 可读性遮罩层：垫在背景图与内容之间，避免无卡片包裹的文字直接压在照片上 */
+.appearance-overlay {
+  z-index: -1;
 }

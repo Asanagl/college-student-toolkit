@@ -16,7 +16,7 @@ import {
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import type { ThemeMode } from '../../shared/types';
-import AppearanceSettingsModal from './AppearanceSettingsModal';
+import SettingsModal from './SettingsModal';
 
 const { Header, Sider, Content } = Layout;
 
@@ -35,14 +35,14 @@ const THEME_OPTIONS: MenuProps['items'] = [
   { key: 'light', icon: <BulbOutlined />, label: '亮色模式' },
   { key: 'dark', icon: <BulbFilled />, label: '暗黑模式' },
   { type: 'divider' },
-  { key: 'appearance', icon: <BgColorsOutlined />, label: '外观设置' },
+  { key: 'appearance', icon: <BgColorsOutlined />, label: '设置' },
 ];
 
 export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [themeMode, setThemeMode] = useState<ThemeMode>('system');
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // 启动时从主进程读取已持久化的主题偏好
   useEffect(() => {
@@ -69,7 +69,7 @@ export default function MainLayout() {
 
   const handleThemeChange: MenuProps['onClick'] = ({ key }) => {
     if (key === 'appearance') {
-      setAppearanceOpen(true);
+      setSettingsOpen(true);
       return;
     }
     const mode = key as ThemeMode;
@@ -142,7 +142,7 @@ export default function MainLayout() {
           <Outlet />
         </Content>
       </Layout>
-      <AppearanceSettingsModal open={appearanceOpen} onClose={() => setAppearanceOpen(false)} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </Layout>
   );
 }

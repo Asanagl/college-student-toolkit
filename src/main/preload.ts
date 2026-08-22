@@ -1,43 +1,59 @@
 // preload 脚本
 // 职责：通过 contextBridge 安全地暴露主进程能力给渲染进程
 // 严格遵守 Electron 安全最佳实践：contextIsolation + 不直接暴露 require/ipcRenderer
-import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHANNELS, type AppearanceConfig } from '../shared/types';
+import { contextBridge, ipcRenderer } from "electron";
+import {
+  IPC_CHANNELS,
+  type AppearanceConfig,
+  type OcrComponentStatus,
+  type RendererApi,
+  type UpdateStatusPayload,
+} from "../shared/types";
 
 // 统一的 invoke 封装，避免每个通道手写一遍 ipcRenderer.invoke
 function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   return ipcRenderer.invoke(channel, ...args);
 }
 
-const api = {
+const api: RendererApi = {
   schedule: {
     list: () => invoke(IPC_CHANNELS.SCHEDULE_LIST),
     add: (item: unknown) => invoke(IPC_CHANNELS.SCHEDULE_ADD, item),
-    update: (id: string, patch: unknown) => invoke(IPC_CHANNELS.SCHEDULE_UPDATE, id, patch),
+    update: (id: string, patch: unknown) =>
+      invoke(IPC_CHANNELS.SCHEDULE_UPDATE, id, patch),
     remove: (id: string) => invoke(IPC_CHANNELS.SCHEDULE_REMOVE, id),
   },
   timetable: {
     list: () => invoke(IPC_CHANNELS.TIMETABLE_LIST),
     add: (item: unknown) => invoke(IPC_CHANNELS.TIMETABLE_ADD, item),
-    update: (id: string, patch: unknown) => invoke(IPC_CHANNELS.TIMETABLE_UPDATE, id, patch),
+    update: (id: string, patch: unknown) =>
+      invoke(IPC_CHANNELS.TIMETABLE_UPDATE, id, patch),
     remove: (id: string) => invoke(IPC_CHANNELS.TIMETABLE_REMOVE, id),
+    getPreferences: () => invoke(IPC_CHANNELS.TIMETABLE_GET_PREFERENCES),
+    setSemesterStart: (value: string | null) =>
+      invoke(IPC_CHANNELS.TIMETABLE_SET_SEMESTER_START, value),
   },
   exam: {
     list: () => invoke(IPC_CHANNELS.EXAM_LIST),
     add: (item: unknown) => invoke(IPC_CHANNELS.EXAM_ADD, item),
-    update: (id: string, patch: unknown) => invoke(IPC_CHANNELS.EXAM_UPDATE, id, patch),
+    update: (id: string, patch: unknown) =>
+      invoke(IPC_CHANNELS.EXAM_UPDATE, id, patch),
     remove: (id: string) => invoke(IPC_CHANNELS.EXAM_REMOVE, id),
   },
   lab: {
     list: () => invoke(IPC_CHANNELS.LAB_LIST),
     add: (item: unknown) => invoke(IPC_CHANNELS.LAB_ADD, item),
-    update: (id: string, patch: unknown) => invoke(IPC_CHANNELS.LAB_UPDATE, id, patch),
+    update: (id: string, patch: unknown) =>
+      invoke(IPC_CHANNELS.LAB_UPDATE, id, patch),
     remove: (id: string) => invoke(IPC_CHANNELS.LAB_REMOVE, id),
   },
   grade: {
     list: () => invoke(IPC_CHANNELS.GRADE_LIST),
+    listPage: (query: unknown) => invoke(IPC_CHANNELS.GRADE_PAGE, query),
+    getDashboard: () => invoke(IPC_CHANNELS.GRADE_DASHBOARD),
     add: (item: unknown) => invoke(IPC_CHANNELS.GRADE_ADD, item),
-    update: (id: string, patch: unknown) => invoke(IPC_CHANNELS.GRADE_UPDATE, id, patch),
+    update: (id: string, patch: unknown) =>
+      invoke(IPC_CHANNELS.GRADE_UPDATE, id, patch),
     remove: (id: string) => invoke(IPC_CHANNELS.GRADE_REMOVE, id),
   },
   formula: {
@@ -55,15 +71,19 @@ const api = {
     extractDom: () => invoke(IPC_CHANNELS.TIMETABLE_EXTRACT_DOM),
     capturePage: () => invoke(IPC_CHANNELS.TIMETABLE_CAPTURE_PAGE),
     parseDom: (html: string) => invoke(IPC_CHANNELS.TIMETABLE_PARSE_DOM, html),
-    runOcr: (imageBase64: string) => invoke(IPC_CHANNELS.TIMETABLE_RUN_OCR, imageBase64),
+    runOcr: (imageBase64: string) =>
+      invoke(IPC_CHANNELS.TIMETABLE_RUN_OCR, imageBase64),
   },
   examImport: {
-    parseDomForExams: (html: string) => invoke(IPC_CHANNELS.EXAM_PARSE_DOM, html),
-    runOcrForExams: (imageBase64: string) => invoke(IPC_CHANNELS.EXAM_RUN_OCR, imageBase64),
+    parseDomForExams: (html: string) =>
+      invoke(IPC_CHANNELS.EXAM_PARSE_DOM, html),
+    runOcrForExams: (imageBase64: string) =>
+      invoke(IPC_CHANNELS.EXAM_RUN_OCR, imageBase64),
   },
   labImport: {
     parseDomForLabs: (html: string) => invoke(IPC_CHANNELS.LAB_PARSE_DOM, html),
-    runOcrForLabs: (imageBase64: string) => invoke(IPC_CHANNELS.LAB_RUN_OCR, imageBase64),
+    runOcrForLabs: (imageBase64: string) =>
+      invoke(IPC_CHANNELS.LAB_RUN_OCR, imageBase64),
   },
   notify: {
     send: (payload: unknown) => invoke(IPC_CHANNELS.NOTIFY_SEND, payload),
@@ -73,18 +93,36 @@ const api = {
     clearHistory: () => invoke(IPC_CHANNELS.NOTIFY_CLEAR_HISTORY),
   },
   data: {
-    export: (filePath: string) => invoke(IPC_CHANNELS.DATA_EXPORT, filePath),
-    import: (filePath: string) => invoke(IPC_CHANNELS.DATA_IMPORT, filePath),
-    pickExportPath: () => invoke(IPC_CHANNELS.DATA_PICK_EXPORT_PATH),
-    pickImportPath: () => invoke(IPC_CHANNELS.DATA_PICK_IMPORT_PATH),
+    exportBackup: () => invoke(IPC_CHANNELS.DATA_EXPORT_BACKUP),
+    prepareImport: () => invoke(IPC_CHANNELS.DATA_PREPARE_IMPORT),
+    commitImport: (token: string) =>
+      invoke(IPC_CHANNELS.DATA_COMMIT_IMPORT, token),
+    cancelImport: (token: string) =>
+      invoke(IPC_CHANNELS.DATA_CANCEL_IMPORT, token),
+    onRestoreCompleted: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on(IPC_CHANNELS.DATA_RESTORE_COMPLETED, handler);
+      return () =>
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.DATA_RESTORE_COMPLETED,
+          handler,
+        );
+    },
   },
   update: {
     checkManual: () => invoke(IPC_CHANNELS.UPDATE_CHECK),
     installUpdate: () => invoke(IPC_CHANNELS.UPDATE_INSTALL),
-    onUpdateStatus: (callback: (status: string) => void) => {
-      // 仅监听，不返回 Promise；保留一次性 listener 以便后续扩展
-      const handler = (_e: unknown, status: string) => callback(status);
+    getCurrentVersion: () => invoke(IPC_CHANNELS.UPDATE_GET_CURRENT_VERSION),
+    getChannel: () => invoke(IPC_CHANNELS.UPDATE_GET_CHANNEL),
+    // 返回取消订阅函数：调用方（React 组件）必须在卸载时调用，
+    // 否则重复挂载会不断叠加 listener，最终触发 MaxListenersExceededWarning
+    onUpdateStatus: (callback: (payload: UpdateStatusPayload) => void) => {
+      const handler = (_e: unknown, payload: UpdateStatusPayload) =>
+        callback(payload);
       ipcRenderer.on(IPC_CHANNELS.UPDATE_STATUS, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_STATUS, handler);
+      };
     },
   },
   window: {
@@ -92,32 +130,68 @@ const api = {
     maximize: () => invoke(IPC_CHANNELS.WINDOW_MAXIMIZE),
     close: () => invoke(IPC_CHANNELS.WINDOW_CLOSE),
     isMaximized: () => invoke(IPC_CHANNELS.WINDOW_IS_MAXIMIZED),
+    // 同 onUpdateStatus：返回取消订阅函数，避免 listener 叠加
     onMaximizeChange: (callback: (maximized: boolean) => void) => {
       const handler = (_e: unknown, maximized: boolean) => callback(maximized);
       ipcRenderer.on(IPC_CHANNELS.WINDOW_ON_MAXIMIZE_CHANGE, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.WINDOW_ON_MAXIMIZE_CHANGE,
+          handler,
+        );
+      };
     },
   },
   theme: {
     get: () => invoke(IPC_CHANNELS.THEME_GET),
-    set: (mode: 'system' | 'light' | 'dark') => invoke(IPC_CHANNELS.THEME_SET, mode),
+    set: (mode: "system" | "light" | "dark") =>
+      invoke(IPC_CHANNELS.THEME_SET, mode),
     getResolved: () => invoke(IPC_CHANNELS.THEME_GET_RESOLVED),
-    onChange: (callback: (resolved: 'light' | 'dark') => void) => {
-      const handler = (_e: unknown, resolved: 'light' | 'dark') => callback(resolved);
+    // 同 onUpdateStatus：返回取消订阅函数，避免 listener 叠加
+    onChange: (callback: (resolved: "light" | "dark") => void) => {
+      const handler = (_e: unknown, resolved: "light" | "dark") =>
+        callback(resolved);
       ipcRenderer.on(IPC_CHANNELS.THEME_ON_CHANGE, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.THEME_ON_CHANGE, handler);
+      };
     },
   },
   appearance: {
     get: () => invoke(IPC_CHANNELS.APPEARANCE_GET),
-    setMaterial: (mode: 'none' | 'acrylic') => invoke(IPC_CHANNELS.APPEARANCE_SET_MATERIAL, mode),
-    uploadBackground: (filePath: string) => invoke(IPC_CHANNELS.APPEARANCE_UPLOAD_BG, filePath),
+    chooseBackground: () => invoke(IPC_CHANNELS.APPEARANCE_CHOOSE_BG),
+    setMaterial: (mode: "none" | "acrylic") =>
+      invoke(IPC_CHANNELS.APPEARANCE_SET_MATERIAL, mode),
     clearBackground: () => invoke(IPC_CHANNELS.APPEARANCE_CLEAR_BG),
     setBlur: (value: number) => invoke(IPC_CHANNELS.APPEARANCE_SET_BLUR, value),
-    setClarity: (value: number) => invoke(IPC_CHANNELS.APPEARANCE_SET_CLARITY, value),
+    setClarity: (value: number) =>
+      invoke(IPC_CHANNELS.APPEARANCE_SET_CLARITY, value),
+    // 同 onUpdateStatus：外观弹窗每次打开都会重新订阅，不返回取消函数必然泄漏
     onChange: (callback: (config: AppearanceConfig) => void) => {
-      const handler = (_e: unknown, config: AppearanceConfig) => callback(config);
+      const handler = (_e: unknown, config: AppearanceConfig) =>
+        callback(config);
       ipcRenderer.on(IPC_CHANNELS.APPEARANCE_ON_CHANGE, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.APPEARANCE_ON_CHANGE, handler);
+      };
+    },
+  },
+  ocrComponent: {
+    getStatus: () => invoke(IPC_CHANNELS.OCR_COMPONENT_GET_STATUS),
+    install: () => invoke(IPC_CHANNELS.OCR_COMPONENT_INSTALL),
+    cancelInstall: () => invoke(IPC_CHANNELS.OCR_COMPONENT_CANCEL_INSTALL),
+    remove: () => invoke(IPC_CHANNELS.OCR_COMPONENT_REMOVE),
+    onStatusChange: (callback: (status: OcrComponentStatus) => void) => {
+      const handler = (_event: unknown, status: OcrComponentStatus) =>
+        callback(status);
+      ipcRenderer.on(IPC_CHANNELS.OCR_COMPONENT_ON_STATUS_CHANGE, handler);
+      return () =>
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.OCR_COMPONENT_ON_STATUS_CHANGE,
+          handler,
+        );
     },
   },
 };
 
-contextBridge.exposeInMainWorld('api', api);
+contextBridge.exposeInMainWorld("api", api);

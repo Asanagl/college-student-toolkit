@@ -5,6 +5,7 @@ import { nativeTheme, BrowserWindow } from 'electron';
 import Store from 'electron-store';
 import type { ThemeMode, ResolvedTheme } from '../../shared/types';
 import { windowService } from './WindowService';
+import { portableSettingsService } from './PortableSettingsService';
 
 interface ThemeStoreSchema {
   mode: ThemeMode;
@@ -36,7 +37,7 @@ export class ThemeService {
       name: 'theme-preference',
       defaults: { mode: 'system' },
     });
-    this.mode = this.store.get('mode');
+    this.mode = portableSettingsService.get().themeMode;
     // 应用初始主题到 nativeTheme
     this.applyToNativeTheme(this.mode);
     // 监听系统主题变化：当 mode=system 时需要广播实际主题给渲染进程
@@ -55,6 +56,15 @@ export class ThemeService {
 
   /** 设置用户偏好模式并持久化，同步 nativeTheme 与标题栏 */
   setMode(mode: ThemeMode): void {
+    this.mode = mode;
+    this.store?.set('mode', mode);
+    portableSettingsService.update({ themeMode: mode });
+    this.applyToNativeTheme(mode);
+    this.broadcast();
+  }
+
+  applyPortableSettings(): void {
+    const mode = portableSettingsService.get().themeMode;
     this.mode = mode;
     this.store?.set('mode', mode);
     this.applyToNativeTheme(mode);

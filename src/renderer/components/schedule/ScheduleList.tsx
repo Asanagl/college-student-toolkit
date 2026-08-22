@@ -1,6 +1,7 @@
 // 日程列表组件：显示某一天的所有日程，支持点击编辑与添加。
 // 接收已按日期过滤并排序的日程数组，不自行过滤，职责单一。
-import { Button, Empty, Tag, Typography } from 'antd';
+import type { KeyboardEvent } from 'react';
+import { Button, Empty, Tag, theme, Typography } from 'antd';
 import { BellOutlined, PlusOutlined } from '@ant-design/icons';
 import type { RepeatRule, Schedule } from '../../../shared/types';
 
@@ -41,6 +42,19 @@ function formatReminder(offset: number): string {
 export default function ScheduleList({ date, schedules, onAdd, onEdit }: ScheduleListProps) {
   const dateStr = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
 
+  // 取语义 token 而非写死色值：写死的边框/文字色在暗色模式下不可读，写死的 #1677ff 也不跟随主题主色
+  const {
+    token: { colorBorderSecondary, colorTextTertiary, colorPrimary },
+  } = theme.useToken();
+
+  // 条目是 div 不是 button，需手动补键盘触发，否则纯键盘用户无法进入编辑
+  const handleItemKeyDown = (e: KeyboardEvent<HTMLDivElement>, schedule: Schedule) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault(); // 阻止空格滚动页面
+      onEdit(schedule);
+    }
+  };
+
   return (
     <div>
       <div
@@ -66,18 +80,21 @@ export default function ScheduleList({ date, schedules, onAdd, onEdit }: Schedul
             <div
               key={s.id}
               onClick={() => onEdit(s)}
+              onKeyDown={(e) => handleItemKeyDown(e, s)}
+              role="button"
+              tabIndex={0}
               style={{
                 padding: '8px 12px',
-                border: '1px solid #f0f0f0',
+                border: `1px solid ${colorBorderSecondary}`,
                 borderRadius: 6,
                 cursor: 'pointer',
                 transition: 'border-color 0.2s',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = '#1677ff';
+                e.currentTarget.style.borderColor = colorPrimary;
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = '#f0f0f0';
+                e.currentTarget.style.borderColor = colorBorderSecondary;
               }}
             >
               <div
@@ -95,7 +112,7 @@ export default function ScheduleList({ date, schedules, onAdd, onEdit }: Schedul
                   display: 'flex',
                   gap: 12,
                   marginTop: 4,
-                  color: '#888',
+                  color: colorTextTertiary,
                   fontSize: 13,
                 }}
               >

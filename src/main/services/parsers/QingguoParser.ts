@@ -40,6 +40,10 @@ export class QingguoParser extends ParserBase {
       for (const cell of cells) {
         const $cell = $(cell);
         const text = this.cleanText($cell.text());
+        if (this.isHeaderLabel(text)) {
+          colIndex++;
+          continue;
+        }
         if (/^第?\d+$/.test(text) || /^第[一二三四五六七八九十\d]+节/.test(text)) {
           const periods = this.parsePeriods(text);
           if (periods) {
@@ -49,7 +53,7 @@ export class QingguoParser extends ParserBase {
           }
         }
         colIndex++;
-        const weekday = colIndex - 1;
+        const weekday = colIndex - 2;
         if (weekday < 1 || weekday > 7) continue;
         // 青果每门课用 .kbcourse 或 <div> 包裹
         const courses = $cell.find('.kbcourse, .kb').toArray();
@@ -70,10 +74,7 @@ export class QingguoParser extends ParserBase {
   }
 
   private parseBlock(text: string, weekday: number, fallbackPeriod: number): ParsedCourse | null {
-    const lines = text
-      .split(/\n|，|,| {2,}/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const lines = this.splitCourseFields(text);
     if (lines.length === 0) return null;
     const course: ParsedCourse = { weekday, color: pickColor(lines[0]) };
     course.name = lines[0];

@@ -3,8 +3,16 @@
 // 实现阶段：Phase 3
 import { createWorker, type Worker } from 'tesseract.js';
 import type { ParsedCourse } from './parsers/types';
+import { ocrComponentService } from './OcrComponentService';
 
 const COLOR_PALETTE = ['#4285F4', '#34A853', '#FBBC05', '#EA4335', '#9C27B0', '#00BCD4', '#FF9800', '#795548'];
+
+class OcrComponentStateError extends Error {
+  constructor(readonly code: 'OCR_COMPONENT_MISSING' | 'OCR_COMPONENT_INVALID') {
+    super(code);
+    this.name = 'OcrComponentStateError';
+  }
+}
 
 function pickColor(name: string): string {
   let hash = 0;
@@ -33,13 +41,6 @@ export class OcrService {
   async init(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
-    // 空闲预加载：启动后 30 秒后台初始化 worker，避免首次 OCR 调用阻塞 10 秒
-    // 不阻塞应用启动；预加载失败不影响后续正常调用（ensureWorker 仍会兜底）
-    setTimeout(() => {
-      this.ensureWorker().catch((err: unknown) => {
-        console.error(`[OcrService] 预加载失败: ${(err as Error).message}`);
-      });
-    }, 30000);
   }
 
   /** 确保 worker 已就绪；并发调用时复用同一个 initPromise */
@@ -57,8 +58,16 @@ export class OcrService {
   }
 
   private async createWorker(): Promise<void> {
-    // chi_sim 模型较大，初次加载耗时；保留 logger 便于调试进度
+    const languagePath = ocrComponentService.getInstalledLanguagePath();
+    if (!languagePath) {
+      const status = ocrComponentService.getStatus().data;
+      throw new OcrComponentStateError(status?.state === 'invalid' ? 'OCR_COMPONENT_INVALID' : 'OCR_COMPONENT_MISSING');
+    }
+    const componentRoot = languagePath.replace(/[\\/]chi_sim\.traineddata$/, '');
     this.worker = await createWorker('chi_sim', 1, {
+      langPath: componentRoot,
+      cachePath: componentRoot,
+      gzip: false,
       logger: (m) => {
         if (m.status === 'recognizing text') {
           console.log(`[OcrService] 识别进度: ${Math.round(m.progress * 100)}%`);
@@ -107,7 +116,7 @@ export class OcrService {
     if (line.length < 2) return null;
     const course: ParsedCourse = { color: pickColor(line) };
     // 课程名：取行首非数字部分
-    const nameMatch = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9（）()·\-]{1,30}/.exec(line);
+    const nameMatch = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9（）()·-]{1,30}/.exec(line);
     if (nameMatch) {
       course.name = nameMatch[0].trim();
     } else {

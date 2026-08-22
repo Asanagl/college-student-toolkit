@@ -66,14 +66,9 @@ export default function TimetablePage() {
     loadPeriods();
   }, [loadCourses, loadPeriods]);
 
-  // 默认当前周次：基于学期开始日期简化为 1（首启）
-  useEffect(() => {
-    if (currentWeek === 1 && courses.length > 0) {
-      // 取所有课程的最大 endWeek 作为参考上界
-      const maxWeek = courses.reduce((m, c) => Math.max(m, c.endWeek), 1);
-      if (currentWeek > maxWeek) setCurrentWeek(Math.max(1, maxWeek));
-    }
-  }, [courses, currentWeek]);
+  // 当前周次固定从第 1 周起，由用户手动切换：
+  // 「按学期开始日期自动定位」依赖 electron-store 的 semesterStart，而它目前没有任何 UI/IPC 能设置、
+  // 恒为默认值，据此自动定位只会跳到错误的周次，故在能配置学期开始日期之前不实现。
 
   const periodCount = useMemo(() => periods.length || 12, [periods]);
 
@@ -122,6 +117,19 @@ export default function TimetablePage() {
       }
       message.success('已添加课程');
     }
+    setCourseDialogOpen(false);
+    setEditingCourse(null);
+    setAddPreset(null);
+    loadCourses();
+  };
+
+  const handleDeleteCourse = async (id: string) => {
+    const res = await window.api.timetable.remove(id);
+    if (!res.ok) {
+      message.error(res.error ?? '删除失败');
+      return;
+    }
+    message.success('已删除课程');
     setCourseDialogOpen(false);
     setEditingCourse(null);
     setAddPreset(null);
@@ -195,7 +203,14 @@ export default function TimetablePage() {
       const res = await window.api.timetable.add(payload);
       if (res.ok) success++;
     }
-    message.success(`已导入 ${success}/${merged.length} 门课程`);
+    // 只对比写库成功数与待写入数。不拿原始解析条数做分母：
+    // ConflictResolver 会有意折叠定位缺失的 OCR 噪声行，那部分「少掉」是预期行为，
+    // 拿它报警会变成常态误报。合并阶段的真实丢课已由槽位分桶修复。
+    if (success < merged.length) {
+      message.warning(`已导入 ${success} / ${merged.length} 门课程，部分课程写入失败，请核对课表`);
+    } else {
+      message.success(`已导入 ${success} 门课程`);
+    }
     setConflictOpen(false);
     loadCourses();
   };
@@ -255,6 +270,7 @@ export default function TimetablePage() {
         open={courseDialogOpen}
         course={editingCourse ?? undefined}
         onOk={handleCourseDialogOk}
+        onDelete={handleDeleteCourse}
         onCancel={() => {
           setCourseDialogOpen(false);
           setEditingCourse(null);

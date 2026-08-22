@@ -150,7 +150,6 @@ export default function LabConflictResolver({
         ),
       },
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [slots]
   );
 

@@ -37,7 +37,7 @@ function parseExamLine(line: string): ParsedExam | null {
   if (line.length < 2) return null;
   const exam: ParsedExam = {};
   // 课程名：行首非数字的中英文片段
-  const nameMatch = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9（）()·\-]{1,30}/.exec(line);
+  const nameMatch = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9（）()·-]{1,30}/.exec(line);
   if (nameMatch) {
     exam.courseName = nameMatch[0].trim();
   }
@@ -53,7 +53,7 @@ function parseExamLine(line: string): ParsedExam | null {
     exam.endTime = timeMatch[2].padStart(5, '0');
   }
   // 座位
-  const seatMatch = /(?:座位号|座位|座号)[:：]?\s*([A-Za-z0-9\-]{1,10})/.exec(line);
+  const seatMatch = /(?:座位号|座位|座号)[:：]?\s*([A-Za-z0-9-]{1,10})/.exec(line);
   if (seatMatch) {
     exam.seat = seatMatch[1];
   }
@@ -81,7 +81,7 @@ function mergeExamInfo(exam: ParsedExam, line: string): void {
     }
   }
   if (!exam.seat) {
-    const seatMatch = /(?:座位号|座位|座号)[:：]?\s*([A-Za-z0-9\-]{1,10})/.exec(line);
+    const seatMatch = /(?:座位号|座位|座号)[:：]?\s*([A-Za-z0-9-]{1,10})/.exec(line);
     if (seatMatch) exam.seat = seatMatch[1];
   }
   if (!exam.location) {

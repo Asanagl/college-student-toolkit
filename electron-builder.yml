@@ -2,6 +2,8 @@ appId: com.collegestudent.toolkit
 productName: 大学生工具组
 directories:
   output: release
+  buildResources: resources
+artifactName: college-student-toolkit-${version}-${arch}.${ext}
 files:
   # 前端构建产物（精确指定，避免把 win-unpacked 打包进 asar）
   - dist/assets/**/*
@@ -14,8 +16,16 @@ files:
   - "!**/node_modules/**/{README,readme,CHANGELOG,changelog,HISTORY,history,LICENSE,license,LICENCE,licence}*"
   - "!**/node_modules/**/{test,tests,__tests__,docs,doc,examples,example,coverage,*.md,*.markdown,*.ts,*.flow,*.coffee,*.map}"
   - "!**/node_modules/**/{*.tsbuildinfo,*.tar.gz,*.tgz,*.zip}"
-  # better-sqlite3：只保留 prebuilds（预编译二进制），排除源码和构建中间产物
-  - "!**/node_modules/better-sqlite3/{src,build,deps}/**"
+  # AppX build resources are copied by the AppX target and must not be
+  # duplicated inside app.asar or exposed as application data.
+  - "!resources/appx/**"
+  # better-sqlite3 的 native binding 必须在应用包中。build/Release 中的
+  # .node 由 install-app-deps 按 Electron ABI 重建；源码和 SQLite 构建依赖
+  # 不参与分发。不能排除整个 build 目录，否则生产包启动时数据库不可用。
+  - "!**/node_modules/better-sqlite3/src/**"
+  - "!**/node_modules/better-sqlite3/deps/**"
+  - "!**/node_modules/better-sqlite3/build/**"
+  - "node_modules/better-sqlite3/build/Release/better_sqlite3.node"
   # tesseract.js：排除文档
   - "!**/node_modules/tesseract.js/docs/**"
   # 排除杂项文件
@@ -24,18 +34,34 @@ files:
   - "!**/._*"
 # 启用 asar 打包（应用代码单文件，减少碎片）
 asar: true
+# 原生模块不能从 ASAR 直接 mmap，必须在 app.asar.unpacked 中保留真实文件。
+asarUnpack:
+  - "node_modules/better-sqlite3/build/Release/better_sqlite3.node"
 # Electron 语言包只保留中文和英文（默认 56 种语言约 37MB → 约 1MB）
 electronLanguages:
   - zh-CN
   - en-US
-# Windows 安装包：NSIS（允许用户选择安装目录、创建快捷方式）
+# Windows 备用安装包：NSIS（允许用户选择安装目录、创建快捷方式）。
+# Microsoft Store 正式渠道使用 electron-builder.appx.cjs，不能复用此安装器的更新链路。
 win:
+  # RC 使用仓库内可复现生成的多尺寸 ICO；Stable 前仍需用户确认品牌母版。
+  icon: resources/icon.ico
   target:
     - target: nsis
       arch:
         - x64
-  # 签名相关字段留空，发布时通过环境变量 CSC_LINK/CSC_KEY_PASSWORD 注入
-  # signingHashAlgorithms: ['sha256']
+  # Stable 只允许 SHA-256 签名。证书通过受保护 runner 的 Windows KSP
+  # 和 WIN_CSC_KEY_PASSWORD/WIN_CSC_CERTIFICATE_SHA1 注入，仓库不保存私钥。
+  signingHashAlgorithms:
+    - sha256
+  rfc3161TimeStampServer: https://timestamp.digicert.com
+  timeStampServer: https://timestamp.digicert.com
+  # 签名后由 electron-builder 计算 publisherName；正式发布 workflow
+  # 另行校验完整 DN，未配置证书时不得降级为未签名 Stable。
+  verifyUpdateCodeSignature: true
+  # 让打包器对 unpacked native binding 也执行 Authenticode 签名。
+  signExts:
+    - .node
 nsis:
   oneClick: false
   perMachine: false
@@ -43,6 +69,7 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: 大学生工具组
+  artifactName: college-student-toolkit-${version}-${arch}-setup.${ext}
   # 卸载时清理用户数据需用户确认，默认保留
   deleteAppDataOnUninstall: false
 # Linux 可选：AppImage 便于跨发行版分发
@@ -56,3 +83,4 @@ publish:
   provider: github
   owner: Asanagl
   repo: college-student-toolkit
+  releaseType: release

@@ -43,6 +43,34 @@ function slotKey(c: ParsedCourse): string {
   return `${c.weekday ?? 0}-${c.startPeriod ?? 0}`;
 }
 
+/**
+ * 该条目能否定位到具体槽位。
+ * OCR 链路只在文本里出现「周X」时才填 weekday、出现「第X节」时才填 startPeriod
+ * （见 OcrService.parseLine），而课表截图的表头是「星期一」不含「周」字，
+ * 表头行、被切碎的教师/地点行都会以「只有 name」的形态进入结果，
+ * 这类条目全部落在同一个兜底 key 上，并不代表真的同处一格。
+ */
+function isLocatable(c: ParsedCourse): boolean {
+  return typeof c.weekday === 'number' && typeof c.startPeriod === 'number';
+}
+
+/**
+ * 按槽位分桶，桶内保持解析器输出顺序。
+ * 解析器会把一个单元格里的多门课（如「1-8周高数 / 9-16周线代」）拆成多条，
+ * 且段内没写「第X-Y节」时会统一回落到同一个节次，因此同一 key 天然可能对应多条课程，
+ * 用 Map<key, 单条> 存会互相覆盖并静默丢课。
+ */
+function groupBySlot(list: ParsedCourse[]): Map<string, ParsedCourse[]> {
+  const map = new Map<string, ParsedCourse[]>();
+  for (const c of list) {
+    const k = slotKey(c);
+    const bucket = map.get(k);
+    if (bucket) bucket.push(c);
+    else map.set(k, [c]);
+  }
+  return map;
+}
+
 /** 比较两个 ParsedCourse 的字段差异，返回差异字段名列表 */
 function diffFields(a?: ParsedCourse, b?: ParsedCourse): string[] {
   if (!a || !b) return [];
@@ -68,26 +96,40 @@ export default function ConflictResolver({
   // 每次 open 或数据变化时重建槽位
   useEffect(() => {
     if (!open) return;
-    const map = new Map<string, SlotRow>();
-    for (const c of domCourses) {
-      const k = slotKey(c);
-      const row = map.get(k) ?? { key: k, weekday: c.weekday, startPeriod: c.startPeriod, choice: 'dom' as Choice, manual: { ...c } };
-      row.dom = c;
-      if (!row.weekday) row.weekday = c.weekday;
-      if (!row.startPeriod) row.startPeriod = c.startPeriod;
-      map.set(k, row);
+    const domBuckets = groupBySlot(domCourses);
+    const ocrBuckets = groupBySlot(ocrCourses);
+    // key 顺序：先 DOM 出现过的槽位，再补只有 OCR 的槽位
+    const keys = new Set([...domBuckets.keys(), ...ocrBuckets.keys()]);
+    const rows: SlotRow[] = [];
+    for (const base of keys) {
+      const doms = domBuckets.get(base) ?? [];
+      const ocrs = ocrBuckets.get(base) ?? [];
+      // 同槽位内两条链路各按出现顺序 zip 配对，数量不等的多余条目单独成行，避免任何一条被丢弃。
+      // 但只对「能定位到具体格子」的桶这么做：定位缺失的条目共用一个兜底 key，
+      // 展开它们等于把 OCR 噪声逐条送进写库循环（弹窗没有「不导入」选项，
+      // 且 TimetablePage 会把缺失字段兜底成周一第 1 节），故仍折叠成一行。
+      const sample = doms[0] ?? ocrs[0];
+      const count = sample && isLocatable(sample) ? Math.max(doms.length, ocrs.length) : 1;
+      for (let i = 0; i < count; i++) {
+        const dom: ParsedCourse | undefined = doms[i];
+        const ocr: ParsedCourse | undefined = ocrs[i];
+        // count 取两者最大长度，i < count 时至少有一侧存在
+        const source = dom ?? (ocr as ParsedCourse);
+        rows.push({
+          // 行内序号保证 key 唯一，否则 Table rowKey 冲突且同格多课会互相覆盖
+          key: `${base}#${i}`,
+          weekday: source.weekday,
+          startPeriod: source.startPeriod,
+          dom,
+          ocr,
+          // 仅有 OCR 版本时默认选 OCR
+          choice: dom ? 'dom' : 'ocr',
+          // manual 以本行实际采用的版本为副本，避免与 DOM/OCR 列显示的课程对不上
+          manual: { ...source },
+        });
+      }
     }
-    for (const c of ocrCourses) {
-      const k = slotKey(c);
-      const row = map.get(k) ?? { key: k, weekday: c.weekday, startPeriod: c.startPeriod, choice: 'ocr' as Choice, manual: { ...c } };
-      row.ocr = c;
-      if (!row.weekday) row.weekday = c.weekday;
-      if (!row.startPeriod) row.startPeriod = c.startPeriod;
-      // 仅有 OCR 版本时默认选 OCR
-      if (!row.dom) row.choice = 'ocr';
-      map.set(k, row);
-    }
-    setSlots(Array.from(map.values()));
+    setSlots(rows);
   }, [open, domCourses, ocrCourses]);
 
   const handleChoiceChange = (key: string, choice: Choice) => {
@@ -175,7 +217,6 @@ export default function ConflictResolver({
         ),
       },
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [slots]
   );
 

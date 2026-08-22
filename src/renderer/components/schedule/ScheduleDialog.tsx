@@ -2,7 +2,17 @@
 // 提醒偏移用 InputNumber + Select 单位组合，存储时统一转换为分钟。
 // 编辑模式额外提供删除按钮（左下角）。
 import { useEffect } from 'react';
-import { Button, DatePicker, Form, Input, InputNumber, message, Modal, Select } from 'antd';
+import {
+  Button,
+  DatePicker,
+  Form,
+  Input,
+  InputNumber,
+  message,
+  Modal,
+  Popconfirm,
+  Select,
+} from 'antd';
 import dayjs from 'dayjs';
 import type { RepeatRule, Schedule } from '../../../shared/types';
 
@@ -149,11 +159,21 @@ export default function ScheduleDialog({
       title={isEdit ? '编辑日程' : '新增日程'}
       onCancel={onCancel}
       footer={[
-        // 删除按钮放左下角，与取消/保存区分
+        // 删除按钮放左下角，与取消/保存区分；删除不可撤销，必须二次确认防误触
         isEdit ? (
-          <Button key="delete" danger onClick={handleDelete} style={{ float: 'left' }}>
-            删除
-          </Button>
+          <Popconfirm
+            key="delete"
+            title="确认删除该日程？"
+            description="删除后无法恢复"
+            onConfirm={handleDelete}
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+          >
+            <Button danger style={{ float: 'left' }}>
+              删除
+            </Button>
+          </Popconfirm>
         ) : null,
         <Button key="cancel" onClick={onCancel}>
           取消

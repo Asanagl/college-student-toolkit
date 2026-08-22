@@ -46,6 +46,10 @@ export class ZhengfangParser extends ParserBase {
       for (const cell of cells) {
         const $cell = $(cell);
         const text = this.cleanText($cell.text());
+        if (this.isHeaderLabel(text)) {
+          colIndex++;
+          continue;
+        }
         if (this.isPeriodLabel(text)) {
           const periods = this.parsePeriods(text);
           if (periods) {
@@ -56,7 +60,7 @@ export class ZhengfangParser extends ParserBase {
         }
         colIndex++;
         // 列索引对应星期：colIndex=2 → 周一
-        const weekday = colIndex - 1;
+        const weekday = colIndex - 2;
         if (weekday < 1 || weekday > 7) continue;
         const segments = this.splitCellSegments($, $cell);
         for (const seg of segments) {
@@ -97,10 +101,7 @@ export class ZhengfangParser extends ParserBase {
   /** 解析单门课程段，按行匹配字段 */
   private parseSegment(seg: string, weekday: number, fallbackPeriod: number): ParsedCourse | null {
     if (!seg) return null;
-    const lines = seg
-      .split(/\n|，|,| {2,}/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const lines = this.splitCourseFields(seg);
     if (lines.length === 0) return null;
     const course: ParsedCourse = { weekday, color: pickColor(lines[0]) };
     course.name = lines[0];

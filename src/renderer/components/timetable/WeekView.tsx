@@ -2,7 +2,7 @@
 // 课程卡片按颜色背景渲染（半透明），参考 Wake Up 课程表样式。
 // 点击空白单元格触发 onAdd(weekday, period)，点击课程卡片触发 onEdit(course)。
 import { useMemo, type CSSProperties } from 'react';
-import { Button, InputNumber, Typography } from 'antd';
+import { Button, InputNumber, Typography, theme } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import type { Course, Weekday } from '../../../shared/types';
 
@@ -61,34 +61,41 @@ export default function WeekView({
     return Array.from({ length: periodCount }, (_, i) => i + 1);
   }, [periodCount]);
 
+  // 颜色一律取主题 token：写死浅色会让暗色模式与背景图/亚克力模式下表头变白条、文字读不清
+  const {
+    token: { colorFillQuaternary, colorBorderSecondary, colorText, colorTextTertiary },
+  } = theme.useToken();
+  const gridBorder = `1px solid ${colorBorderSecondary}`;
+
   // 网格布局：第一列节次标尺（48px），其后 7 列等宽
   const gridStyle: CSSProperties = {
     display: 'grid',
     gridTemplateColumns: `48px repeat(7, 1fr)`,
-    border: '1px solid #f0f0f0',
+    border: gridBorder,
     borderRadius: 6,
     overflow: 'hidden',
   };
   const headerCellStyle: CSSProperties = {
     padding: '8px 0',
     textAlign: 'center',
-    background: '#fafafa',
-    borderBottom: '1px solid #f0f0f0',
-    borderRight: '1px solid #f0f0f0',
+    background: colorFillQuaternary,
+    borderBottom: gridBorder,
+    borderRight: gridBorder,
     fontWeight: 600,
+    color: colorText,
   };
   const periodLabelStyle: CSSProperties = {
     padding: '4px 0',
     textAlign: 'center',
-    background: '#fafafa',
-    borderBottom: '1px solid #f0f0f0',
-    borderRight: '1px solid #f0f0f0',
+    background: colorFillQuaternary,
+    borderBottom: gridBorder,
+    borderRight: gridBorder,
     fontSize: 12,
-    color: '#888',
+    color: colorTextTertiary,
   };
   const cellStyle: CSSProperties = {
-    borderBottom: '1px solid #f0f0f0',
-    borderRight: '1px solid #f0f0f0',
+    borderBottom: gridBorder,
+    borderRight: gridBorder,
     minHeight: 48,
     cursor: 'pointer',
     position: 'relative',
@@ -203,6 +210,10 @@ interface CourseCardProps {
 function CourseCard({ course, onEdit }: CourseCardProps) {
   const background = hexToRgba(course.color, 0.25);
   const borderLeft = `3px solid ${course.color}`;
+  // 卡片底色是课程色半透明，暗色下写死的灰字几乎与底色同亮度，必须跟随主题 token
+  const {
+    token: { colorTextSecondary, colorTextTertiary },
+  } = theme.useToken();
   return (
     <div
       style={{
@@ -225,12 +236,12 @@ function CourseCard({ course, onEdit }: CourseCardProps) {
         {course.name}
       </div>
       {course.location && (
-        <div style={{ color: '#555', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        <div style={{ color: colorTextSecondary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {course.location}
         </div>
       )}
       {course.teacher && (
-        <div style={{ color: '#777', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        <div style={{ color: colorTextTertiary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {course.teacher}
         </div>
       )}

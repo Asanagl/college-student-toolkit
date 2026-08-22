@@ -1,8 +1,8 @@
 // 日历视图组件：月历网格，支持月份切换与日程标记。
 // 使用 CSS Grid 自实现 7 列 × 6 行日历，周一为一周开始。
 // 导出日期工具函数供 SchedulePage 复用（按日期过滤日程、判断重复规则命中）。
-import { useMemo, useState, type CSSProperties } from 'react';
-import { Button, Typography } from 'antd';
+import { useMemo, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { Button, theme, Typography } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import type { Schedule } from '../../../shared/types';
 
@@ -80,12 +80,28 @@ function computeCalendarDays(viewDate: Date): Date[] {
   return days;
 }
 
-// 彩色圆点配色，最多显示 3 个
-const DOT_COLORS = ['#1677ff', '#52c41a', '#faad14'];
-
 export default function CalendarView({ schedules, selectedDate, onSelectDate }: CalendarViewProps) {
   // viewDate 控制当前显示的月份，初始与 selectedDate 同月
   const [viewDate, setViewDate] = useState(() => new Date(selectedDate));
+
+  // 取语义 token 而非写死色值，否则暗色/背景图模式下这块会保持白底与周围割裂
+  const {
+    token: {
+      colorBgContainer,
+      colorFillQuaternary,
+      colorPrimaryBg,
+      colorBorderSecondary,
+      colorText,
+      colorTextTertiary,
+      colorTextQuaternary,
+      colorPrimary,
+      colorSuccess,
+      colorWarning,
+    },
+  } = theme.useToken();
+
+  // 彩色圆点配色，最多显示 3 个
+  const dotColors = [colorPrimary, colorSuccess, colorWarning];
 
   const days = useMemo(() => computeCalendarDays(viewDate), [viewDate]);
   const todayKey = formatDateKey(new Date());
@@ -123,11 +139,19 @@ export default function CalendarView({ schedules, selectedDate, onSelectDate }: 
     }
   };
 
+  // 日期格是 div 不是 button，需手动补键盘触发，否则纯键盘用户无法选日期
+  const handleCellKeyDown = (e: KeyboardEvent<HTMLDivElement>, day: Date) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault(); // 阻止空格滚动页面
+      handleCellClick(day);
+    }
+  };
+
   const title = `${viewDate.getFullYear()}年${viewDate.getMonth() + 1}月`;
 
   const cellStyle: CSSProperties = {
     minHeight: 80,
-    border: '1px solid #f0f0f0',
+    border: `1px solid ${colorBorderSecondary}`,
     padding: 4,
     cursor: 'pointer',
     display: 'flex',
@@ -183,7 +207,7 @@ export default function CalendarView({ schedules, selectedDate, onSelectDate }: 
       {/* 周表头 */}
       <div style={headerStyle}>
         {WEEKDAY_LABELS.map((label) => (
-          <div key={label} style={{ padding: '4px 0', color: '#888', fontSize: 13 }}>
+          <div key={label} style={{ padding: '4px 0', color: colorTextTertiary, fontSize: 13 }}>
             {label}
           </div>
         ))}
@@ -196,13 +220,20 @@ export default function CalendarView({ schedules, selectedDate, onSelectDate }: 
           const isToday = key === todayKey;
           const isSelected = key === selectedKey;
           const count = scheduleCountByDate.get(key) ?? 0;
-          const background = isSelected ? '#e6f4ff' : isToday ? '#fafafa' : '#fff';
-          const color = isCurrentMonth ? '#333' : '#bbb';
+          const background = isSelected
+            ? colorPrimaryBg
+            : isToday
+              ? colorFillQuaternary
+              : colorBgContainer;
+          const color = isCurrentMonth ? colorText : colorTextQuaternary;
           return (
             <div
               key={key}
               style={{ ...cellStyle, background, color }}
               onClick={() => handleCellClick(day)}
+              onKeyDown={(e) => handleCellKeyDown(e, day)}
+              role="button"
+              tabIndex={0}
             >
               <span style={{ fontWeight: isToday ? 600 : 400 }}>{day.getDate()}</span>
               {/* 彩色圆点标记，最多 3 个 */}
@@ -215,7 +246,7 @@ export default function CalendarView({ schedules, selectedDate, onSelectDate }: 
                         width: 6,
                         height: 6,
                         borderRadius: '50%',
-                        background: DOT_COLORS[i % DOT_COLORS.length],
+                        background: dotColors[i % dotColors.length],
                         display: 'inline-block',
                       }}
                     />
