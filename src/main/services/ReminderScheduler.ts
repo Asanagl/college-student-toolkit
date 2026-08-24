@@ -1,5 +1,5 @@
 // 统一提醒调度器：四类业务共用一个可重算、可持久化去重的时钟。
-// 每次扫描只处理当前时间附近的提醒，系统休眠或时钟跳变后下一次扫描会自愈。
+// 扫描游标和失败重试状态让系统休眠或时钟跳变后仍能补发提醒。
 import { app } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -21,10 +21,13 @@ const TICK_WINDOW_MS = 60_000;
 const SCAN_INTERVAL_MS = 60_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETENTION_MS = 30 * DAY_MS;
+const MAX_OCCURRENCES_PER_ITEM = 1000;
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 
 interface ReminderState {
   sent: Record<string, string>;
+  retry: Record<string, string>;
+  lastScan?: string;
 }
 
 interface ReminderEvent {
@@ -114,15 +117,18 @@ function dateKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function isNear(now: Date, target: Date): boolean {
-  return Math.abs(now.getTime() - target.getTime()) <= TICK_WINDOW_MS;
+function isWithinWindow(target: Date, from: Date, to: Date): boolean {
+  const timestamp = target.getTime();
+  return timestamp >= from.getTime() && timestamp <= to.getTime();
 }
 
 export class ReminderScheduler {
   private static instance: ReminderScheduler | null = null;
   private initialized = false;
   private timer: TimeoutHandle | null = null;
-  private state: ReminderState = { sent: {} };
+  private state: ReminderState = { sent: {}, retry: {} };
+  private recomputeRunning: Promise<void> | null = null;
+  private recomputeRequested = false;
   private statePath = "";
   private readonly dataSource: ReminderDataSource;
   private readonly notificationSink: ReminderNotificationSink;
@@ -160,52 +166,93 @@ export class ReminderScheduler {
     );
     this.state = this.readState();
     this.initialized = true;
-    await this.tick();
-    this.scheduleNext();
+    await this.recompute();
   }
 
   async recompute(): Promise<void> {
     if (!this.initialized) return;
-    if (this.timer) this.clearScheduleTimer(this.timer);
-    this.timer = null;
-    await this.tick();
-    this.scheduleNext();
+    this.recomputeRequested = true;
+    if (this.recomputeRunning) return this.recomputeRunning;
+    const run = (async () => {
+      while (this.initialized && this.recomputeRequested) {
+        this.recomputeRequested = false;
+        if (this.timer) this.clearScheduleTimer(this.timer);
+        this.timer = null;
+        await this.tick();
+      }
+      if (this.initialized) this.scheduleNext();
+    })();
+    this.recomputeRunning = run;
+    try {
+      await run;
+    } finally {
+      if (this.recomputeRunning === run) this.recomputeRunning = null;
+      if (this.initialized && this.recomputeRequested && !this.recomputeRunning)
+        void this.recompute();
+    }
   }
 
   async dispose(): Promise<void> {
+    this.initialized = false;
+    this.recomputeRequested = false;
     if (this.timer) this.clearScheduleTimer(this.timer);
     this.timer = null;
+    await this.recomputeRunning?.catch(() => undefined);
     this.writeState();
-    this.initialized = false;
   }
 
   private async tick(): Promise<void> {
     const now = this.now();
+    const previousScan = this.readLastScan();
+    const scanFrom =
+      previousScan && previousScan.getTime() <= now.getTime()
+        ? previousScan
+        : new Date(now.getTime() - TICK_WINDOW_MS);
     this.pruneState(now);
     await this.notificationSink.flushDndSummary(now);
-    for (const event of this.collectEvents(now)) await this.deliver(event);
+    let hasFailure = false;
+    for (const event of this.collectEvents(now, scanFrom))
+      if (!(await this.deliver(event))) hasFailure = true;
+    if (!hasFailure) this.state.lastScan = now.toISOString();
     this.writeState();
   }
 
-  private collectEvents(now: Date): ReminderEvent[] {
+  private collectEvents(now: Date, scanFrom: Date): ReminderEvent[] {
     const events = [
-      ...this.scheduleEvents(this.dataSource.schedules.list(), now),
+      ...this.scheduleEvents(this.dataSource.schedules.list(), scanFrom, now),
       ...this.examEvents(this.dataSource.exams.list()),
       ...this.labEvents(this.dataSource.labs.list()),
-      ...this.courseEvents(this.dataSource.courses.list(), now),
+      ...this.courseEvents(this.dataSource.courses.list(), scanFrom, now),
     ];
-    return events.filter((event) => isNear(now, event.at));
+    return events.filter(
+      (event) =>
+        isWithinWindow(event.at, scanFrom, now) ||
+        Boolean(this.state.retry[event.key]),
+    );
   }
 
-  private scheduleEvents(items: Schedule[], now: Date): ReminderEvent[] {
+  private scheduleEvents(
+    items: Schedule[],
+    scanFrom: Date,
+    now: Date,
+  ): ReminderEvent[] {
     return items.flatMap((item) => {
       const start = new Date(item.startTime);
       if (Number.isNaN(start.getTime())) return [];
-      const occurrence = this.nearestOccurrence(start, item.repeatRule, now);
-      if (!occurrence) return [];
-      const at = computeTriggerTime(occurrence, item.reminderOffset);
-      return [
-        {
+      const occurrenceFrom = new Date(
+        scanFrom.getTime() - Math.max(0, item.reminderOffset) * 60_000,
+      );
+      const occurrenceTo = new Date(
+        now.getTime() + Math.max(0, item.reminderOffset) * 60_000,
+      );
+      return this.occurrencesBetween(
+        start,
+        item.repeatRule,
+        occurrenceFrom,
+        occurrenceTo,
+      ).map((occurrence) => {
+        const at = computeTriggerTime(occurrence, item.reminderOffset);
+        return {
           key: this.key("schedule", item.id, occurrence, item.reminderOffset),
           at,
           payload: {
@@ -214,8 +261,8 @@ export class ReminderScheduler {
             source: "schedule",
             refId: item.id,
           },
-        },
-      ];
+        };
+      });
     });
   }
 
@@ -273,32 +320,50 @@ export class ReminderScheduler {
     });
   }
 
-  private courseEvents(items: Course[], now: Date): ReminderEvent[] {
+  private courseEvents(
+    items: Course[],
+    scanFrom: Date,
+    now: Date,
+  ): ReminderEvent[] {
     const preferences = this.timetableSource.getPreferences().data;
     if (!preferences?.semesterStart) return [];
     const semesterStart = new Date(`${preferences.semesterStart}T00:00:00`);
     if (Number.isNaN(semesterStart.getTime())) return [];
-    const today = startOfDay(now);
-    if (dayNumber(today) < dayNumber(semesterStart)) return [];
-    const week =
-      Math.floor((dayNumber(today) - dayNumber(semesterStart)) / (7 * DAY_MS)) +
-      1;
-    const weekday = now.getDay() || 7;
     const periods = this.dataSource.periodConfig.getAll();
-    return items.flatMap((item) => {
-      if (
-        week < item.startWeek ||
-        week > item.endWeek ||
-        item.weekday !== weekday
-      )
-        return [];
-      const period = periods.find((value) => value.index === item.startPeriod);
-      if (!period) return [];
-      const classStart = parseLocalDateTime(dateKey(today), period.startTime);
-      if (!classStart) return [];
-      const at = computeTriggerTime(classStart, period.reminderOffset);
-      return [
-        {
+    const maxOffset = Math.max(
+      0,
+      ...periods.map((period) => Math.max(0, period.reminderOffset)),
+    );
+    const firstDay = startOfDay(
+      new Date(scanFrom.getTime() - maxOffset * 60_000),
+    );
+    const lastDay = startOfDay(now);
+    const events: ReminderEvent[] = [];
+    for (
+      const day = new Date(firstDay);
+      dayNumber(day) <= dayNumber(lastDay);
+      day.setDate(day.getDate() + 1)
+    ) {
+      if (dayNumber(day) < dayNumber(semesterStart)) continue;
+      const week =
+        Math.floor((dayNumber(day) - dayNumber(semesterStart)) / (7 * DAY_MS)) +
+        1;
+      const weekday = day.getDay() || 7;
+      for (const item of items) {
+        if (
+          week < item.startWeek ||
+          week > item.endWeek ||
+          item.weekday !== weekday
+        )
+          continue;
+        const period = periods.find(
+          (value) => value.index === item.startPeriod,
+        );
+        if (!period) continue;
+        const classStart = parseLocalDateTime(dateKey(day), period.startTime);
+        if (!classStart) continue;
+        const at = computeTriggerTime(classStart, period.reminderOffset);
+        events.push({
           key: this.key(
             "timetable",
             item.id,
@@ -312,15 +377,75 @@ export class ReminderScheduler {
             source: "timetable",
             refId: item.id,
           },
-        },
-      ];
-    });
+        });
+      }
+    }
+    return events;
   }
 
-  private async deliver(event: ReminderEvent): Promise<void> {
-    if (this.state.sent[event.key]) return;
+  private async deliver(event: ReminderEvent): Promise<boolean> {
+    if (this.state.sent[event.key]) return true;
+    // 先预占去重键，避免多个异步发送路径在 await 期间重复通知。
+    this.state.sent[event.key] = this.now().toISOString();
+    this.writeState();
     const result = await this.notificationSink.send(event.payload);
-    if (result.ok) this.state.sent[event.key] = this.now().toISOString();
+    if (result.ok) {
+      delete this.state.retry[event.key];
+      return true;
+    }
+    delete this.state.sent[event.key];
+    this.state.retry[event.key] = this.now().toISOString();
+    return false;
+  }
+
+  private occurrencesBetween(
+    start: Date,
+    rule: Schedule["repeatRule"],
+    from: Date,
+    to: Date,
+  ): Date[] {
+    if (to.getTime() < start.getTime() || from.getTime() > to.getTime())
+      return [];
+    if (rule === "none")
+      return start.getTime() >= from.getTime() &&
+        start.getTime() <= to.getTime()
+        ? [start]
+        : [];
+    const occurrences: Date[] = [];
+    if (rule === "daily" || rule === "weekly") {
+      const stepDays = rule === "daily" ? 1 : 7;
+      const stepMs = stepDays * DAY_MS;
+      const estimated = Math.max(
+        0,
+        Math.floor((from.getTime() - start.getTime()) / stepMs) - 1,
+      );
+      const cursor = new Date(start);
+      cursor.setDate(start.getDate() + estimated * stepDays);
+      for (
+        let index = 0;
+        index < MAX_OCCURRENCES_PER_ITEM && cursor.getTime() <= to.getTime();
+        index += 1
+      ) {
+        if (cursor.getTime() >= from.getTime())
+          occurrences.push(new Date(cursor));
+        cursor.setDate(cursor.getDate() + stepDays);
+      }
+      return occurrences;
+    }
+    const monthDistance =
+      (from.getFullYear() - start.getFullYear()) * 12 +
+      from.getMonth() -
+      start.getMonth();
+    for (
+      let offset = Math.max(0, monthDistance - 1), index = 0;
+      index < MAX_OCCURRENCES_PER_ITEM;
+      offset += 1, index += 1
+    ) {
+      const occurrence = addMonthsPreservingDay(start, offset);
+      if (occurrence.getTime() > to.getTime()) break;
+      if (occurrence.getTime() >= from.getTime()) occurrences.push(occurrence);
+    }
+    return occurrences;
   }
 
   private nearestOccurrence(
@@ -381,16 +506,34 @@ export class ReminderScheduler {
       ) as Partial<ReminderState>;
       const sent =
         value.sent && typeof value.sent === "object" ? value.sent : {};
+      const retry =
+        value.retry && typeof value.retry === "object" ? value.retry : {};
       return {
         sent: Object.fromEntries(
           Object.entries(sent).filter(
             ([, timestamp]) => typeof timestamp === "string",
           ),
         ),
+        retry: Object.fromEntries(
+          Object.entries(retry).filter(
+            ([, timestamp]) => typeof timestamp === "string",
+          ),
+        ),
+        lastScan:
+          typeof value.lastScan === "string" &&
+          Number.isFinite(Date.parse(value.lastScan))
+            ? value.lastScan
+            : undefined,
       };
     } catch {
-      return { sent: {} };
+      return { sent: {}, retry: {} };
     }
+  }
+
+  private readLastScan(): Date | null {
+    if (!this.state.lastScan) return null;
+    const timestamp = Date.parse(this.state.lastScan);
+    return Number.isFinite(timestamp) ? new Date(timestamp) : null;
   }
 
   private writeState(): void {
@@ -407,6 +550,11 @@ export class ReminderScheduler {
       const value = Date.parse(timestamp);
       if (!Number.isFinite(value) || value < cutoff)
         delete this.state.sent[key];
+    }
+    for (const [key, timestamp] of Object.entries(this.state.retry)) {
+      const value = Date.parse(timestamp);
+      if (!Number.isFinite(value) || value < cutoff)
+        delete this.state.retry[key];
     }
   }
 

@@ -9,6 +9,7 @@ import { createServer, type Server } from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as zlib from "node:zlib";
 
 test.setTimeout(120_000);
 
@@ -25,7 +26,7 @@ const entryFixturePath = path.resolve(
 const courseFixturePath = path.resolve(
   "tests/fixtures/import-browser-course.html",
 );
-const ocrModelPath = path.resolve("chi_sim.traineddata");
+const ocrArchivePath = path.resolve("ocr-chi-sim-1.0.0.traineddata.gz");
 
 function createProfile(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "college-toolkit-import-"));
@@ -76,8 +77,8 @@ async function launchPackaged(profile: string): Promise<AppSession> {
 }
 
 function seedOcrComponent(profile: string): void {
-  if (!fs.existsSync(ocrModelPath)) {
-    throw new Error(`找不到本地 OCR fixture：${ocrModelPath}`);
+  if (!fs.existsSync(ocrArchivePath)) {
+    throw new Error(`找不到仓库内 OCR fixture：${ocrArchivePath}`);
   }
   const target = path.join(
     profile,
@@ -87,7 +88,7 @@ function seedOcrComponent(profile: string): void {
     "chi_sim.traineddata",
   );
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.copyFileSync(ocrModelPath, target);
+  fs.writeFileSync(target, zlib.gunzipSync(fs.readFileSync(ocrArchivePath)));
 }
 
 async function autoApproveHttp(app: ElectronApplication): Promise<void> {
@@ -140,6 +141,34 @@ async function remoteEvaluate<T>(
 async function closeSession(session: AppSession | undefined): Promise<void> {
   await session?.app.close();
 }
+
+test("OCR 未安装时 packaged DOM 导入仍可用", async () => {
+  const profile = createProfile();
+  let session: AppSession | undefined;
+  try {
+    session = await launchPackaged(profile);
+    const status = await session.page.evaluate(() =>
+      window.api.ocrComponent.getStatus(),
+    );
+    const fixtureHtml = fs.readFileSync(courseFixturePath, "utf8");
+    const parsed = await session.page.evaluate(
+      (html) => window.api.importBrowser.parseDom(html),
+      fixtureHtml,
+    );
+
+    expect(status).toMatchObject({
+      ok: true,
+      data: { state: "not-installed", currentBytes: 0 },
+    });
+    expect(parsed).toMatchObject({
+      ok: true,
+      data: [{ name: "数据结构", location: "教学楼C303" }],
+    });
+  } finally {
+    await closeSession(session);
+    fs.rmSync(profile, { recursive: true, force: true });
+  }
+});
 
 test("fixture 教务站支持 HTTP 确认、window.open、DOM/OCR 冲突合并", async () => {
   const profile = createProfile();

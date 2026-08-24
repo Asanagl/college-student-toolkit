@@ -410,4 +410,67 @@ describe("教务课程 DOM 解析", () => {
     });
     expect(parseDomForLabs("")).toEqual([]);
   });
+
+  it("处理文本单元格的节次回退和稀疏专用表格", () => {
+    const courseHeaders = "<tr><th>节次</th><th>占位</th><th>周一</th></tr>";
+    const qingguo = new QingguoParser().parse(
+      `<table class="kbtable">${courseHeaders}<tr><td>第4节</td><td></td><td>离散数学</td></tr></table>`,
+    );
+    const urp = new UrpParser().parse(
+      `<table class="rowClasses">${courseHeaders}<tr><td>第5节</td><td></td><td>操作系统</td></tr></table>`,
+    );
+    const zhengfang = new ZhengfangParser().parse(
+      `<table id="Table1">${courseHeaders}<tr><td>第6节</td><td></td><td>计算机网络</td></tr></table>`,
+    );
+
+    expect(qingguo[0]).toMatchObject({
+      name: "离散数学",
+      weekday: 1,
+      startPeriod: 4,
+      endPeriod: 4,
+    });
+    expect(urp[0]).toMatchObject({
+      name: "操作系统",
+      weekday: 1,
+      startPeriod: 5,
+      endPeriod: 5,
+    });
+    expect(zhengfang[0]).toMatchObject({
+      name: "计算机网络",
+      weekday: 1,
+      startPeriod: 6,
+      endPeriod: 6,
+    });
+    expect(new QingguoParser().detect("<title>青果课表</title>")).toBe(false);
+    expect(new UrpParser().detect("<title>URP</title>")).toBe(false);
+    expect(
+      new ZhengfangParser().detect("<title>正方教务</title><table></table>"),
+    ).toBe(false);
+
+    const exam = new ZhengfangExamParser().parse(`
+      <table id="Table1">
+        <tr><th>未知 A</th><th>未知 B</th><th>未知 C</th><th>未知 D</th></tr>
+        <tr><td></td><td>教学楼A101#</td><td>2026-01-11 09:00-10:00</td><td>离散数学</td></tr>
+      </table>`);
+    expect(exam[0]).toMatchObject({
+      courseName: "离散数学",
+      date: "2026-01-11",
+      startTime: "09:00",
+      endTime: "10:00",
+      location: "教学楼A101#",
+    });
+
+    const lab = new ZhengfangLabParser().parse(`
+      <table id="Table1">
+        <tr><th>未知 A</th><th>未知 B</th><th>未知 C</th><th>未知 D</th></tr>
+        <tr><td></td><td>实验室B201#</td><td>2026-01-12 13:00-15:00</td><td>系统实验</td></tr>
+      </table>`);
+    expect(lab[0]).toMatchObject({
+      name: "系统实验",
+      date: "2026-01-12",
+      startTime: "13:00",
+      endTime: "15:00",
+      location: "实验室B201#",
+    });
+  });
 });

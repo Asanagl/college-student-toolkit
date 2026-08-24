@@ -2,7 +2,9 @@
 
 > 发布路线变更记录（2026-08-21）：用户已决定通过 Microsoft Store 分发 MSIX，正式渠道不再以购买 OV Authenticode 证书为前提。本计划保留 NSIS 作为本地 RC/备用构建，但 Store 版本由 Microsoft Store 负责签名、分发和更新。下文凡与 OV 证书、RFC 3161、GitHub Stable 自动更新相关的旧条目，均按本变更说明替换；未完成的 Store 外部验收不得被本地构建结果代替。
 
-> 当前执行记录（2026-08-23）：针对导入浏览器 generation 清理竞态修复重建的正式身份本地候选为 `release-v0.3.0-msix-store-v13/college-student-toolkit-0.3.5-x64.msix`，产品版本为 `0.3.0`，MSIX Identity Version 为 `0.3.5.0`，大小为 `135,698,379` bytes，SHA-256 为 `ADBB80C6509A58F70F3F83C24301869440A2C69A833787E3C6A61B8745FB34CB`。v13 已通过本地 manifest、x64 native binding、隔离启动、packaged E2E 和运行时产品版本检查；Partner Center 包页已完成分析并显示 `Validated`，已保存到 Submission 1。页面仍提示 `runFullTrust` 受限功能需要审批；Submission 1 仍为草稿，属性、IARC 年龄分级、Store 一览、定价/可用性和提交选项仍有必填项，当前仍不能称为 Store Stable。
+> **当前交付修订（2026-08-24，优先于本文件中旧 v14/v15/v18 记录）**：当前本地候选为 `release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix`，产品版本 `0.3.0`、MSIX Identity Version `0.3.11.0`、大小 `136,149,552` bytes、SHA-256 `047D764C1187669C0CECA578CC00AE6DD9880EC7EAA406D95186B83F5EA2BF6F`。本轮完成提醒休眠补扫/串行重算、OCR 重定向 allowlist、性能报告 required metric 门禁、OCR fixture 可复现修复、编译、封装和静态包核对；受影响提醒/OCR 单元测试及类型检查已通过，完整门禁、实机验收和长性能采样仍未完成。它未签名；当前 Partner Center 草稿页面可见 `0.3.7.0` 和 `0.3.6.0` 包，但没有 v19，原生/扩展文件选择上传仍未成功，最新只能称为“本地 RC / Microsoft Store 提交候选”。最终 Store 审核、`runFullTrust` 审批、资料/定价/IARC 法定确认、实际 Store 安装更新卸载、v0.2 迁移及真实教务导入仍未完成。交付和操作流程以 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md) 为准。
+
+> 历史执行记录（2026-08-23）：针对导入浏览器 generation 清理竞态修复重建的正式身份候选为 v14 `release-v0.3.0-msix-store-v14/college-student-toolkit-0.3.6-x64.msix`；该包已在 Partner Center 分析并保存为 `Validated`。它不是当前 v19。2026-08-24 页面同时显示旧 `0.3.6.0` 与 `0.3.7.0` 包，v19 尚未上传；商店资料、`runFullTrust` 审批、认证、审核、公开发布和实机验收仍未完成。
 
 ## 一、目标、交付边界与已锁定决策
 
@@ -486,7 +488,7 @@
    - `app/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node`；
    - AppX/MSIX 所需的 manifest、block map、内容类型和多尺寸图标。
 
-4. 运行 `npm run verify:appx`，确认基础包版本为 `0.3.0.0`；如为 Partner Center 重传候选，则显式设置 `APPX_EXPECTED_VERSION=0.3.5.0`，并确认架构为 x64、显示名和 executable 正确、原生模块为 x64 PE，且 Store 包不含 `app-update.yml`。产品版本仍为 `0.3.0`，Store 身份版本使用三段 `0.3.5` 以生成第四段为零的 `0.3.5.0`。
+4. 运行 `npm run verify:appx`，确认基础包版本为 `0.3.0.0`；如为 Partner Center 重传候选，则显式设置 `APPX_EXPECTED_VERSION=0.3.11.0`，并确认架构为 x64、显示名和 executable 正确、原生模块为 x64 PE，且 Store 包不含 `app-update.yml`。产品版本仍为 `0.3.0`，Store 身份版本使用三段 `0.3.11` 以生成第四段为零的 `0.3.11.0`。
 5. 运行 `npm run test:smoke:appx`，以隔离 `userData` 启动 unpacked AppX 产物，确认 schema 2、七张业务表和默认 GPA 公式；该 smoke 不修改用户数据。
 6. `npm run package:win` 只生成 NSIS 本地 RC/备用渠道；它不是 Store 正式交付物，也不得与 Store 更新链路混用。
 7. 生成的图标必须覆盖主程序、AppX/MSIX tile、快捷方式、托盘和通知；本仓库已生成可复现的 PNG/ICO/AppX 资源，正式品牌母版仍由用户确认。
@@ -500,7 +502,7 @@
    - `APPX_APPLICATION_ID`；
    - `APPX_PUBLISHER`；
    - 可选的 `APPX_PUBLISHER_DISPLAY_NAME` 和 `APPX_OUTPUT_DIR`。
-   - 重新上传同一产品版本时，必须显式设置三段 `APPX_PACKAGE_VERSION`（当前候选为 `0.3.5`），脚本会生成 `0.3.5.0`；旧的 `APPX_SET_BUILD_NUMBER` / `APPX_BUILD_NUMBER` 会被拒绝。
+   - 重新上传同一产品版本时，必须显式设置三段 `APPX_PACKAGE_VERSION`（当前候选为 `0.3.11`），脚本会生成 `0.3.11.0`；旧的 `APPX_SET_BUILD_NUMBER` / `APPX_BUILD_NUMBER` 会被拒绝。
 
 3. 仓库、日志和构建环境不得保存 Microsoft 账号密码、Cookie、私钥、云签名凭据或 Partner Center 访问令牌。构建脚本缺少 identity 或发现 `CN=ms` 时必须失败。
 4. 提交前由 Partner Center 核对包的 Identity Name、Application ID、Publisher、Publisher ID、Package Family Name、架构、版本和显示名；身份不一致时停止提交。

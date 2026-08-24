@@ -12,6 +12,7 @@ interface ConflictResolverProps {
   open: boolean;
   domCourses: ParsedCourse[];
   ocrCourses: ParsedCourse[];
+  submitting?: boolean;
   onConfirm: (courses: ParsedCourse[]) => void;
   onCancel: () => void;
 }
@@ -88,6 +89,7 @@ export default function ConflictResolver({
   open,
   domCourses,
   ocrCourses,
+  submitting = false,
   onConfirm,
   onCancel,
 }: ConflictResolverProps) {
@@ -227,10 +229,10 @@ export default function ConflictResolver({
       onCancel={onCancel}
       width={960}
       footer={[
-        <Button key="cancel" onClick={onCancel}>
+        <Button key="cancel" onClick={onCancel} disabled={submitting}>
           取消
         </Button>,
-        <Button key="confirm" type="primary" onClick={handleConfirm}>
+        <Button key="confirm" type="primary" onClick={handleConfirm} loading={submitting} disabled={submitting}>
           确认导入
         </Button>,
       ]}

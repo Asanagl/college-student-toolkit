@@ -47,6 +47,7 @@ export class UpdateService {
   private static instance: UpdateService | null = null;
   private initialized = false;
   private checkTimer: NodeJS.Timeout | null = null;
+  private updaterInitialized = false;
 
   private constructor() {}
 
@@ -77,6 +78,7 @@ export class UpdateService {
     }
 
     // 自动后台下载；下载完成后不自动安装，由用户在 UI 确认
+    this.updaterInitialized = true;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = false;
     // Stable 通道不接受预发布版本或降级，避免把测试包推给正式用户。
@@ -202,12 +204,15 @@ export class UpdateService {
   async dispose(): Promise<void> {
     if (this.checkTimer) clearTimeout(this.checkTimer);
     this.checkTimer = null;
-    // 移除所有监听器避免内存泄漏
-    try {
-      autoUpdater.removeAllListeners();
-    } catch {
-      // 释放阶段忽略错误，继续清理
+    // Store/development 从未接触 electron-updater；不要在退出时触发其惰性 getter。
+    if (this.updaterInitialized) {
+      try {
+        autoUpdater.removeAllListeners();
+      } catch {
+        // 释放阶段忽略错误，继续清理
+      }
     }
+    this.updaterInitialized = false;
     this.initialized = false;
   }
 }

@@ -39,6 +39,8 @@ const electronMocks = vi.hoisted(() => {
       getEntryAtIndex: (index: number) => this.historyEntries[index] ?? null,
       length: () => this.historyEntries.length,
     };
+    // Electron does not emit will-frame-navigate for programmatic APIs such as
+    // loadURL/back/reload. User/page navigation is simulated explicitly in tests.
     loadURL = vi.fn(async (url: string) => {
       this.currentUrl = url;
       this.emit("did-navigate", {}, url);
@@ -70,7 +72,9 @@ const electronMocks = vi.hoisted(() => {
     }
 
     close(): void {
+      if (this.destroyed) return;
       this.destroyed = true;
+      this.emit("destroyed");
     }
   }
 
@@ -97,6 +101,7 @@ const electronMocks = vi.hoisted(() => {
     destroy(): void {
       if (this.destroyed) return;
       this.destroyed = true;
+      this.webContents.close();
       this.emit("closed");
     }
 
@@ -319,6 +324,31 @@ describe("教务导入临时窗口生命周期与导航安全", () => {
     await expect(dispose).resolves.toBeUndefined();
   });
 
+  it("处置开始后阻断并发打开，直到清理完成", async () => {
+    await service.init();
+    await openForInteraction();
+    const firstSession = electronMocks.FakeSession.instances[0];
+    let releaseCleanup!: () => void;
+    firstSession.clearStorageData.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseCleanup = resolve;
+        }),
+    );
+
+    const close = service.closeBrowser();
+    await Promise.resolve();
+    await Promise.resolve();
+    const dispose = service.dispose();
+    await expect(service.openBrowser()).resolves.toMatchObject({ ok: false });
+    expect(electronMocks.FakeBrowserWindow.instances).toHaveLength(1);
+
+    releaseCleanup();
+    await expect(close).resolves.toMatchObject({ ok: true });
+    await expect(dispose).resolves.toBeUndefined();
+    expect(electronMocks.FakeBrowserWindow.instances).toHaveLength(1);
+  });
+
   it("清理失败时阻止新一代，成功重试后才恢复", async () => {
     const first = await openForInteraction();
     const firstSession = electronMocks.FakeSession.instances[0];
@@ -413,6 +443,17 @@ describe("教务导入临时窗口生命周期与导航安全", () => {
     expect(view.webContents.isDestroyed()).toBe(true);
   });
 
+  it("远程 view 被单独销毁时也终结请求并清理临时 session", async () => {
+    const { completion, window, view } = await openForInteraction();
+    view.webContents.close();
+
+    await expect(completion).resolves.toMatchObject({ ok: true });
+    expect(window.destroyed).toBe(true);
+    expect(
+      electronMocks.FakeSession.instances[0].clearStorageData,
+    ).toHaveBeenCalled();
+  });
+
   it("处理 HTTPS、HTTP 审批、历史导航和刷新", async () => {
     await service.init();
     const { window, view, action } = await openForInteraction();
@@ -424,6 +465,7 @@ describe("教务导入临时窗口生命周期与导航安全", () => {
     electronMocks.dialog.showMessageBox.mockResolvedValueOnce({ response: 1 });
     await action?.({ sender: window.webContents }, { type: "back" });
     expect(view.webContents.goToIndex).toHaveBeenCalledWith(1);
+    expect(electronMocks.dialog.showMessageBox).toHaveBeenCalledTimes(2);
 
     await action?.({ sender: window.webContents }, { type: "forward" });
     expect(view.webContents.goToIndex).toHaveBeenCalledWith(2);
@@ -451,6 +493,144 @@ describe("教务导入临时窗口生命周期与导航安全", () => {
     expect(electronMocks.dialog.showMessageBox.mock.calls.length).toBe(
       approvalCount + 1,
     );
+  });
+
+  it("历史导航和刷新会把 HTTP 确认绑定到实际导航事件", async () => {
+    await service.init();
+    const { window, view, action } = await openForInteraction();
+    electronMocks.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+
+    await action?.({ sender: window.webContents }, { type: "back" });
+    expect(view.webContents.goToIndex).toHaveBeenCalledWith(1);
+    expect(electronMocks.dialog.showMessageBox).toHaveBeenCalledTimes(1);
+
+    await action?.({ sender: window.webContents }, { type: "refresh" });
+    expect(view.webContents.reload).toHaveBeenCalledTimes(1);
+    expect(electronMocks.dialog.showMessageBox).toHaveBeenCalledTimes(2);
+  });
+
+  it("HTTPS 重定向会使旧 HTTP 确认失效", async () => {
+    await service.init();
+    const { window, view, action } = await openForInteraction();
+    let releaseLoad!: () => void;
+    view.webContents.loadURL.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseLoad = resolve;
+        }),
+    );
+    electronMocks.dialog.showMessageBox.mockResolvedValueOnce({ response: 1 });
+
+    const navigation = action?.(
+      { sender: window.webContents },
+      { type: "navigate", url: "http://jw.example.edu/approved" },
+    );
+    await vi.waitFor(() =>
+      expect(view.webContents.loadURL).toHaveBeenCalledWith(
+        "http://jw.example.edu/approved",
+      ),
+    );
+
+    const httpsRedirect = {
+      preventDefault: vi.fn(),
+      url: "https://jw.example.edu/secure",
+      isMainFrame: true,
+    };
+    view.webContents.emit("will-redirect", httpsRedirect);
+    expect(httpsRedirect.preventDefault).not.toHaveBeenCalled();
+
+    electronMocks.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 });
+    const staleHttp = {
+      preventDefault: vi.fn(),
+      url: "http://jw.example.edu/approved",
+      isMainFrame: true,
+    };
+    view.webContents.emit("will-redirect", staleHttp);
+    expect(staleHttp.preventDefault).toHaveBeenCalledTimes(1);
+
+    releaseLoad();
+    await navigation;
+    await Promise.resolve();
+    expect(electronMocks.dialog.showMessageBox).toHaveBeenCalledTimes(2);
+  });
+
+  it("快速连续工具栏导航会使旧请求失效并按顺序加载", async () => {
+    await service.init();
+    const { window, view, action } = await openForInteraction();
+    let releaseFirstLoad!: () => void;
+    view.webContents.loadURL.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFirstLoad = resolve;
+        }),
+    );
+    electronMocks.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+
+    const first = action?.(
+      { sender: window.webContents },
+      { type: "navigate", url: "http://jw.example.edu/approved" },
+    );
+    await vi.waitFor(() =>
+      expect(view.webContents.loadURL).toHaveBeenCalledWith(
+        "http://jw.example.edu/approved",
+      ),
+    );
+    const second = action?.(
+      { sender: window.webContents },
+      { type: "navigate", url: "https://jw.example.edu/new-request" },
+    );
+    await Promise.resolve();
+    expect(view.webContents.loadURL).not.toHaveBeenCalledWith(
+      "https://jw.example.edu/new-request",
+    );
+
+    releaseFirstLoad();
+    await first;
+    await vi.waitFor(() =>
+      expect(view.webContents.loadURL).toHaveBeenCalledWith(
+        "https://jw.example.edu/new-request",
+      ),
+    );
+    await second;
+    const changedUrls = window.webContents.send.mock.calls
+      .filter(([channel]) => channel === "import-browser:action")
+      .map(([, message]) => (message as { url?: string }).url);
+    expect(changedUrls).not.toContain("http://jw.example.edu/approved");
+    expect(changedUrls).toContain("https://jw.example.edu/new-request");
+  });
+
+  it("程序化 HTTP 导航事件只能消费当前请求的审批", async () => {
+    await service.init();
+    const { window, view, action } = await openForInteraction();
+    let releaseLoad!: () => void;
+    view.webContents.loadURL.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseLoad = resolve;
+        }),
+    );
+    electronMocks.dialog.showMessageBox.mockResolvedValueOnce({ response: 1 });
+
+    const navigation = action?.(
+      { sender: window.webContents },
+      { type: "navigate", url: "http://jw.example.edu/programmatic" },
+    );
+    await vi.waitFor(() =>
+      expect(view.webContents.loadURL).toHaveBeenCalledWith(
+        "http://jw.example.edu/programmatic",
+      ),
+    );
+
+    const event = {
+      preventDefault: vi.fn(),
+      url: "http://jw.example.edu/programmatic",
+      isMainFrame: true,
+    };
+    view.webContents.emit("will-frame-navigate", event);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+
+    releaseLoad();
+    await navigation;
   });
 
   it("拒绝无效发送者、危险导航和不安全子 frame", async () => {
@@ -557,6 +737,42 @@ describe("教务导入临时窗口生命周期与导航安全", () => {
     await first.action?.({ sender: first.window.webContents }, "back");
     await service.closeBrowser();
     await expect(secondCompletion).resolves.toMatchObject({ ok: true });
+  });
+
+  it("拒绝格式错误动作，并在窗口失效后安全降级", async () => {
+    await service.init();
+    const { window, view, action } = await openForInteraction();
+
+    await action?.({ sender: window.webContents }, 123);
+    await action?.(
+      { sender: window.webContents },
+      { type: "navigate", url: 123 },
+    );
+    await action?.(
+      { sender: window.webContents },
+      { type: "navigate", url: "file:///C:/secret.txt" },
+    );
+    expect(electronMocks.dialog.showMessageBox).toHaveBeenCalledWith(
+      window,
+      expect.objectContaining({ title: "地址不安全" }),
+    );
+    expect(view.webContents.loadURL).not.toHaveBeenCalledWith(
+      "file:///C:/secret.txt",
+    );
+
+    view.webContents.reload.mockImplementationOnce(() => {
+      throw new Error("reload failed");
+    });
+    await action?.({ sender: window.webContents }, "refresh");
+
+    window.destroyed = true;
+    window.emit("resize");
+    electronMocks.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 });
+    await action?.(
+      { sender: window.webContents },
+      { type: "navigate", url: "http://jw.example.edu/plain" },
+    );
+    await expect(service.closeBrowser()).resolves.toMatchObject({ ok: true });
   });
 
   it("提取超限或失败时清空结果并仍然清理 session", async () => {

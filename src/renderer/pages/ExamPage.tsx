@@ -1,6 +1,6 @@
 // 考试安排板块页面：考试列表 + 工具栏 + 添加/编辑对话框 + 自动导入流程。
 // 职责：管理考试数据、对话框开关状态、自动导入流程，向下分发数据与回调。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Card,
@@ -38,6 +38,24 @@ const TABLE_PAGINATION = {
 // 导入进度提示的固定 key：对话框遮罩挡住整个页面，只有全局 message 能透出进度
 const IMPORT_MSG_KEY = "exam-import-progress";
 
+type CompleteParsedExam = ParsedExam & {
+  courseName: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+};
+
+function hasCompleteExam(exam: ParsedExam): exam is CompleteParsedExam {
+  const isTime = (value: unknown): value is string =>
+    typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+  return Boolean(exam.courseName?.trim())
+    && typeof exam.date === "string"
+    && dayjs(exam.date, "YYYY-MM-DD", true).isValid()
+    && isTime(exam.startTime)
+    && isTime(exam.endTime)
+    && exam.startTime < exam.endTime;
+}
+
 export default function ExamPage() {
   const [exams, setExams] = useState<Exam[]>([]);
   const [loading, setLoading] = useState(false);
@@ -45,6 +63,7 @@ export default function ExamPage() {
   const [editingExam, setEditingExam] = useState<Exam | null>(null);
   // 保存/导入落库是逐条串行 await，期间对话框按钮仍可点击，用状态位挡住重复写入
   const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
 
   // 自动导入流程状态
   const [importing, setImporting] = useState(false);
@@ -177,23 +196,27 @@ export default function ExamPage() {
   };
 
   const handleConflictConfirm = async (merged: ParsedExam[]) => {
-    if (submitting) return; // 串行写库耗时长，必须挡住「确认导入」的重复点击
+    if (submitLock.current) return;
+    if (merged.some((exam) => !hasCompleteExam(exam))) {
+      message.error("请先补全每场考试的课程名、日期和起止时间；不完整的识别结果不会写入日程。");
+      return;
+    }
+    submitLock.current = true;
     setSubmitting(true);
     try {
       let success = 0;
       for (let i = 0; i < merged.length; i++) {
-        const e = merged[i];
+        const e = merged[i] as CompleteParsedExam;
         message.loading({
           content: `正在导入 ${i + 1}/${merged.length}…`,
           key: IMPORT_MSG_KEY,
           duration: 0,
         });
-        // 必填字段兜底
         const payload = {
-          courseName: e.courseName ?? `未命名考试${i + 1}`,
-          date: e.date ?? dayjs().format("YYYY-MM-DD"),
-          startTime: e.startTime ?? "09:00",
-          endTime: e.endTime ?? "11:00",
+          courseName: e.courseName.trim(),
+          date: e.date,
+          startTime: e.startTime,
+          endTime: e.endTime,
           location: e.location,
           seat: e.seat,
           notes: e.notes,
@@ -208,6 +231,7 @@ export default function ExamPage() {
     } finally {
       // 进度提示与成功提示是不同 key，销毁前者不会吞掉后者
       message.destroy(IMPORT_MSG_KEY);
+      submitLock.current = false;
       setSubmitting(false);
     }
   };
@@ -368,6 +392,7 @@ export default function ExamPage() {
         open={conflictOpen}
         domExams={domExams}
         ocrExams={ocrExams}
+        submitting={submitting}
         onConfirm={handleConflictConfirm}
         onCancel={() => setConflictOpen(false)}
       />

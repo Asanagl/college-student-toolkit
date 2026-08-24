@@ -12,12 +12,17 @@ import {
   type OcrComponentStatus,
 } from "../../shared/types";
 
+const OCR_COMPONENT_ASSET_URL =
+  "https://github.com/Asanagl/college-student-toolkit/releases/download/v0.3.0/ocr-chi-sim-1.0.0.traineddata.gz";
+const OCR_COMPONENT_REDIRECT_HOST = "release-assets.githubusercontent.com";
+const OCR_COMPONENT_REDIRECT_PATH =
+  "/github-production-release-asset/1290461151/dcbc1ea0-066c-4dcc-9285-c6ab238f9d24";
+
 export const OCR_COMPONENT_MANIFEST: OcrComponentManifest = {
   id: "ocr-chi-sim",
   version: "1.0.0",
   engine: "tesseract.js 5.x",
-  assetUrl:
-    "https://github.com/Asanagl/college-student-toolkit/releases/download/v0.3.0/ocr-chi-sim-1.0.0.traineddata.gz",
+  assetUrl: OCR_COMPONENT_ASSET_URL,
   compressedBytes: 1_710_883,
   extractedBytes: 2_471_033,
   compressedSha256:
@@ -40,6 +45,26 @@ function initialStatus(): OcrComponentStatus {
     totalBytes: OCR_COMPONENT_MANIFEST.extractedBytes,
     progress: 0,
   };
+}
+
+function isAllowedResponseUrl(responseUrl: unknown): boolean {
+  if (responseUrl === OCR_COMPONENT_ASSET_URL) return true;
+  if (typeof responseUrl !== "string") return false;
+  try {
+    const url = new URL(responseUrl);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === OCR_COMPONENT_REDIRECT_HOST &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.pathname === OCR_COMPONENT_REDIRECT_PATH &&
+      url.search !== "" &&
+      url.hash === ""
+    );
+  } catch {
+    return false;
+  }
 }
 
 export class OcrComponentService {
@@ -108,10 +133,12 @@ export class OcrComponentService {
     try {
       fs.mkdirSync(this.root, { recursive: true });
       fs.rmSync(partial, { force: true });
-      const response = await net.fetch(OCR_COMPONENT_MANIFEST.assetUrl, {
+      const response = await net.fetch(OCR_COMPONENT_ASSET_URL, {
         signal: this.controller.signal,
       });
       if (!response.ok) throw new Error(`下载失败：HTTP ${response.status}`);
+      if (!isAllowedResponseUrl(response.url))
+        throw new Error("OCR 下载响应 URL 不在允许范围内");
       const compressed = await this.downloadCompressed(response, partial);
       this.verifyCompressed(compressed);
       const extracted = zlib.gunzipSync(compressed);

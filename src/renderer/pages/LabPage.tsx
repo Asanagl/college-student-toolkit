@@ -1,5 +1,5 @@
 // 实验提醒板块页面：实验列表 + 工具栏 + 添加/编辑对话框 + 自动导入流程。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Card,
@@ -36,6 +36,24 @@ const TABLE_PAGINATION = {
 // 导入进度提示的固定 key：对话框遮罩挡住整个页面，只有全局 message 能透出进度
 const IMPORT_MSG_KEY = "lab-import-progress";
 
+type CompleteParsedLab = ParsedLab & {
+  name: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+};
+
+function hasCompleteLab(lab: ParsedLab): lab is CompleteParsedLab {
+  const isTime = (value: unknown): value is string =>
+    typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+  return Boolean(lab.name?.trim())
+    && typeof lab.date === "string"
+    && dayjs(lab.date, "YYYY-MM-DD", true).isValid()
+    && isTime(lab.startTime)
+    && isTime(lab.endTime)
+    && lab.startTime < lab.endTime;
+}
+
 export default function LabPage() {
   const [labs, setLabs] = useState<Lab[]>([]);
   const [loading, setLoading] = useState(false);
@@ -43,6 +61,7 @@ export default function LabPage() {
   const [editingLab, setEditingLab] = useState<Lab | null>(null);
   // 保存/导入落库是逐条串行 await，期间对话框按钮仍可点击，用状态位挡住重复写入
   const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
 
   // 自动导入流程状态
   const [importing, setImporting] = useState(false);
@@ -173,22 +192,27 @@ export default function LabPage() {
   };
 
   const handleConflictConfirm = async (merged: ParsedLab[]) => {
-    if (submitting) return; // 串行写库耗时长，必须挡住「确认导入」的重复点击
+    if (submitLock.current) return;
+    if (merged.some((lab) => !hasCompleteLab(lab))) {
+      message.error("请先补全每项实验的名称、日期和起止时间；不完整的识别结果不会写入日程。");
+      return;
+    }
+    submitLock.current = true;
     setSubmitting(true);
     try {
       let success = 0;
       for (let i = 0; i < merged.length; i++) {
-        const l = merged[i];
+        const l = merged[i] as CompleteParsedLab;
         message.loading({
           content: `正在导入 ${i + 1}/${merged.length}…`,
           key: IMPORT_MSG_KEY,
           duration: 0,
         });
         const payload = {
-          name: l.name ?? `未命名实验${i + 1}`,
-          date: l.date ?? dayjs().format("YYYY-MM-DD"),
-          startTime: l.startTime ?? "14:00",
-          endTime: l.endTime ?? "16:00",
+          name: l.name.trim(),
+          date: l.date,
+          startTime: l.startTime,
+          endTime: l.endTime,
           location: l.location,
           instructor: l.instructor,
           notes: l.notes,
@@ -203,6 +227,7 @@ export default function LabPage() {
     } finally {
       // 进度提示与成功提示是不同 key，销毁前者不会吞掉后者
       message.destroy(IMPORT_MSG_KEY);
+      submitLock.current = false;
       setSubmitting(false);
     }
   };
@@ -361,6 +386,7 @@ export default function LabPage() {
         open={conflictOpen}
         domLabs={domLabs}
         ocrLabs={ocrLabs}
+        submitting={submitting}
         onConfirm={handleConflictConfirm}
         onCancel={() => setConflictOpen(false)}
       />

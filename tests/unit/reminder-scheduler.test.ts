@@ -509,4 +509,97 @@ describe("ReminderScheduler", () => {
     await uninitialized.recompute();
     await uninitialized.dispose();
   });
+
+  it("补扫上一次扫描到当前时间之间的休眠窗口", async () => {
+    let currentNow = new Date(2026, 7, 21, 9, 0, 0);
+    const fixture = createFixture(currentNow, null);
+    fixture.data.courses.list = () => [];
+    fixture.data.exams.list = () => [
+      {
+        id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        courseName: "休眠窗口考试",
+        date: "2026-08-21",
+        startTime: "10:00",
+        endTime: "11:00",
+        reminderOffsets: [0],
+        createdAt: currentNow.toISOString(),
+        updatedAt: currentNow.toISOString(),
+      },
+    ];
+    const scheduler = new ReminderScheduler({
+      dataService: fixture.data,
+      notificationService: fixture.notifications,
+      timetableService: fixture.timetable,
+      now: () => currentNow,
+      statePath: createStatePath(),
+      setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+      clearTimeout: () => undefined,
+    });
+
+    await scheduler.init();
+    expect(fixture.delivered).toEqual([]);
+    currentNow = new Date(2026, 7, 21, 10, 1, 0);
+    await scheduler.recompute();
+
+    expect(fixture.delivered).toEqual(["exam"]);
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          (scheduler as unknown as { statePath: string }).statePath,
+          "utf8",
+        ),
+      ).lastScan,
+    ).toBe(currentNow.toISOString());
+    await scheduler.dispose();
+  });
+
+  it("合并并发重算，避免同一提醒在异步发送期间重复投递", async () => {
+    let currentNow = new Date(2026, 7, 21, 9, 0, 0);
+    const fixture = createFixture(currentNow, null);
+    fixture.data.courses.list = () => [];
+    fixture.data.exams.list = () => [
+      {
+        id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        courseName: "并发考试",
+        date: "2026-08-21",
+        startTime: "10:00",
+        endTime: "11:00",
+        reminderOffsets: [0],
+        createdAt: currentNow.toISOString(),
+        updatedAt: currentNow.toISOString(),
+      },
+    ];
+    const scheduler = new ReminderScheduler({
+      dataService: fixture.data,
+      notificationService: fixture.notifications,
+      timetableService: fixture.timetable,
+      now: () => currentNow,
+      statePath: createStatePath(),
+      setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+      clearTimeout: () => undefined,
+    });
+    await scheduler.init();
+
+    let release: (() => void) | undefined;
+    let calls = 0;
+    const sendStarted = new Promise<void>((resolve) => {
+      fixture.notifications.send = async () => {
+        calls += 1;
+        resolve();
+        await new Promise<void>((wait) => {
+          release = wait;
+        });
+        return { ok: true, data: true };
+      };
+    });
+    currentNow = new Date(2026, 7, 21, 10, 0, 0);
+    const first = scheduler.recompute();
+    const second = scheduler.recompute();
+    await sendStarted;
+    expect(calls).toBe(1);
+    release?.();
+    await Promise.all([first, second]);
+    expect(calls).toBe(1);
+    await scheduler.dispose();
+  });
 });

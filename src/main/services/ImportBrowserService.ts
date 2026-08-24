@@ -52,6 +52,9 @@ interface BrowserGeneration {
   view: WebContentsView;
   remoteSession: Electron.Session;
   approvedHttpUrl: string | null;
+  approvedHttpNavigationId: number | null;
+  navigationId: number;
+  navigationQueue: Promise<void>;
   completion: Promise<CleanupResult>;
   resolveCompletion: (result: CleanupResult) => void;
   completionSettled: boolean;
@@ -100,6 +103,8 @@ export class ImportBrowserService {
   private activeGeneration: BrowserGeneration | null = null;
   private generationCounter = 0;
   private cleanupPromise: Promise<CleanupResult> | null = null;
+  private disposePromise: Promise<void> | null = null;
+  private disposing = false;
   private failedCleanupGeneration: BrowserGeneration | null = null;
   private cleanupFailure: CleanupResult | null = null;
   private cachedDom: string | null = null;
@@ -121,7 +126,9 @@ export class ImportBrowserService {
   }
 
   async init(): Promise<void> {
+    if (this.disposePromise) await this.disposePromise;
     if (this.initialized) return;
+    this.disposing = false;
     this.toolbarActionHandler = (event, rawAction) => {
       const generation = this.activeGeneration;
       if (!generation || event.sender !== generation.win.webContents) return;
@@ -140,6 +147,63 @@ export class ImportBrowserService {
     );
   }
 
+  private startNavigation(generation: BrowserGeneration): number {
+    generation.navigationId += 1;
+    this.clearHttpApproval(generation);
+    return generation.navigationId;
+  }
+
+  private clearHttpApproval(generation: BrowserGeneration): void {
+    generation.approvedHttpUrl = null;
+    generation.approvedHttpNavigationId = null;
+  }
+
+  private setHttpApproval(
+    generation: BrowserGeneration,
+    target: URL,
+    navigationId: number,
+  ): void {
+    generation.approvedHttpUrl = target.toString();
+    generation.approvedHttpNavigationId = navigationId;
+  }
+
+  private isActiveNavigation(
+    generation: BrowserGeneration,
+    navigationId: number,
+  ): boolean {
+    return (
+      this.isCurrentGeneration(generation) &&
+      generation.navigationId === navigationId
+    );
+  }
+
+  /** 工具栏事件可能在同一轮渲染中连续到达，按顺序执行才能避免旧 loadURL 覆盖新地址。 */
+  private enqueueNavigation(
+    generation: BrowserGeneration,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const task = generation.navigationQueue
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.isCurrentGeneration(generation)) await operation();
+      });
+    generation.navigationQueue = task;
+    return task;
+  }
+
+  private enqueueToolbarNavigation(
+    generation: BrowserGeneration,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    // 新意图要立即使旧请求失效，而不是等排队轮到它时才失效。
+    this.startNavigation(generation);
+    return this.enqueueNavigation(generation, operation);
+  }
+
+  private closingResult(): CleanupResult {
+    return { ok: false, error: "导入服务正在关闭，请稍后再试" };
+  }
+
   private async handleToolbarAction(
     generation: BrowserGeneration,
     action: ToolbarAction,
@@ -147,23 +211,32 @@ export class ImportBrowserService {
     if (!this.isCurrentGeneration(generation)) return;
     try {
       if (action.type === "back") {
-        await this.navigateHistory(generation, -1);
+        await this.enqueueToolbarNavigation(generation, () =>
+          this.navigateHistory(generation, -1),
+        );
         return;
       }
       if (action.type === "forward") {
-        await this.navigateHistory(generation, 1);
+        await this.enqueueToolbarNavigation(generation, () =>
+          this.navigateHistory(generation, 1),
+        );
         return;
       }
       if (action.type === "refresh") {
-        await this.reload(generation);
+        await this.enqueueToolbarNavigation(generation, () =>
+          this.reload(generation),
+        );
         return;
       }
       if (action.type === "extract") {
+        await generation.navigationQueue;
         await this.performExtraction(generation);
         return;
       }
       if (action.type === "navigate" && action.url) {
-        await this.navigate(generation, action.url);
+        await this.enqueueToolbarNavigation(generation, () =>
+          this.navigate(generation, action.url as string),
+        );
       }
     } catch (error) {
       console.error(
@@ -220,21 +293,27 @@ export class ImportBrowserService {
     generation: BrowserGeneration,
     url: URL,
   ): Promise<void> {
+    const navigationId = this.startNavigation(generation);
     if (url.protocol === "http:") {
       const approved = await this.approveHttp(generation);
-      if (!approved) return;
-      generation.approvedHttpUrl = url.toString();
+      if (!approved || !this.isActiveNavigation(generation, navigationId)) {
+        return;
+      }
+      this.setHttpApproval(generation, url, navigationId);
     }
-    if (!this.isCurrentGeneration(generation)) return;
+    if (!this.isActiveNavigation(generation, navigationId)) return;
     const target = url.toString();
     try {
       await generation.view.webContents.loadURL(target);
-      if (this.isCurrentGeneration(generation)) {
+      if (this.isActiveNavigation(generation, navigationId)) {
         this.notifyUrlChanged(generation, target);
       }
     } finally {
-      if (generation.approvedHttpUrl === target) {
-        generation.approvedHttpUrl = null;
+      if (
+        generation.approvedHttpNavigationId === navigationId &&
+        generation.approvedHttpUrl === target
+      ) {
+        this.clearHttpApproval(generation);
       }
     }
   }
@@ -244,9 +323,11 @@ export class ImportBrowserService {
     event: Electron.Event,
     rawUrl: string,
     isMainFrame: boolean,
+    isRedirect: boolean,
   ): void {
     const parsed = validateImportUrl(rawUrl);
     if (!parsed || !this.isCurrentGeneration(generation)) {
+      this.clearHttpApproval(generation);
       event.preventDefault();
       return;
     }
@@ -254,13 +335,28 @@ export class ImportBrowserService {
       if (parsed.protocol !== "https:") event.preventDefault();
       return;
     }
-    if (parsed.protocol === "https:") return;
-    if (generation.approvedHttpUrl === parsed.toString()) {
-      generation.approvedHttpUrl = null;
+    if (
+      parsed.protocol === "http:" &&
+      generation.approvedHttpNavigationId === generation.navigationId &&
+      generation.approvedHttpUrl === parsed.toString()
+    ) {
+      this.clearHttpApproval(generation);
       return;
     }
+    const requestedNavigationId = isRedirect
+      ? generation.navigationId
+      : this.startNavigation(generation);
+    if (parsed.protocol === "https:") {
+      this.clearHttpApproval(generation);
+      return;
+    }
+    this.clearHttpApproval(generation);
     event.preventDefault();
-    void this.loadAfterApproval(generation, parsed).catch((error: unknown) => {
+    void this.enqueueNavigation(generation, () =>
+      this.isActiveNavigation(generation, requestedNavigationId)
+        ? this.loadAfterApproval(generation, parsed)
+        : Promise.resolve(),
+    ).catch((error: unknown) => {
       console.error(
         `[ImportBrowserService] navigation approval failed: ${(error as Error).message}`,
       );
@@ -277,11 +373,12 @@ export class ImportBrowserService {
     const entry = history.getEntryAtIndex(targetIndex);
     const target = entry ? validateImportUrl(entry.url) : null;
     if (!target || !this.isCurrentGeneration(generation)) return;
+    const navigationId = this.startNavigation(generation);
     if (target.protocol === "http:" && !(await this.approveHttp(generation))) {
       return;
     }
-    if (!this.isCurrentGeneration(generation)) return;
-    this.runApprovedHttpNavigation(generation, target, () => {
+    if (!this.isActiveNavigation(generation, navigationId)) return;
+    this.runApprovedHttpNavigation(generation, target, navigationId, () => {
       contents.goToIndex(targetIndex);
     });
   }
@@ -289,33 +386,34 @@ export class ImportBrowserService {
   private async reload(generation: BrowserGeneration): Promise<void> {
     const target = validateImportUrl(generation.view.webContents.getURL());
     if (!target || !this.isCurrentGeneration(generation)) return;
+    const navigationId = this.startNavigation(generation);
     if (target.protocol === "http:" && !(await this.approveHttp(generation))) {
       return;
     }
-    if (this.isCurrentGeneration(generation)) {
-      this.runApprovedHttpNavigation(generation, target, () => {
-        generation.view.webContents.reload();
-      });
-    }
+    if (!this.isActiveNavigation(generation, navigationId)) return;
+    this.runApprovedHttpNavigation(generation, target, navigationId, () => {
+      generation.view.webContents.reload();
+    });
   }
 
   private runApprovedHttpNavigation(
     generation: BrowserGeneration,
     target: URL,
+    navigationId: number,
     navigate: () => void,
   ): void {
     if (target.protocol !== "http:") {
       navigate();
       return;
     }
-    const approvedUrl = target.toString();
-    generation.approvedHttpUrl = approvedUrl;
+    this.setHttpApproval(generation, target, navigationId);
     try {
       navigate();
-    } finally {
-      if (generation.approvedHttpUrl === approvedUrl) {
-        generation.approvedHttpUrl = null;
+    } catch (error) {
+      if (generation.approvedHttpNavigationId === navigationId) {
+        this.clearHttpApproval(generation);
       }
+      throw error;
     }
   }
 
@@ -356,14 +454,17 @@ export class ImportBrowserService {
   }
 
   async openBrowser(): Promise<CleanupResult> {
+    if (this.disposing) return this.closingResult();
     if (this.cleanupPromise) {
       const cleanup = await this.cleanupPromise;
       if (!cleanup.ok) return cleanup;
     }
+    if (this.disposing) return this.closingResult();
     if (this.cleanupFailure && this.failedCleanupGeneration) {
       const retry = await this.cleanupBrowser(this.failedCleanupGeneration);
       if (!retry.ok) return retry;
     }
+    if (this.disposing) return this.closingResult();
     if (this.cleanupFailure) return this.cleanupFailure;
     const current = this.activeGeneration;
     if (current) {
@@ -390,6 +491,16 @@ export class ImportBrowserService {
         ok: false,
         error: `无法打开导入窗口：${(error as Error).message}`,
       };
+    }
+    if (this.disposing) {
+      const cleanup = await this.cleanupBrowser(generation);
+      return cleanup.ok ? this.closingResult() : cleanup;
+    }
+    if (!this.isCurrentGeneration(generation)) {
+      const cleanup = await this.cleanupBrowser(generation);
+      return cleanup.ok
+        ? { ok: false, error: "导入窗口初始化期间已关闭，请重试" }
+        : cleanup;
     }
     return generation.completion;
   }
@@ -437,6 +548,9 @@ export class ImportBrowserService {
       view,
       remoteSession,
       approvedHttpUrl: null,
+      approvedHttpNavigationId: null,
+      navigationId: 0,
+      navigationQueue: Promise.resolve(),
       completion,
       resolveCompletion,
       completionSettled: false,
@@ -461,7 +575,13 @@ export class ImportBrowserService {
     generation.view.webContents.on("render-process-gone", () => {
       void this.cleanupBrowser(generation);
     });
+    generation.view.webContents.on("destroyed", () => {
+      void this.cleanupBrowser(generation);
+    });
     generation.win.webContents.on("render-process-gone", () => {
+      void this.cleanupBrowser(generation);
+    });
+    generation.win.webContents.on("destroyed", () => {
       void this.cleanupBrowser(generation);
     });
     this.cachedDom = null;
@@ -488,7 +608,9 @@ export class ImportBrowserService {
     const contents = generation.view.webContents;
     contents.setWindowOpenHandler(({ url }) => {
       if (url) {
-        void this.navigate(generation, url).catch((error: unknown) => {
+        void this.enqueueNavigation(generation, () =>
+          this.navigate(generation, url),
+        ).catch((error: unknown) => {
           console.error(
             `[ImportBrowserService] popup navigation failed: ${(error as Error).message}`,
           );
@@ -502,6 +624,7 @@ export class ImportBrowserService {
         details,
         details.url,
         details.isMainFrame,
+        false,
       );
     });
     contents.on("will-redirect", (details) => {
@@ -510,12 +633,15 @@ export class ImportBrowserService {
         details,
         details.url,
         details.isMainFrame,
+        true,
       );
     });
     contents.on("did-navigate", (_event, url) => {
-      if (this.isCurrentGeneration(generation)) {
-        this.notifyUrlChanged(generation, url);
-      }
+      // 迟到事件不能覆盖已经开始的后续导航的地址栏或 HTTP 审批状态。
+      if (!this.isCurrentGeneration(generation) || contents.getURL() !== url)
+        return;
+      this.clearHttpApproval(generation);
+      this.notifyUrlChanged(generation, url);
     });
   }
 
@@ -594,8 +720,10 @@ export class ImportBrowserService {
       this.remoteView = null;
       this.remoteSession = null;
     }
-    generation.approvedHttpUrl = null;
-    const sessionCleared = await this.clearSessionData(generation.remoteSession);
+    this.clearHttpApproval(generation);
+    const sessionCleared = await this.clearSessionData(
+      generation.remoteSession,
+    );
     if (!generation.view.webContents.isDestroyed()) {
       generation.view.webContents.close();
     }
@@ -652,15 +780,28 @@ export class ImportBrowserService {
       : { ok: true, data: this.cachedScreenshotBase64 };
   }
 
-  async dispose(): Promise<void> {
-    await this.closeBrowser();
-    if (this.toolbarActionHandler) {
-      ipcMain.removeListener(ACTION_CHANNEL, this.toolbarActionHandler);
-    }
-    this.toolbarActionHandler = null;
-    this.cachedDom = null;
-    this.cachedScreenshotBase64 = null;
-    this.initialized = false;
+  dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposing = true;
+    const handler = this.toolbarActionHandler;
+    this.disposePromise = (async () => {
+      const cleanup = await this.closeBrowser();
+      if (!cleanup.ok) {
+        console.error(
+          `[ImportBrowserService] shutdown cleanup failed: ${cleanup.error}`,
+        );
+      }
+      if (handler) ipcMain.removeListener(ACTION_CHANNEL, handler);
+      if (this.toolbarActionHandler === handler)
+        this.toolbarActionHandler = null;
+      this.cachedDom = null;
+      this.cachedScreenshotBase64 = null;
+      this.initialized = false;
+    })().finally(() => {
+      this.disposePromise = null;
+      this.disposing = false;
+    });
+    return this.disposePromise;
   }
 }
 

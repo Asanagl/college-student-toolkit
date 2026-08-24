@@ -27,12 +27,16 @@ import {
   type PortableSettingsService,
 } from "./PortableSettingsService";
 import type { DataService } from "./DataService";
+import {
+  assertImageSignature,
+  isSafeImageFileName,
+  MAX_BACKGROUND_IMAGE_BYTES,
+} from "./ImageValidation";
 
 const MAX_ZIP_BYTES = 256 * 1024 * 1024;
 const MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
 const MAX_DB_BYTES = 256 * 1024 * 1024;
 const MAX_SETTINGS_BYTES = 1 * 1024 * 1024;
-const MAX_BACKGROUND_BYTES = 10 * 1024 * 1024;
 const MAX_ENTRIES = 16;
 const TOKEN_TTL_MS = 15 * 60 * 1000;
 const V2_DB = "data/data.db";
@@ -106,7 +110,11 @@ const settingsSchema = z.object({
     .max(100),
   appearance: z.object({
     material: z.enum(["none", "acrylic"]),
-    backgroundImage: z.string().max(128).nullable(),
+    backgroundImage: z
+      .string()
+      .max(128)
+      .refine((value) => path.basename(value) === value, "背景文件名无效")
+      .nullable(),
     blurRadius: z.number().int().min(0).max(50),
     clarity: z.number().int().min(0).max(100),
   }),
@@ -128,6 +136,7 @@ interface PendingImport {
   inspection: BackupInspection;
   settings: PortableSettings | null;
   backgroundName: string | null;
+  cancelRequested: boolean;
 }
 
 interface SettingsAccess {
@@ -180,8 +189,40 @@ function isSymlink(entry: ZipEntryInfo): boolean {
   return ((entry.externalFileAttributes >>> 16) & 0xf000) === 0xa000;
 }
 
+function isBackgroundEntry(fileName: string): boolean {
+  return (
+    fileName.startsWith("assets/") &&
+    isSafeImageFileName(fileName.slice("assets/".length))
+  );
+}
+
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function resolvePathThroughExistingParent(filePath: string): string {
+  const missing: string[] = [];
+  let current = path.resolve(filePath);
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) return current;
+    missing.unshift(path.basename(current));
+    current = parent;
+  }
+  return path.resolve(fs.realpathSync(current), ...missing);
+}
+
+function pathsMatch(left: string, right: string): boolean {
+  return left.toLocaleLowerCase() === right.toLocaleLowerCase();
+}
+
+function pathContains(root: string, candidate: string): boolean {
+  const normalizedRoot = root.toLocaleLowerCase();
+  const normalizedCandidate = candidate.toLocaleLowerCase();
+  return (
+    normalizedRoot === normalizedCandidate ||
+    normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`)
+  );
 }
 
 export class DataTransferService {
@@ -189,6 +230,8 @@ export class DataTransferService {
   private readonly recoveryRoot: string;
   private pending: PendingImport | null = null;
   private busy = false;
+  private preparing = false;
+  private recoveryRequired = false;
 
   constructor(
     private readonly dbPath: string,
@@ -205,7 +248,12 @@ export class DataTransferService {
    * 主进程在恢复替换数据库期间必须拒绝新的写入 IPC，避免连接已关闭时发生并发写入。
    */
   isBusy(): boolean {
-    return this.busy;
+    return (
+      this.busy ||
+      this.preparing ||
+      this.pending !== null ||
+      this.recoveryRequired
+    );
   }
 
   async exportBackup(
@@ -243,12 +291,13 @@ export class DataTransferService {
     const backgroundPath = this.getBackgroundPath(
       settings.appearance.backgroundImage,
     );
+    const target = this.getSafeExportTarget(filePath, backgroundPath);
     try {
       this.dataService.closeDatabase();
-      await this.writeV2Archive(filePath, settings, counts, backgroundPath);
-      const stat = fs.statSync(filePath);
+      await this.writeV2Archive(target, settings, counts, backgroundPath);
+      const stat = fs.statSync(target);
       return {
-        filePath,
+        filePath: target,
         backupFormatVersion: 2,
         databaseSchemaVersion: CURRENT_DATABASE_SCHEMA_VERSION,
         includesBackground: !!backgroundPath,
@@ -268,28 +317,36 @@ export class DataTransferService {
     ownerId: number,
     parent: BrowserWindow | null = null,
   ): Promise<IpcResult<BackupImportResult>> {
-    const testPath = process.env.COLLEGE_TOOLKIT_E2E_IMPORT_PATH?.trim();
-    if (testPath) {
-      try {
+    if (this.isBusy())
+      return this.errorResult(
+        new BackupTransferError("BACKUP_BUSY", "已有备份操作正在进行"),
+      );
+    // 原生文件选择器也属于导入生命周期的一部分，防止两个窗口同时取得预检权。
+    this.preparing = true;
+    try {
+      const testPath = process.env.COLLEGE_TOOLKIT_E2E_IMPORT_PATH?.trim();
+      if (testPath) {
         return {
           ok: true,
           data: {
-            inspection: await this.stageImport(path.resolve(testPath), ownerId),
+            inspection: await this.stageImport(
+              path.resolve(testPath),
+              ownerId,
+              true,
+            ),
           },
         };
-      } catch (error) {
-        return this.errorResult(error);
       }
-    }
-    const result = parent
-      ? await dialog.showOpenDialog(parent, this.openDialogOptions())
-      : await dialog.showOpenDialog(this.openDialogOptions());
-    if (result.canceled || result.filePaths.length === 0) return { ok: true };
-    try {
-      const inspection = await this.stageImport(result.filePaths[0], ownerId);
+      const result = parent
+        ? await dialog.showOpenDialog(parent, this.openDialogOptions())
+        : await dialog.showOpenDialog(this.openDialogOptions());
+      if (result.canceled || result.filePaths.length === 0) return { ok: true };
+      const inspection = await this.stageImport(result.filePaths[0], ownerId, true);
       return { ok: true, data: { inspection } };
     } catch (error) {
       return this.errorResult(error);
+    } finally {
+      this.preparing = false;
     }
   }
 
@@ -309,15 +366,20 @@ export class DataTransferService {
     ownerId: number,
     token: string,
   ): Promise<IpcResult<boolean>> {
+    let pending: PendingImport | null = null;
     try {
       // 取消的首要职责是清理 staging；即使预检刚过期，也不能把临时数据留在磁盘上。
-      const pending = this.takePending(ownerId, token, false);
+      pending = this.getPending(ownerId, token, false, true);
+      pending.cancelRequested = true;
+      this.busy = true;
       this.removeStaging(pending.stagingDir);
       this.removeJournal();
       this.pending = null;
       return { ok: true, data: true };
     } catch (error) {
       return this.errorResult(error);
+    } finally {
+      if (pending) this.busy = false;
     }
   }
 
@@ -334,11 +396,17 @@ export class DataTransferService {
       };
       if (
         !journal.status ||
-        !["prepared", "applying", "committed"].includes(journal.status)
+        !["prepared", "applying", "committed", "recovery-required"].includes(
+          journal.status,
+        )
       ) {
         throw new Error("恢复日志状态未知");
       }
-      if (journal.status === "applying") this.restoreRecoveryPoint();
+      if (
+        journal.status === "applying" ||
+        journal.status === "recovery-required"
+      )
+        this.restoreRecoveryPoint();
       if (journal.stagingDir && this.isStagingPath(journal.stagingDir))
         this.removeStaging(journal.stagingDir);
       fs.rmSync(journalPath, { force: true });
@@ -353,13 +421,13 @@ export class DataTransferService {
 
   async importFromZip(filePath: string): Promise<void> {
     const inspection = await this.stageImport(filePath, 0);
-    const pending = this.pending;
-    if (!pending) throw new Error("备份预检没有生成导入任务");
+    const pending = this.takePending(0, inspection.token);
     await this.applyPending(pending);
-    if (!inspection) throw new Error("备份恢复失败");
   }
 
   dispose(): void {
+    // 受控恢复状态的 journal/staging 是下一次启动恢复的唯一证据，退出时不得清理。
+    if (this.recoveryRequired) return;
     if (this.pending) this.removeStaging(this.pending.stagingDir);
     this.removeJournal();
     this.pending = null;
@@ -368,15 +436,19 @@ export class DataTransferService {
   private async stageImport(
     sourcePath: string,
     ownerId: number,
+    reservationHeld = false,
   ): Promise<BackupInspection> {
-    this.assertNotBusy();
-    if (this.pending)
-      throw new BackupTransferError("BACKUP_BUSY", "已有备份预检正在等待确认");
-    const entries = await this.readCentralDirectory(sourcePath);
-    const format = this.detectFormat(entries);
-    const token = randomUUID();
-    const stagingDir = this.createStagingDir(token);
+    if (!reservationHeld) {
+      if (this.isBusy())
+        throw new BackupTransferError("BACKUP_BUSY", "已有备份预检正在等待确认");
+      this.preparing = true;
+    }
+    let stagingDir: string | null = null;
     try {
+      const entries = await this.readCentralDirectory(sourcePath);
+      const format = this.detectFormat(entries);
+      const token = randomUUID();
+      stagingDir = this.createStagingDir(token);
       await this.extractAllowedEntries(sourcePath, entries, stagingDir, format);
       const staged = await this.readStagedBackup(stagingDir, format);
       const counts = this.inspectDatabase(
@@ -409,11 +481,14 @@ export class DataTransferService {
         inspection,
         settings: staged.settings,
         backgroundName: staged.backgroundName,
+        cancelRequested: false,
       };
       return inspection;
     } catch (error) {
-      this.removeStaging(stagingDir);
+      if (stagingDir) this.removeStaging(stagingDir);
       throw error;
+    } finally {
+      if (!reservationHeld) this.preparing = false;
     }
   }
 
@@ -433,6 +508,7 @@ export class DataTransferService {
       this.writeJournal(journalPath, {
         status: "applying",
         token: pending.inspection.token,
+        stagingDir: pending.stagingDir,
       });
       this.replaceDatabase(pending.stagingDir, pending.format);
       if (pending.settings) this.applySettings(pending);
@@ -440,10 +516,15 @@ export class DataTransferService {
       this.writeJournal(journalPath, {
         status: "committed",
         token: pending.inspection.token,
+        stagingDir: pending.stagingDir,
       });
-      this.removeStaging(pending.stagingDir);
       this.pending = null;
-      fs.rmSync(journalPath, { force: true });
+      try {
+        this.removeStaging(pending.stagingDir);
+        fs.rmSync(journalPath, { force: true });
+      } catch {
+        // 数据已经提交；保留 committed journal 让下一次启动只重试清理，不回滚新数据。
+      }
       return pending.inspection;
     } catch (error) {
       const recovered = recoveryCreated && this.tryRollback();
@@ -456,16 +537,33 @@ export class DataTransferService {
           reopened = false;
         }
       }
-      this.pending = null;
-      this.removeStaging(pending.stagingDir);
-      this.removeJournal();
       const originalStateStillIntact = !recoveryCreated || recovered;
-      if (!originalStateStillIntact || !reopened)
+      if (!originalStateStillIntact || !reopened) {
+        this.recoveryRequired = true;
+        this.pending = null;
+        // applying journal 可能已存在；覆盖失败时仍保留旧 journal，以便启动时恢复。
+        try {
+          this.writeJournal(journalPath, {
+            status: "recovery-required",
+            token: pending.inspection.token,
+            stagingDir: pending.stagingDir,
+          });
+        } catch {
+          // 不能为了记录失败而删除已有恢复点或 journal。
+        }
         throw new BackupTransferError(
           "RESTORE_FAILED_RECOVERY_REQUIRED",
           "恢复失败且无法自动回滚，请使用 recovery/last-known-good",
           { cause: error },
         );
+      }
+      this.pending = null;
+      try {
+        this.removeStaging(pending.stagingDir);
+        this.removeJournal();
+      } catch {
+        // 回滚后的清理失败不应丢掉 applying journal；下次启动会再次安全恢复。
+      }
       throw new BackupTransferError(
         "RESTORE_FAILED_ROLLED_BACK",
         "恢复失败，已自动回滚到最近可用数据",
@@ -518,7 +616,59 @@ export class DataTransferService {
         })),
       ),
     };
-    await this.createArchive(target, manifest, files);
+    const temporary = path.join(
+      path.dirname(target),
+      `.${path.basename(target)}.${randomUUID()}.partial`,
+    );
+    try {
+      await this.createArchive(temporary, manifest, files);
+      if (fs.statSync(temporary).size === 0)
+        throw new Error("备份归档为空，已取消写入目标文件");
+      this.replaceFile(temporary, target);
+    } catch (error) {
+      fs.rmSync(temporary, { force: true });
+      throw error;
+    }
+  }
+
+  private getSafeExportTarget(
+    filePath: string,
+    backgroundPath: string | null,
+  ): string {
+    const supplied = path.resolve(filePath);
+    if (fs.existsSync(supplied) && fs.lstatSync(supplied).isSymbolicLink())
+      throw new BackupTransferError(
+        "BACKUP_INVALID",
+        "备份目标不能是符号链接",
+      );
+    const target = resolvePathThroughExistingParent(supplied);
+    const userData = path.dirname(this.dbPath);
+    const protectedFiles = [
+      this.dbPath,
+      `${this.dbPath}-wal`,
+      `${this.dbPath}-shm`,
+      path.join(userData, "portable-settings.json"),
+      path.join(userData, "import-journal.json"),
+      backgroundPath,
+    ]
+      .filter((candidate): candidate is string => !!candidate)
+      .map(resolvePathThroughExistingParent);
+    const protectedRoots = [
+      this.stagingRoot,
+      this.recoveryRoot,
+      path.join(userData, "backgrounds"),
+    ].map(resolvePathThroughExistingParent);
+    if (protectedFiles.some((candidate) => pathsMatch(candidate, target)))
+      throw new BackupTransferError(
+        "BACKUP_INVALID",
+        "备份目标不能覆盖应用数据或设置",
+      );
+    if (protectedRoots.some((root) => pathContains(root, target)))
+      throw new BackupTransferError(
+        "BACKUP_INVALID",
+        "备份目标不能位于应用受保护目录",
+      );
+    return target;
   }
 
   private createArchive(
@@ -654,8 +804,7 @@ export class DataTransferService {
         ? new Set([V2_MANIFEST, V2_DB, V2_SETTINGS])
         : new Set([LEGACY_DB, LEGACY_CONFIG, "timetable.json"]);
     for (const entry of entries) {
-      const isBackground =
-        format === 2 && /^assets\/background\.[a-z0-9]+$/i.test(entry.fileName);
+      const isBackground = format === 2 && isBackgroundEntry(entry.fileName);
       if (!allowed.has(entry.fileName) && !isBackground)
         throw new BackupTransferError(
           "BACKUP_INVALID",
@@ -665,7 +814,7 @@ export class DataTransferService {
         ? MAX_DB_BYTES
         : entry.fileName.includes("portable-settings")
           ? MAX_SETTINGS_BYTES
-          : MAX_BACKGROUND_BYTES;
+          : MAX_BACKGROUND_IMAGE_BYTES;
       if (entry.uncompressedSize > limit)
         throw new BackupTransferError(
           "BACKUP_INVALID",
@@ -720,10 +869,7 @@ export class DataTransferService {
     const backgrounds = fs.existsSync(assetsDir)
       ? fs
           .readdirSync(assetsDir, { withFileTypes: true })
-          .filter(
-            (item) =>
-              item.isFile() && /^background\.[a-z0-9]+$/i.test(item.name),
-          )
+          .filter((item) => item.isFile() && isSafeImageFileName(item.name))
       : [];
     if (backgrounds.length > 1)
       throw new BackupTransferError("BACKUP_INVALID", "备份只能包含一个背景图");
@@ -817,6 +963,23 @@ export class DataTransferService {
         "BACKUP_CORRUPT",
         `文件哈希或大小不匹配：${relativePath}`,
       );
+    if (isBackgroundEntry(relativePath)) this.verifyBackgroundFile(filePath);
+  }
+
+  private verifyBackgroundFile(filePath: string): void {
+    const extension = path.extname(filePath).toLowerCase();
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.size > MAX_BACKGROUND_IMAGE_BYTES)
+        throw new Error("背景图超过大小限制");
+      assertImageSignature(fs.readFileSync(filePath), extension);
+    } catch (error) {
+      throw new BackupTransferError(
+        "BACKUP_INVALID",
+        "备份背景图不是受支持的图片文件",
+        { cause: error },
+      );
+    }
   }
 
   private async readEntryBuffer(
@@ -874,10 +1037,11 @@ export class DataTransferService {
     });
   }
 
-  private takePending(
+  private getPending(
     ownerId: number,
     token: string,
     checkExpiry = true,
+    allowCancellationRetry = false,
   ): PendingImport {
     const pending = this.pending;
     if (
@@ -891,6 +1055,16 @@ export class DataTransferService {
         "BACKUP_EXPIRED",
         "导入预检已过期，请重新选择备份",
       );
+    if (pending.cancelRequested && !allowCancellationRetry)
+      throw new BackupTransferError("BACKUP_BUSY", "导入预检正在取消，请先完成清理");
+    return pending;
+  }
+
+  private takePending(ownerId: number, token: string): PendingImport {
+    const pending = this.getPending(ownerId, token);
+    // 在任何后续文件操作前消费 token；这样重复提交/取消无法拿到同一 staging。
+    this.pending = null;
+    this.busy = true;
     return pending;
   }
 
@@ -1023,9 +1197,9 @@ export class DataTransferService {
 
   private restoreRecoveryBackground(): void {
     const name = this.settings.get().appearance.backgroundImage;
-    if (!name || path.basename(name) !== name) return;
+    if (!name || !isSafeImageFileName(name)) return;
     const source = path.join(this.recoveryRoot, "backgrounds", name);
-    if (!fs.existsSync(source)) return;
+    if (!this.isUsableBackgroundFile(source)) return;
     const target = path.join(path.dirname(this.dbPath), "backgrounds", name);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(source, target);
@@ -1048,15 +1222,25 @@ export class DataTransferService {
   }
 
   private getBackgroundPath(fileName: string | null): string | null {
-    if (!fileName || path.basename(fileName) !== fileName) return null;
+    if (!fileName || !isSafeImageFileName(fileName)) return null;
     const candidate = path.join(
       path.dirname(this.dbPath),
       "backgrounds",
       fileName,
     );
-    return fs.existsSync(candidate) && fs.statSync(candidate).isFile()
-      ? candidate
-      : null;
+    return this.isUsableBackgroundFile(candidate) ? candidate : null;
+  }
+
+  private isUsableBackgroundFile(filePath: string): boolean {
+    try {
+      const linkStat = fs.lstatSync(filePath);
+      if (!linkStat.isFile() || linkStat.size > MAX_BACKGROUND_IMAGE_BYTES)
+        return false;
+      assertImageSignature(fs.readFileSync(filePath), path.extname(filePath));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private settingsPath(): string {
@@ -1074,7 +1258,7 @@ export class DataTransferService {
   }
 
   private assertNotBusy(): void {
-    if (this.busy)
+    if (this.isBusy())
       throw new BackupTransferError("BACKUP_BUSY", "备份操作正在进行");
   }
 

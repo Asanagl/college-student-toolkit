@@ -26,7 +26,13 @@ function resolveArtifact() {
 }
 
 function normalizeName(name) {
-  return name.replaceAll("\\", "/").replace(/^\/+/, "");
+  const normalized = name.replaceAll("\\", "/").replace(/^\/+/, "");
+  try {
+    // MakeAppx percent-encodes non-ASCII entry names while the manifest keeps Unicode.
+    return decodeURIComponent(normalized);
+  } catch {
+    return normalized;
+  }
 }
 
 function collectNames(filePath) {
@@ -234,14 +240,20 @@ async function verify() {
   const manifest = checkManifest(
     (await readEntry(artifact, manifestName)).toString("utf8"),
   );
+  const executableName = normalizeName(manifest.executable).toLowerCase();
+  if (!lowerNames.has(executableName))
+    throw new Error(`Application.Executable 不存在于包内：${manifest.executable}`);
   const asarName = names.find(
     (name) => name.toLowerCase() === "app/resources/app.asar",
   );
-  const nativeName = names.find((name) =>
-    name.toLowerCase().endsWith("better_sqlite3.node"),
+  const expectedNativeName =
+    "app/resources/app.asar.unpacked/node_modules/better-sqlite3/build/release/better_sqlite3.node";
+  const nativeName = names.find(
+    (name) => name.toLowerCase() === expectedNativeName,
   );
   if (!asarName) throw new Error("包内缺少 app/resources/app.asar");
-  if (!nativeName) throw new Error("包内缺少 better_sqlite3.node");
+  if (!nativeName)
+    throw new Error(`包内缺少 x64 SQLite binding：${expectedNativeName}`);
   const staging = fs.mkdtempSync(
     path.join(os.tmpdir(), "college-toolkit-appx-"),
   );
@@ -274,7 +286,7 @@ async function verify() {
       "当前是 electron-builder 本地 Store-only 测试身份，不可直接提交 Store。",
     );
   if (lowerNames.has("app-update.yml"))
-    warnings.push("包根目录存在 app-update.yml，请确认不是 Store 产物。");
+    throw new Error("Store 包根目录不应包含 app-update.yml");
   console.log(
     JSON.stringify(
       {

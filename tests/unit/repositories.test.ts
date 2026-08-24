@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CourseRepository,
   ExamRepository,
@@ -487,6 +487,14 @@ describe("SQLite repositories", () => {
       name: "百分制公式",
       isDefault: false,
     });
+    expect(
+      repository.save({
+        id: customFormula.id,
+        name: "百分制公式（修订）",
+        formula: "SUM(score * credit) / SUM(credit)",
+        isDefault: false,
+      }),
+    ).toMatchObject({ id: customFormula.id, isDefault: false });
     const explicitNewFormula = repository.save({
       id: "explicit-new",
       name: "显式新公式",
@@ -505,5 +513,21 @@ describe("SQLite repositories", () => {
     });
     expect(replacement).toMatchObject({ id: "default", name: "新版默认公式" });
     expect(repository.list().filter((item) => item.isDefault)).toHaveLength(1);
+  });
+
+  it("falls back to the latest formula only after a transient post-save lookup miss", () => {
+    const repository = new GpaFormulaRepository(openDatabase());
+    const lookup = vi.spyOn(repository, "getById");
+    lookup.mockReturnValueOnce(undefined).mockReturnValueOnce(undefined);
+
+    expect(
+      repository.save({
+        id: "resilient-formula",
+        name: "回退公式",
+        formula: "SUM(score) / SUM(credit)",
+        isDefault: false,
+      }),
+    ).toMatchObject({ id: "resilient-formula", name: "回退公式" });
+    expect(lookup).toHaveBeenCalledTimes(2);
   });
 });

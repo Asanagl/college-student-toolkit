@@ -1,5 +1,14 @@
 // 主进程入口：启动关键服务、注册经过 schema 校验的 IPC，并管理单实例与受限资源协议。
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  powerMonitor,
+  protocol,
+} from "electron";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -36,6 +45,11 @@ import { parseDomForExams } from "./services/parsers/exam";
 import { parseOcrToExams } from "./services/ExamOcrParser";
 import { parseDomForLabs } from "./services/parsers/lab";
 import { parseOcrToLabs } from "./services/LabOcrParser";
+import {
+  assertImageSignature,
+  isSafeImageFileName,
+  MAX_BACKGROUND_IMAGE_BYTES,
+} from "./services/ImageValidation";
 import {
   claritySchema,
   courseAddSchema,
@@ -194,6 +208,12 @@ function refreshReminders(): void {
     .catch((error: unknown) =>
       console.error(`[main] 提醒重算失败: ${errorMessage(error)}`),
     );
+}
+
+function registerReminderSystemEvents(): void {
+  powerMonitor.on("resume", refreshReminders);
+  powerMonitor.on("on-ac", refreshReminders);
+  powerMonitor.on("on-battery", refreshReminders);
 }
 
 function getDefaultGradeFormula(): GpaFormula {
@@ -604,13 +624,21 @@ function registerOcrComponentHandlers(): void {
     wrapIpc(() => ocrComponentService.getStatus()),
   );
   ipcMain.handle(IPC_CHANNELS.OCR_COMPONENT_INSTALL, () =>
-    wrapWriteIpcAsync(() => ocrComponentService.install()),
+    wrapWriteIpcAsync(async () => {
+      const result = await ocrComponentService.install();
+      if (result.ok) await ocrService.invalidateWorker();
+      return result;
+    }),
   );
   ipcMain.handle(IPC_CHANNELS.OCR_COMPONENT_CANCEL_INSTALL, () =>
     wrapWriteIpc(() => ocrComponentService.cancelInstall()),
   );
   ipcMain.handle(IPC_CHANNELS.OCR_COMPONENT_REMOVE, () =>
-    wrapWriteIpc(() => ocrComponentService.remove()),
+    wrapWriteIpcAsync(async () => {
+      const result = ocrComponentService.remove();
+      if (result.ok) await ocrService.invalidateWorker();
+      return result;
+    }),
   );
 }
 
@@ -642,17 +670,18 @@ app.whenReady().then(async () => {
       const fileName = decodeURIComponent(
         new URL(request.url).pathname,
       ).replace(/^\/+/, "");
-      if (
-        !fileName ||
-        path.basename(fileName) !== fileName ||
-        fileName.includes("..")
-      )
+      if (!isSafeImageFileName(fileName))
         return new Response("Not found", { status: 404 });
-      return net.fetch(
-        pathToFileURL(
-          path.join(app.getPath("userData"), "backgrounds", fileName),
-        ).toString(),
+      const filePath = path.join(
+        app.getPath("userData"),
+        "backgrounds",
+        fileName,
       );
+      const stat = fs.lstatSync(filePath);
+      if (!stat.isFile() || stat.size > MAX_BACKGROUND_IMAGE_BYTES)
+        return new Response("Not found", { status: 404 });
+      assertImageSignature(fs.readFileSync(filePath), path.extname(fileName));
+      return net.fetch(pathToFileURL(filePath).toString());
     } catch {
       return new Response("Bad request", { status: 400 });
     }
@@ -682,6 +711,7 @@ app.whenReady().then(async () => {
   }
   try {
     registerIpcHandlers();
+    registerReminderSystemEvents();
     createMainWindow();
   } catch (error) {
     dialog.showErrorBox("大学生工具组无法启动", errorMessage(error));

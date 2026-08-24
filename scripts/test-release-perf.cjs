@@ -35,7 +35,11 @@ const executable = path.resolve(
   process.env.PACKAGED_EXECUTABLE?.trim() ||
     "release-v0.3.0-msix-local/win-unpacked/大学生工具组.exe",
 );
-const reportPath = path.join(root, "docs", "v0.3.0-performance.json");
+const reportPath = path.resolve(
+  root,
+  process.env.PERF_REPORT_PATH?.trim() || "docs/v0.3.0-performance.json",
+);
+let runningReport = null;
 const dataset = {
   schedules: 1000,
   courses: 500,
@@ -55,6 +59,35 @@ const thresholds = {
   backupMs: 5000,
   idleRssMiB: 300,
   soakGrowthRatio: 0.1,
+};
+const metricPolicy = {
+  required: {
+    latency: [
+      "sqlite.query",
+      "sqlite.crud",
+      "ipc.lists.schedules",
+      "ipc.lists.courses",
+      "ipc.lists.exams",
+      "ipc.lists.labs",
+      "ipc.lists.grades",
+      "ipc.lists.gradeDashboard",
+      "ipc.crud",
+      "pageSwitch.overall",
+      "reminder",
+      "backup.export",
+      "backup.import",
+      "coldStart",
+    ],
+    health: ["idleRss", "soak", "shutdown"],
+    ocrEvidence: ["ocr"],
+  },
+  optional: [
+    "pageSwitch.byRoute./schedule",
+    "pageSwitch.byRoute./timetable",
+    "pageSwitch.byRoute./exam",
+    "pageSwitch.byRoute./lab",
+    "pageSwitch.byRoute./grade",
+  ],
 };
 
 function envNumber(name, fallback, minimum = 0) {
@@ -627,14 +660,34 @@ async function createBackupMetrics(page, backupPath, iterations, warmups) {
   };
 }
 
+function isTransientAppMetricsError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Execution context was destroyed");
+}
+
+async function collectAppMetrics(app) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await app.evaluate(({ app: electronApp }) =>
+        electronApp.getAppMetrics().map((item) => ({
+          type: item.type,
+          pid: item.pid,
+          workingSetSize: item.memory?.workingSetSize || 0,
+        })),
+      );
+    } catch (error) {
+      if (!isTransientAppMetricsError(error) || attempt === 3) throw error;
+      console.warn(
+        `[test-release-perf] app metrics context changed; retrying (${attempt}/3)`,
+      );
+      await waitMs(attempt * 250);
+    }
+  }
+  throw new Error("app metrics retries exhausted");
+}
+
 async function getRssSnapshot(app) {
-  const metrics = await app.evaluate(({ app: electronApp }) =>
-    electronApp.getAppMetrics().map((item) => ({
-      type: item.type,
-      pid: item.pid,
-      workingSetSize: item.memory?.workingSetSize || 0,
-    })),
-  );
+  const metrics = await collectAppMetrics(app);
   const toMiB = (items) =>
     Number(
       (
@@ -749,6 +802,95 @@ function writeReport(report) {
   fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 }
 
+function metricAt(metrics, metricPath) {
+  return metricPath.split(".").reduce((value, key) => {
+    if (!value || typeof value !== "object") return undefined;
+    return value[key];
+  }, metrics);
+}
+
+function metricLabel(metricPath) {
+  return `metrics.${metricPath}`;
+}
+
+function hasPositiveSampleCount(value) {
+  return Number.isInteger(value) && value > 0;
+}
+
+function hasFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function validateLatencyMetric(metrics, metricPath) {
+  const label = metricLabel(metricPath);
+  const metric = metricAt(metrics, metricPath);
+  if (!metric || typeof metric !== "object") return [`${label}: missing`];
+  const failures = [];
+  if (metric.skipped === true) failures.push(`${label}: skipped`);
+  if (!hasPositiveSampleCount(metric.sampleCount))
+    failures.push(`${label}: missing sampleCount`);
+  if (!hasFiniteNumber(metric.p95Ms)) failures.push(`${label}: missing p95Ms`);
+  if (metric.skipped !== true && metric.pass !== true)
+    failures.push(`${label}: did not pass`);
+  return failures;
+}
+
+function validateHealthMetric(metrics, metricPath) {
+  const label = metricLabel(metricPath);
+  const metric = metricAt(metrics, metricPath);
+  if (!metric || typeof metric !== "object") return [`${label}: missing`];
+  const failures = [];
+  if (metric.skipped === true) failures.push(`${label}: skipped`);
+  if (metric.skipped !== true && metric.pass !== true)
+    failures.push(`${label}: did not pass`);
+  return failures;
+}
+
+function validateOcrEvidence(metrics, metricPath) {
+  const failures = validateLatencyMetric(metrics, metricPath);
+  const metric = metricAt(metrics, metricPath);
+  if (
+    metric &&
+    typeof metric === "object" &&
+    (metric.evidence?.kind !== "real-ocr-performance" ||
+      metric.evidence.real !== true)
+  ) {
+    failures.push(`${metricLabel(metricPath)}: missing real OCR evidence`);
+  }
+  return failures;
+}
+
+function validateRequiredMetrics(metrics) {
+  const failures = [];
+  for (const metricPath of metricPolicy.required.latency)
+    failures.push(...validateLatencyMetric(metrics, metricPath));
+  for (const metricPath of metricPolicy.required.health)
+    failures.push(...validateHealthMetric(metrics, metricPath));
+  for (const metricPath of metricPolicy.required.ocrEvidence)
+    failures.push(...validateOcrEvidence(metrics, metricPath));
+  return [...new Set(failures)];
+}
+
+function validateOptionalMetrics(metrics) {
+  const findings = [];
+  for (const metricPath of metricPolicy.optional) {
+    const metric = metricAt(metrics, metricPath);
+    if (!metric || typeof metric !== "object") {
+      findings.push(`${metricLabel(metricPath)}: missing optional metric`);
+      continue;
+    }
+    if (metric.skipped === true)
+      findings.push(`${metricLabel(metricPath)}: skipped`);
+    if (!hasPositiveSampleCount(metric.sampleCount))
+      findings.push(`${metricLabel(metricPath)}: missing sampleCount`);
+    if (!hasFiniteNumber(metric.p95Ms))
+      findings.push(`${metricLabel(metricPath)}: missing p95Ms`);
+    if (metric.skipped !== true && metric.pass !== true)
+      findings.push(`${metricLabel(metricPath)}: did not pass`);
+  }
+  return [...new Set(findings)];
+}
+
 function failedMetrics(report) {
   const failures = [];
   const visit = (value, prefix) => {
@@ -771,11 +913,12 @@ async function main() {
   const soakMinutes = envNumber("PERF_SOAK_MINUTES", 30, 0);
   const soakIntervalMs = envNumber("PERF_SOAK_INTERVAL_MS", 10_000, 100);
   const enforce = envFlag("PERF_ENFORCE", true);
+  const mode = enforce ? "release" : "non-release";
   const report = {
     schemaVersion: 1,
     status: "running",
     startedAt: new Date().toISOString(),
-    executable: "release-v0.3.0-msix-local/win-unpacked/大学生工具组.exe",
+    executable: path.relative(root, executable).replaceAll(path.sep, "/"),
     host: {
       platform: process.platform,
       release: os.release(),
@@ -792,10 +935,17 @@ async function main() {
       soakMinutes,
       soakIntervalMs,
       enforce,
+      mode,
+    },
+    metricPolicy,
+    releaseAcceptance: {
+      required: enforce,
+      status: enforce ? "pending" : "not_release_acceptance",
     },
     thresholds,
     metrics: {},
   };
+  runningReport = report;
   const backupProfile = prepareProfile(true);
   const backupPath = path.join(backupProfile, "benchmark-backup.zip");
   let soakProfile;
@@ -845,6 +995,11 @@ async function main() {
       ...report.metrics.ocr,
       skipped: true,
       reason: "未提供真实 OCR Release 资产和识别图片；不伪造线上 OCR 性能证据",
+      evidence: {
+        kind: "real-ocr-performance",
+        real: false,
+        reason: "本次运行未执行真实 OCR 识别",
+      },
     };
     report.metrics.idleRss = await measureIdleRss(soakSession.app, idleMinutes);
     report.metrics.soak = await measureSoak(
@@ -855,15 +1010,34 @@ async function main() {
     report.metrics.shutdown = {
       backupAppClosed: false,
       soakAppClosed: false,
+      pass: false,
     };
     await closeSession(soakSession);
     soakSession = undefined;
     report.metrics.shutdown = {
       backupAppClosed: true,
       soakAppClosed: true,
+      pass: true,
     };
-    report.failures = failedMetrics(report);
-    report.status = report.failures.length && enforce ? "failed" : "completed";
+    const observedFailures = failedMetrics(report);
+    const requiredFailures = validateRequiredMetrics(report.metrics);
+    const optionalFindings = validateOptionalMetrics(report.metrics);
+    report.observedFailures = observedFailures;
+    report.failures = requiredFailures;
+    report.warnings = optionalFindings;
+    report.status = enforce
+      ? requiredFailures.length
+        ? "failed"
+        : "passed"
+      : "completed_non_release";
+    report.releaseAcceptance = {
+      required: enforce,
+      status: enforce
+        ? requiredFailures.length
+          ? "failed"
+          : "passed"
+        : "not_release_acceptance",
+    };
     report.finishedAt = new Date().toISOString();
     writeReport(report);
     console.log(
@@ -871,7 +1045,9 @@ async function main() {
         {
           report: reportPath,
           status: report.status,
+          releaseAcceptance: report.releaseAcceptance.status,
           failures: report.failures,
+          warnings: report.warnings,
         },
         null,
         2,
@@ -887,6 +1063,22 @@ async function main() {
 }
 
 main().catch((error) => {
+  if (runningReport) {
+    runningReport.status = runningReport.sampling.enforce
+      ? "failed"
+      : "failed_non_release";
+    runningReport.failures = [
+      `runner: ${error instanceof Error ? error.message : String(error)}`,
+    ];
+    runningReport.releaseAcceptance = {
+      required: runningReport.sampling.enforce,
+      status: runningReport.sampling.enforce
+        ? "failed"
+        : "not_release_acceptance",
+    };
+    runningReport.finishedAt = new Date().toISOString();
+    writeReport(runningReport);
+  }
   console.error(
     `[test-release-perf] ${error instanceof Error ? error.stack : String(error)}`,
   );

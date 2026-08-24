@@ -1,6 +1,6 @@
 // 课程表板块页面：周视图 + 工具栏 + 课程/时间设置对话框 + 自动导入流程。
 // 职责：管理课程数据、节次配置、当前周次、对话框状态，向下分发数据与回调。
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Space, Spin, Typography, message } from 'antd';
 import {
   PlusOutlined,
@@ -19,6 +19,28 @@ const { Title, Text } = Typography;
 // 预设色板：导入课程未带颜色时按顺序分配
 const DEFAULT_COLORS = ['#4285F4', '#34A853', '#FBBC05', '#EA4335', '#9C27B0', '#00BCD4', '#FF9800', '#795548'];
 
+type CompleteParsedCourse = ParsedCourse & {
+  name: string;
+  startWeek: number;
+  endWeek: number;
+  weekday: Weekday;
+  startPeriod: number;
+  endPeriod: number;
+};
+
+function hasCompleteCourse(course: ParsedCourse): course is CompleteParsedCourse {
+  return Boolean(course.name?.trim())
+    && Number.isInteger(course.startWeek)
+    && Number.isInteger(course.endWeek)
+    && Number.isInteger(course.weekday)
+    && Number.isInteger(course.startPeriod)
+    && Number.isInteger(course.endPeriod)
+    && course.startWeek! <= course.endWeek!
+    && course.startPeriod! <= course.endPeriod!
+    && course.weekday! >= 1
+    && course.weekday! <= 7;
+}
+
 export default function TimetablePage() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [periods, setPeriods] = useState<PeriodConfig[]>([]);
@@ -34,6 +56,8 @@ export default function TimetablePage() {
 
   // 自动导入流程状态
   const [importing, setImporting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
   const [conflictOpen, setConflictOpen] = useState(false);
   const [domCourses, setDomCourses] = useState<ParsedCourse[]>([]);
   const [ocrCourses, setOcrCourses] = useState<ParsedCourse[]>([]);
@@ -185,34 +209,42 @@ export default function TimetablePage() {
   };
 
   const handleConflictConfirm = async (merged: ParsedCourse[]) => {
-    let success = 0;
-    for (let i = 0; i < merged.length; i++) {
-      const c = merged[i];
-      // 必填字段兜底：缺失则用默认值
-      const payload = {
-        name: c.name ?? `未命名课程${i + 1}`,
-        teacher: c.teacher,
-        location: c.location,
-        startWeek: c.startWeek ?? 1,
-        endWeek: c.endWeek ?? 16,
-        weekday: (c.weekday ?? 1) as Weekday,
-        startPeriod: c.startPeriod ?? 1,
-        endPeriod: c.endPeriod ?? c.startPeriod ?? 1,
-        color: c.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
-      };
-      const res = await window.api.timetable.add(payload);
-      if (res.ok) success++;
+    if (submitLock.current) return;
+    if (merged.some((course) => !hasCompleteCourse(course))) {
+      message.error('请先补全每门课程的名称、周次、星期和起止节次；不完整的识别结果不会写入课表。');
+      return;
     }
-    // 只对比写库成功数与待写入数。不拿原始解析条数做分母：
-    // ConflictResolver 会有意折叠定位缺失的 OCR 噪声行，那部分「少掉」是预期行为，
-    // 拿它报警会变成常态误报。合并阶段的真实丢课已由槽位分桶修复。
-    if (success < merged.length) {
-      message.warning(`已导入 ${success} / ${merged.length} 门课程，部分课程写入失败，请核对课表`);
-    } else {
-      message.success(`已导入 ${success} 门课程`);
+    submitLock.current = true;
+    setSubmitting(true);
+    try {
+      let success = 0;
+      for (let i = 0; i < merged.length; i++) {
+        const c = merged[i] as CompleteParsedCourse;
+        const payload = {
+          name: c.name.trim(),
+          teacher: c.teacher,
+          location: c.location,
+          startWeek: c.startWeek,
+          endWeek: c.endWeek,
+          weekday: c.weekday,
+          startPeriod: c.startPeriod,
+          endPeriod: c.endPeriod,
+          color: c.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+        };
+        const res = await window.api.timetable.add(payload);
+        if (res.ok) success++;
+      }
+      if (success < merged.length) {
+        message.warning(`已导入 ${success} / ${merged.length} 门课程，部分课程写入失败，请核对课表`);
+      } else {
+        message.success(`已导入 ${success} 门课程`);
+      }
+      setConflictOpen(false);
+      void loadCourses();
+    } finally {
+      submitLock.current = false;
+      setSubmitting(false);
     }
-    setConflictOpen(false);
-    loadCourses();
   };
 
   return (
@@ -290,6 +322,7 @@ export default function TimetablePage() {
         open={conflictOpen}
         domCourses={domCourses}
         ocrCourses={ocrCourses}
+        submitting={submitting}
         onConfirm={handleConflictConfirm}
         onCancel={() => setConflictOpen(false)}
       />

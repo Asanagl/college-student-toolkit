@@ -13,6 +13,7 @@ interface LabConflictResolverProps {
   open: boolean;
   domLabs: ParsedLab[];
   ocrLabs: ParsedLab[];
+  submitting?: boolean;
   onConfirm: (labs: ParsedLab[]) => void;
   onCancel: () => void;
 }
@@ -47,6 +48,7 @@ export default function LabConflictResolver({
   open,
   domLabs,
   ocrLabs,
+  submitting = false,
   onConfirm,
   onCancel,
 }: LabConflictResolverProps) {
@@ -160,10 +162,10 @@ export default function LabConflictResolver({
       onCancel={onCancel}
       width={960}
       footer={[
-        <Button key="cancel" onClick={onCancel}>
+        <Button key="cancel" onClick={onCancel} disabled={submitting}>
           取消
         </Button>,
-        <Button key="confirm" type="primary" onClick={handleConfirm}>
+        <Button key="confirm" type="primary" onClick={handleConfirm} loading={submitting} disabled={submitting}>
           确认导入
         </Button>,
       ]}

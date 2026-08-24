@@ -44,7 +44,10 @@ function configureManifest(payload: Buffer): Buffer {
   return compressed;
 }
 
-function responseFor(compressed: Buffer): Response {
+function responseFor(
+  compressed: Buffer,
+  url = OCR_COMPONENT_MANIFEST.assetUrl,
+): Response {
   let sent = false;
   const reader = {
     read: async () => {
@@ -57,6 +60,7 @@ function responseFor(compressed: Buffer): Response {
   return {
     ok: true,
     status: 200,
+    url,
     body: { getReader: () => reader },
   } as unknown as Response;
 }
@@ -75,6 +79,7 @@ function responseForChunks(chunks: Buffer[]): Response {
   return {
     ok: true,
     status: 200,
+    url: OCR_COMPONENT_MANIFEST.assetUrl,
     body: { getReader: () => reader },
   } as unknown as Response;
 }
@@ -211,6 +216,7 @@ describe("可选 OCR 组件", () => {
         return {
           ok: true,
           status: 200,
+          url: OCR_COMPONENT_MANIFEST.assetUrl,
           body: { getReader: () => reader },
         } as unknown as Response;
       },
@@ -248,6 +254,7 @@ describe("可选 OCR 组件", () => {
         return {
           ok: true,
           status: 200,
+          url: OCR_COMPONENT_MANIFEST.assetUrl,
           body: { getReader: () => reader },
         } as unknown as Response;
       },
@@ -353,6 +360,40 @@ describe("可选 OCR 组件", () => {
       ok: false,
       errorCode: "OCR_DOWNLOAD_FAILED",
     });
+  });
+
+  it("allows the fixed GitHub Release asset's real redirect target", async () => {
+    const payload = Buffer.from("redirected-model");
+    const compressed = configureManifest(payload);
+    const redirectUrl =
+      "https://release-assets.githubusercontent.com/github-production-release-asset/1290461151/dcbc1ea0-066c-4dcc-9285-c6ab238f9d24?sp=r&sv=2018-11-09&sig=test";
+    electronMock.fetch.mockResolvedValue(responseFor(compressed, redirectUrl));
+
+    const service = OcrComponentService.getInstance();
+    await service.init();
+    await expect(service.install()).resolves.toMatchObject({
+      ok: true,
+      data: { state: "ready" },
+    });
+    expect(fs.readFileSync(languagePath())).toEqual(payload);
+  });
+
+  it.each([
+    "http://release-assets.githubusercontent.com/github-production-release-asset/1290461151/dcbc1ea0-066c-4dcc-9285-c6ab238f9d24?sig=test",
+    "https://evil.example/github-production-release-asset/1290461151/dcbc1ea0-066c-4dcc-9285-c6ab238f9d24?sig=test",
+    "https://release-assets.githubusercontent.com/other/1290461151/dcbc1ea0-066c-4dcc-9285-c6ab238f9d24?sig=test",
+  ])("rejects an untrusted OCR redirect URL: %s", async (redirectUrl) => {
+    const payload = Buffer.from("untrusted-redirect-model");
+    const compressed = configureManifest(payload);
+    electronMock.fetch.mockResolvedValue(responseFor(compressed, redirectUrl));
+
+    const service = OcrComponentService.getInstance();
+    await service.init();
+    await expect(service.install()).resolves.toMatchObject({
+      ok: false,
+      errorCode: "OCR_DOWNLOAD_FAILED",
+    });
+    expect(fs.existsSync(languagePath())).toBe(false);
   });
 
   it("reports invalid files and can be queried before initialization", async () => {

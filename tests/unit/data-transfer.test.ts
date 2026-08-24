@@ -37,6 +37,11 @@ const settings: PortableSettings = {
   },
 };
 
+const validPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+
 const tempPaths: string[] = [];
 
 class FakeDataService {
@@ -689,7 +694,7 @@ describe("Backup v2 transfer", () => {
     makeDatabase(dbPath);
     const backgrounds = path.join(directory, "backgrounds");
     fs.mkdirSync(backgrounds, { recursive: true });
-    fs.writeFileSync(path.join(backgrounds, "scene.png"), Buffer.from("image"));
+    fs.writeFileSync(path.join(backgrounds, "scene.png"), validPng);
     const sourceSettings = new FakeSettings();
     sourceSettings.value.appearance.backgroundImage = "scene.png";
     const service = new DataTransferService(
@@ -721,7 +726,7 @@ describe("Backup v2 transfer", () => {
       string,
       unknown
     >;
-    const background = Buffer.from("background");
+    const background = validPng;
     const makeArchive = async (
       name: string,
       manifestPatch: Record<string, unknown>,
@@ -796,13 +801,221 @@ describe("Backup v2 transfer", () => {
     });
   });
 
+  it("rejects non-image background payloads even when the manifest hash matches", async () => {
+    const directory = createDirectory();
+    const dbPath = path.join(directory, "data.db");
+    const archivePath = path.join(directory, "invalid-background.zip");
+    makeDatabase(dbPath);
+    const db = fs.readFileSync(dbPath);
+    const setting = Buffer.from(JSON.stringify(settings));
+    const invalidBackground = Buffer.from("<script>not an image</script>");
+    const files = [
+      {
+        path: "data/data.db",
+        bytes: db.length,
+        sha256: createHash("sha256").update(db).digest("hex"),
+      },
+      {
+        path: "settings/portable-settings.json",
+        bytes: setting.length,
+        sha256: createHash("sha256").update(setting).digest("hex"),
+      },
+      {
+        path: "assets/background.png",
+        bytes: invalidBackground.length,
+        sha256: createHash("sha256").update(invalidBackground).digest("hex"),
+      },
+    ];
+    await writeZip(archivePath, [
+      {
+        name: "manifest.json",
+        content: manifestFor(db, setting, 2, files).replace(
+          '"includesBackground":false',
+          '"includesBackground":true',
+        ),
+      },
+      { name: "data/data.db", content: db },
+      { name: "settings/portable-settings.json", content: setting },
+      { name: "assets/background.png", content: invalidBackground },
+    ]);
+
+    await expect(
+      new DataTransferService(
+        dbPath,
+        new FakeDataService() as never,
+        new FakeSettings(),
+        "0.3.0",
+      ).importFromZip(archivePath),
+    ).rejects.toMatchObject({ code: "BACKUP_INVALID" });
+  });
+
+  it("serializes prepare and consumes an import token before applying", async () => {
+    const directory = createDirectory();
+    const dbPath = path.join(directory, "data.db");
+    const archivePath = path.join(directory, "backup.zip");
+    makeDatabase(dbPath);
+    const service = new DataTransferService(
+      dbPath,
+      new FakeDataService() as never,
+      new FakeSettings(),
+      "0.3.0",
+    );
+    await service.exportToPath(archivePath);
+    process.env.COLLEGE_TOOLKIT_E2E_IMPORT_PATH = archivePath;
+
+    const firstPrepare = service.prepareImport(1);
+    const secondPrepare = service.prepareImport(2);
+    const prepared = await Promise.all([firstPrepare, secondPrepare]);
+    expect(prepared.filter((item) => item.ok)).toHaveLength(1);
+    expect(
+      prepared.filter((item) => item.errorCode === "BACKUP_BUSY"),
+    ).toHaveLength(1);
+    const token = prepared.find((item) => item.ok)?.data?.inspection.token;
+    expect(token).toEqual(expect.any(String));
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const internal = service as unknown as {
+      applyPending: (pending: { inspection: unknown }) => Promise<unknown>;
+      busy: boolean;
+    };
+    internal.applyPending = async (pending) => {
+      await gate;
+      internal.busy = false;
+      return pending.inspection;
+    };
+    const firstCommit = service.commitImport(1, token as string);
+    await expect(
+      service.commitImport(1, token as string),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorCode: "BACKUP_INVALID",
+    });
+    await expect(
+      service.cancelImport(1, token as string),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorCode: "BACKUP_INVALID",
+    });
+    release();
+    await expect(firstCommit).resolves.toMatchObject({ ok: true });
+  });
+
+  it("reserves the import lifecycle while the native file picker is open", async () => {
+    const directory = createDirectory();
+    const dbPath = path.join(directory, "data.db");
+    makeDatabase(dbPath);
+    const service = new DataTransferService(
+      dbPath,
+      new FakeDataService() as never,
+      new FakeSettings(),
+      "0.3.0",
+    );
+    let releasePicker!: (value: { canceled: boolean; filePaths: string[] }) => void;
+    dialogMock.showOpenDialog.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releasePicker = resolve;
+        }),
+    );
+
+    const first = service.prepareImport(1);
+    await vi.waitFor(() => expect(dialogMock.showOpenDialog).toHaveBeenCalledTimes(1));
+    await expect(service.prepareImport(2)).resolves.toMatchObject({
+      ok: false,
+      errorCode: "BACKUP_BUSY",
+    });
+    releasePicker({ canceled: true, filePaths: [] });
+    await expect(first).resolves.toEqual({ ok: true });
+  });
+
+  it("keeps a failed cancellation retryable and blocks a later commit", async () => {
+    const directory = createDirectory();
+    const dbPath = path.join(directory, "data.db");
+    const archivePath = path.join(directory, "backup.zip");
+    makeDatabase(dbPath);
+    const service = new DataTransferService(
+      dbPath,
+      new FakeDataService() as never,
+      new FakeSettings(),
+      "0.3.0",
+    );
+    await service.exportToPath(archivePath);
+    process.env.COLLEGE_TOOLKIT_E2E_IMPORT_PATH = archivePath;
+    const prepared = await service.prepareImport(1);
+    const token = prepared.data?.inspection.token;
+    expect(token).toEqual(expect.any(String));
+
+    const internal = service as unknown as {
+      removeStaging: (stagingDir: string) => void;
+    };
+    const originalRemoveStaging = internal.removeStaging.bind(internal);
+    let shouldFail = true;
+    internal.removeStaging = (stagingDir) => {
+      if (shouldFail) {
+        shouldFail = false;
+        throw new Error("staging is locked");
+      }
+      originalRemoveStaging(stagingDir);
+    };
+
+    await expect(service.cancelImport(1, token as string)).resolves.toMatchObject({
+      ok: false,
+    });
+    await expect(service.commitImport(1, token as string)).resolves.toMatchObject({
+      ok: false,
+      errorCode: "BACKUP_BUSY",
+    });
+    await expect(service.cancelImport(1, token as string)).resolves.toEqual({
+      ok: true,
+      data: true,
+    });
+  });
+
+  it("keeps the staging path in every recovery-journal state", async () => {
+    const directory = createDirectory();
+    const dbPath = path.join(directory, "data.db");
+    const archivePath = path.join(directory, "backup.zip");
+    makeDatabase(dbPath);
+    const service = new DataTransferService(
+      dbPath,
+      new FakeDataService() as never,
+      new FakeSettings(),
+      "0.3.0",
+    );
+    await service.exportToPath(archivePath);
+    const journalWrites: Array<Record<string, unknown>> = [];
+    const internal = service as unknown as {
+      writeJournal: (filePath: string, value: Record<string, unknown>) => void;
+    };
+    const originalWriteJournal = internal.writeJournal.bind(internal);
+    internal.writeJournal = (filePath, value) => {
+      journalWrites.push(value);
+      originalWriteJournal(filePath, value);
+    };
+
+    await service.importFromZip(archivePath);
+    const recoveryWrites = journalWrites.filter(
+      (value) => value.status === "applying" || value.status === "committed",
+    );
+    expect(recoveryWrites).toHaveLength(2);
+    expect(recoveryWrites).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: "applying", stagingDir: expect.any(String) }),
+        expect.objectContaining({ status: "committed", stagingDir: expect.any(String) }),
+      ]),
+    );
+  });
+
   it("keeps recovery helpers safe when settings or background assets are absent", () => {
     const directory = createDirectory();
     const dbPath = path.join(directory, "data.db");
     makeDatabase(dbPath);
     const backgrounds = path.join(directory, "backgrounds");
     fs.mkdirSync(backgrounds, { recursive: true });
-    fs.writeFileSync(path.join(backgrounds, "scene.png"), "image");
+    fs.writeFileSync(path.join(backgrounds, "scene.png"), validPng);
     const settingsPath = path.join(directory, "settings", "portable.json");
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     const sourceSettings = new FileBackedSettings(settingsPath);
@@ -881,11 +1094,25 @@ describe("Backup v2 transfer", () => {
     await service.recoverOnStartup();
     expect(fs.existsSync(path.join(outside, "marker"))).toBe(true);
 
+    const applying = path.join(directory, "backup-staging", "applying");
+    fs.mkdirSync(applying, { recursive: true });
+    fs.writeFileSync(path.join(applying, "marker"), "x");
     fs.writeFileSync(
       path.join(directory, "import-journal.json"),
-      JSON.stringify({ status: "committed" }),
+      JSON.stringify({ status: "applying", stagingDir: applying }),
     );
     await service.recoverOnStartup();
+    expect(fs.existsSync(applying)).toBe(false);
+
+    const committed = path.join(directory, "backup-staging", "committed");
+    fs.mkdirSync(committed, { recursive: true });
+    fs.writeFileSync(path.join(committed, "marker"), "x");
+    fs.writeFileSync(
+      path.join(directory, "import-journal.json"),
+      JSON.stringify({ status: "committed", stagingDir: committed }),
+    );
+    await service.recoverOnStartup();
+    expect(fs.existsSync(committed)).toBe(false);
     expect(fs.existsSync(path.join(directory, "import-journal.json"))).toBe(
       false,
     );

@@ -28,6 +28,7 @@ export class OcrService {
   private worker: Worker | null = null;
   /** 初始化锁：避免并发首次识别时重复创建 worker */
   private initPromise: Promise<void> | null = null;
+  private workerGeneration = 0;
 
   private constructor() {}
 
@@ -47,7 +48,12 @@ export class OcrService {
   private async ensureWorker(): Promise<Worker> {
     if (this.worker) return this.worker;
     if (!this.initPromise) {
-      this.initPromise = this.createWorker();
+      const initialization = this.createWorker();
+      this.initPromise = initialization;
+      // 首次组件缺失、下载损坏等失败不能永久缓存 rejected Promise；下一次调用应重新检查组件。
+      void initialization.catch(() => {
+        if (this.initPromise === initialization) this.initPromise = null;
+      });
     }
     await this.initPromise;
     // createWorker 内部已赋值 this.worker；此处用局部断言绕过 TS 的空值检查
@@ -58,13 +64,14 @@ export class OcrService {
   }
 
   private async createWorker(): Promise<void> {
+    const generation = this.workerGeneration;
     const languagePath = ocrComponentService.getInstalledLanguagePath();
     if (!languagePath) {
       const status = ocrComponentService.getStatus().data;
       throw new OcrComponentStateError(status?.state === 'invalid' ? 'OCR_COMPONENT_INVALID' : 'OCR_COMPONENT_MISSING');
     }
     const componentRoot = languagePath.replace(/[\\/]chi_sim\.traineddata$/, '');
-    this.worker = await createWorker('chi_sim', 1, {
+    const worker = await createWorker('chi_sim', 1, {
       langPath: componentRoot,
       cachePath: componentRoot,
       gzip: false,
@@ -74,6 +81,11 @@ export class OcrService {
         }
       },
     });
+    if (generation !== this.workerGeneration) {
+      await worker.terminate();
+      return;
+    }
+    this.worker = worker;
   }
 
   /**
@@ -161,16 +173,22 @@ export class OcrService {
     return map[ch];
   }
 
-  async dispose(): Promise<void> {
-    if (this.worker) {
+  async invalidateWorker(): Promise<void> {
+    this.workerGeneration += 1;
+    this.initPromise = null;
+    const worker = this.worker;
+    this.worker = null;
+    if (worker) {
       try {
-        await this.worker.terminate();
+        await worker.terminate();
       } catch {
         // 终止失败忽略
       }
-      this.worker = null;
     }
-    this.initPromise = null;
+  }
+
+  async dispose(): Promise<void> {
+    await this.invalidateWorker();
     this.initialized = false;
   }
 }

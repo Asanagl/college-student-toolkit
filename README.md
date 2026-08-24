@@ -2,7 +2,7 @@
 
 大学生 AI 工具组是一个 Windows 桌面应用，用于管理日程、课程表、考试、实验和成绩/GPA，并支持在用户主动操作后从教务系统导入数据。
 
-当前代码版本为 `0.3.0`。本仓库交付的是可审计的本地 RC：核心实现、19 个测试文件/131 个单元与组件用例、2 个 Electron E2E smoke、x64 AppX/MSIX 结构检查、隔离启动 smoke 和完整 Release 性能门禁已完成。当前正式身份候选为 v13：产品版本 `0.3.0`，Windows MSIX Identity Version `0.3.5.0`，本地验证已通过；Partner Center 包页已完成分析并显示 `Validated`，v13 已保存到 Submission 1。页面仍提示 `runFullTrust` 受限功能需要审批；Submission 1 仍是草稿，属性、IARC 年龄分级、Store 一览、定价/可用性和提交选项尚未补齐，也尚未提交认证或发布。Store 审核/发布、Store 实机安装更新、干净机验收和真实教务系统验收仍需外部证据。因此，本地构建或草稿上传不能被称为 Microsoft Store `v0.3.0 Stable`。
+当前代码版本为 `0.3.0`。最新交付为本地 Microsoft Store 提交候选 **v19**：[`release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix`](release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix)，产品版本 `0.3.0`、MSIX Identity Version `0.3.11.0`、SHA-256 `047D764C1187669C0CECA578CC00AE6DD9880EC7EAA406D95186B83F5EA2BF6F`。它包含提醒扫描游标/休眠补扫、OCR 重定向 allowlist、性能报告 required metric 门禁和干净 checkout 的 OCR fixture 修复，并通过构建及静态清单/ASAR/x64 原生 SQLite binding 核对；它是 **未签名的 Store-only 本地候选**，当前尚未上传 Partner Center，不能称为已审核、已发布或 Microsoft Store Stable。v19 的受影响提醒/OCR 单元测试和类型检查已执行；完整门禁、真实 Windows 安装及 Store 认证仍未完成。详见 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md)。
 
 ## 功能概览
 
@@ -16,23 +16,23 @@
 
 ## 当前交付状态
 
-| 项目                                                        | 状态                                                                                            |
-| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 版本与依赖升级                                              | `0.3.0` 已写入 `package.json` 和锁文件                                                          |
-| 本地单元/组件测试、类型检查、Lint、格式检查                 | 已通过（19 文件、131 用例），详见 [`docs/v0.3.0-verification.md`](docs/v0.3.0-verification.md)  |
-| Electron 源码与 packaged E2E                                | 已通过（`npm run test:e2e`：2 passed；当前源码 AppX 导入 fixture：1 passed）                    |
-| 本地生产构建和包前置 smoke                                  | 已通过                                                                                          |
-| 依赖安全审计                                                | `npm audit --omit=dev` 已通过                                                                   |
-| Windows Release 性能与 30 分钟 soak                       | 已通过（30 次采样、5 次预热、5 分钟 idle、30 分钟/180 周期 soak）                              |
-| 本地 x64 NSIS RC 和 unpacked 启动 smoke                     | 已生成并通过；仅作备用/回归渠道，不是 Store 正式包                                              |
-| 本地 x64 MSIX、manifest/native binding 检查和隔离启动 smoke | 已生成并通过；使用 `CN=ms` 测试身份，不可直接提交 Store                                         |
-| 本地 `CN=ms` 测试包指纹                                      | `135,688,701` bytes；SHA-256 `36B65CBE8099259EEE37AE2BEF0DB1DE7C8382C17C715D6E81A7D72C3A24D4A8` |
-| 当前正式身份 MSIX 提交候选                                 | `release-v0.3.0-msix-store-v13`；Identity Version `0.3.5.0`；`135,698,379` bytes；SHA-256 `ADBB80C6509A58F70F3F83C24301869440A2C69A833787E3C6A61B8745FB34CB`；本地验证通过；运行时/备份产品版本仍为 `0.3.0` |
-| Partner Center identity、审核/发布和 Store 页面             | v13 已验证并保存；Submission 1 仍为草稿；`runFullTrust` 审批、商店资料、认证和发布仍未完成 |
-| Store 一览演示素材                                          | 已生成 5 张隔离演示截图，见 [`docs/store-assets`](docs/store-assets)；上传前仍需发布者确认文案和品牌素材 |
-| Store 实际安装、更新、卸载保留数据和重装恢复                | 未执行，需 Store 发布后在 Windows 实机验收                                                      |
-| 真实 OCR Release 资产下载                                   | 本地资产和双哈希已通过；公开 Release 下载验证待完成                                             |
-| Windows 11 24H2/25H2 干净机及真实教务系统验收               | 未执行，阻断 Store Stable                                                                       |
+| 项目                                                        | 状态                                                                                                                                                                                                        |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 版本与依赖升级                                              | `0.3.0` 已写入 `package.json` 和锁文件                                                                                                                                                                      |
+| v19 受影响单元测试与主进程类型检查                           | 已通过（提醒 10 用例、OCR 12 用例、Node 类型检查），完整门禁仍待执行                                                                                                                                            |
+| Electron 源码与 packaged E2E                                | 已通过（v14 `npm run test:e2e:packaged`：3 passed；导入浏览器 fixture 单独执行：2 passed）                                                                                                                   |
+| 本地生产构建和包前置 smoke                                  | 已通过                                                                                                                                                                                                      |
+| 依赖安全审计                                                | `npm audit --omit=dev` 已通过                                                                                                                                                                               |
+| Windows Release 性能与 30 分钟 soak                         | 已通过（30 次采样、5 次预热、5 分钟 idle、30 分钟/180 周期 soak）                                                                                                                                           |
+| 本地 x64 NSIS RC 和 unpacked 启动 smoke                     | 已生成并通过；仅作备用/回归渠道，不是 Store 正式包                                                                                                                                                          |
+| 本地 x64 MSIX、manifest/native binding 检查和隔离启动 smoke | 已生成并通过；使用 `CN=ms` 测试身份，不可直接提交 Store                                                                                                                                                     |
+| 本地 `CN=ms` 测试包指纹                                     | `135,688,701` bytes；SHA-256 `36B65CBE8099259EEE37AE2BEF0DB1DE7C8382C17C715D6E81A7D72C3A24D4A8`                                                                                                             |
+| 当前正式身份 MSIX 提交候选                                  | `release-v0.3.0-msix-store-v19`；Identity Version `0.3.11.0`；`136,149,552` bytes；SHA-256 `047D764C1187669C0CECA578CC00AE6DD9880EC7EAA406D95186B83F5EA2BF6F`；本地验证通过；运行时/备份产品版本仍为 `0.3.0` |
+| Partner Center identity、审核/发布和 Store 页面             | 当前草稿页面可见 `0.3.7.0` 与 `0.3.6.0` 旧包，未见 v19；v19 上传仍受文件选择器阻断；Submission 1 仍为草稿；`runFullTrust` 审批、商店资料、认证和发布仍未完成                                  |
+| Store 一览演示素材                                          | 已生成 5 张隔离演示截图，见 [`docs/store-assets`](docs/store-assets)；上传前仍需发布者确认文案和品牌素材                                                                                                    |
+| Store 实际安装、更新、卸载保留数据和重装恢复                | 未执行，需 Store 发布后在 Windows 实机验收                                                                                                                                                                  |
+| 真实 OCR Release 资产下载                                   | 固定 Release URL、真实 GitHub CDN 重定向 host/path、大小和双哈希已核对；真实应用内识别性能仍未执行                                                                                                           |
+| Windows 11 24H2/25H2 干净机及真实教务系统验收               | 未执行，阻断 Store Stable                                                                                                                                                                                   |
 
 完整验收清单见 [`docs/v0.3.0-acceptance-checklist.md`](docs/v0.3.0-acceptance-checklist.md)，用户可见变更见 [`docs/v0.3.0-release-notes.md`](docs/v0.3.0-release-notes.md)。
 
@@ -93,17 +93,17 @@ npm run verify:appx
 npm run test:smoke:appx
 ```
 
-正式 Store 构建必须使用 Partner Center 提供的准确 package identity；这些字段不是账号凭据，不要把密码、Cookie、私钥或访问令牌放入环境以外的文件。由于 Partner Center 不接受非零第四段版本，当前候选使用三段 Store 身份版本 `0.3.5`，由清单生成 `0.3.5.0`；应用运行时和备份 manifest 仍保持产品版本 `0.3.0`：
+正式 Store 构建必须使用 Partner Center 提供的准确 package identity；这些字段不是账号凭据，不要把密码、Cookie、私钥或访问令牌放入环境以外的文件。由于 Partner Center 不接受非零第四段版本，当前候选使用三段 Store 身份版本 `0.3.11`，由清单生成 `0.3.11.0`；应用运行时和备份 manifest 仍保持产品版本 `0.3.0`：
 
 ```powershell
 $env:APPX_IDENTITY_NAME = "<Partner Center Name>"
 $env:APPX_APPLICATION_ID = "<Partner Center Application ID>"
 $env:APPX_PUBLISHER = "<Partner Center Publisher>"
 $env:APPX_PUBLISHER_DISPLAY_NAME = "Asanagi"
-$env:APPX_PACKAGE_VERSION = "0.3.5"
-$env:APPX_OUTPUT_DIR = "release-v0.3.0-msix-store-v13"
+$env:APPX_PACKAGE_VERSION = "0.3.11"
+$env:APPX_OUTPUT_DIR = "release-v0.3.0-msix-store-v19"
 npm run package:store
-$env:APPX_EXPECTED_VERSION = "0.3.5.0"
+$env:APPX_EXPECTED_VERSION = "0.3.11.0"
 npm run verify:appx
 npm run test:smoke:appx
 ```

@@ -82,6 +82,22 @@ describe("DataService", () => {
     });
   });
 
+  it("keeps database-only guards explicit after the connection closes", async () => {
+    await dataService.init();
+    dataService.openDatabase();
+    dataService.closeDatabase();
+
+    const internals = dataService as unknown as {
+      createTables: () => void;
+      initRepositories: () => void;
+      seedDefaults: () => void;
+    };
+    expect(() => dataService.getRecordCounts()).toThrow("数据库未初始化");
+    expect(() => internals.createTables()).toThrow("数据库未初始化");
+    expect(() => internals.initRepositories()).toThrow("数据库未初始化");
+    expect(() => internals.seedDefaults()).toThrow("数据库未初始化");
+  });
+
   it("refuses initialization when an existing database has an unsupported schema", async () => {
     const Database = (await import("better-sqlite3")).default;
     const db = new Database(path.join(electronState.userData, "data.db"));
