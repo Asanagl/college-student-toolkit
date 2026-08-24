@@ -38,7 +38,7 @@
 
 ## Windows 用户
 
-正式 Windows 版本应从 Microsoft Store 页面获取。当前已记录 Product ID `9NV11V5BK23N` 和页面 URL，但 Submission 1 仍是草稿，不能把该页面或本地包当作已发布 Stable 下载。仓库中的 `release-v0.3.0-msix-local` 是 electron-builder 生成的本地 Store-only 测试包，Publisher 为 `CN=ms`，只用于包结构和隔离启动验证，不能直接提交 Store 或交付给普通用户。
+正式 Windows 版本应从 Microsoft Store 页面获取。当前已记录 Product ID `9NV11V5BK23N` 和预期页面 URL；只读探测于 2026-08-24 返回 HTTP `410 Gone`，且 Submission 1 仍是草稿，因此不能把该 URL 或本地包当作已发布 Stable 下载。仓库中的 `release-v0.3.0-msix-local` 是 electron-builder 生成的本地 Store-only 测试包，Publisher 为 `CN=ms`，只用于包结构和隔离启动验证，不能直接提交 Store 或交付给普通用户。
 
 正式 Store 包由 Microsoft Store 管理安装、发布者信任、更新和卸载事务，应用内不会启动 `electron-updater`。NSIS 只保留为本地 RC/备用渠道。无论使用哪个渠道，覆盖升级前都应先导出 v0.2 原始数据和 legacy v1 备份；v0.3 的 v2 备份不能由旧版 v0.2 读取。
 
