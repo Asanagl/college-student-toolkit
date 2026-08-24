@@ -6,6 +6,7 @@ const required = [
   "APPX_IDENTITY_NAME",
   "APPX_APPLICATION_ID",
   "APPX_PUBLISHER",
+  "APPX_PUBLISHER_DISPLAY_NAME",
 ];
 const missing = required.filter((name) => !process.env[name]?.trim());
 if (missing.length > 0) {

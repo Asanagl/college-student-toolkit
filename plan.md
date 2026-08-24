@@ -2,9 +2,9 @@
 
 > 发布路线变更记录（2026-08-21）：用户已决定通过 Microsoft Store 分发 MSIX，正式渠道不再以购买 OV Authenticode 证书为前提。本计划保留 NSIS 作为本地 RC/备用构建，但 Store 版本由 Microsoft Store 负责签名、分发和更新。下文凡与 OV 证书、RFC 3161、GitHub Stable 自动更新相关的旧条目，均按本变更说明替换；未完成的 Store 外部验收不得被本地构建结果代替。
 
-> **当前交付修订（2026-08-24，优先于本文件中旧 v14/v15/v18 记录）**：当前本地候选为 `release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix`，产品版本 `0.3.0`、MSIX Identity Version `0.3.11.0`、大小 `136,149,552` bytes、SHA-256 `047D764C1187669C0CECA578CC00AE6DD9880EC7EAA406D95186B83F5EA2BF6F`。本轮完成提醒休眠补扫/串行重算、OCR 重定向 allowlist、性能报告 required metric 门禁、OCR fixture 可复现修复、编译、封装和静态包核对；受影响提醒/OCR 单元测试及类型检查已通过，完整门禁、实机验收和长性能采样仍未完成。它未签名；当前 Partner Center 草稿页面可见 `0.3.7.0` 和 `0.3.6.0` 包，但没有 v19，原生/扩展文件选择上传仍未成功，最新只能称为“本地 RC / Microsoft Store 提交候选”。最终 Store 审核、`runFullTrust` 审批、资料/定价/IARC 法定确认、实际 Store 安装更新卸载、v0.2 迁移及真实教务导入仍未完成。交付和操作流程以 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md) 为准。
+ > **当前交付修订（2026-08-24，优先于本文件中旧 v14/v15/v18 记录）**：当前本地候选为 `release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix`，产品版本 `0.3.0`、MSIX Identity Version `0.3.11.0`、大小 `136,149,551` bytes、SHA-256 `2B16F1E2606A4EFB0E75946F42D7081F4A1BFB8A4B742E80D787D48347341D87`。本轮完成提醒休眠补扫/串行重算、OCR 重定向 allowlist、性能报告 required metric 门禁、OCR fixture 可复现修复、编译、封装和静态包核对；受影响提醒/OCR 单元测试及类型检查已通过，完整门禁、实机验收和长性能采样仍未完成。它未签名；v19 已上传至 Partner Center Submission 1 草稿，包列表显示 `0.3.11.0` x64，当前没有包身份验证错误；仍有 `runFullTrust` 审批提示，提交尚未认证、审核或发布，最新只能称为“本地 RC / Microsoft Store 提交候选”。最终 Store 审核、资料/定价/IARC 法定确认、实际 Store 安装更新卸载、v0.2 迁移及真实教务导入仍未完成。交付和操作流程以 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md) 为准。
 
-> 历史执行记录（2026-08-23）：针对导入浏览器 generation 清理竞态修复重建的正式身份候选为 v14 `release-v0.3.0-msix-store-v14/college-student-toolkit-0.3.6-x64.msix`；该包已在 Partner Center 分析并保存为 `Validated`。它不是当前 v19。2026-08-24 页面同时显示旧 `0.3.6.0` 与 `0.3.7.0` 包，v19 尚未上传；商店资料、`runFullTrust` 审批、认证、审核、公开发布和实机验收仍未完成。
+ > 历史执行记录（2026-08-23，含 2026-08-24 上传前页面快照）：针对导入浏览器 generation 清理竞态修复重建的正式身份候选为 v14 `release-v0.3.0-msix-store-v14/college-student-toolkit-0.3.6-x64.msix`；该包已在 Partner Center 分析并保存为 `Validated`。它不是当前 v19。快照记录了当时页面尚未显示 v19；随后 v19 已上传至 Submission 1 草稿。商店资料、`runFullTrust` 审批、认证、审核、公开发布和实机验收仍未完成。
 
 ## 一、目标、交付边界与已锁定决策
 
@@ -501,7 +501,8 @@
    - `APPX_IDENTITY_NAME`；
    - `APPX_APPLICATION_ID`；
    - `APPX_PUBLISHER`；
-   - 可选的 `APPX_PUBLISHER_DISPLAY_NAME` 和 `APPX_OUTPUT_DIR`。
+   - `APPX_PUBLISHER_DISPLAY_NAME`（Partner Center 的发布者显示名）；
+   - 可选的 `APPX_OUTPUT_DIR`。
    - 重新上传同一产品版本时，必须显式设置三段 `APPX_PACKAGE_VERSION`（当前候选为 `0.3.11`），脚本会生成 `0.3.11.0`；旧的 `APPX_SET_BUILD_NUMBER` / `APPX_BUILD_NUMBER` 会被拒绝。
 
 3. 仓库、日志和构建环境不得保存 Microsoft 账号密码、Cookie、私钥、云签名凭据或 Partner Center 访问令牌。构建脚本缺少 identity 或发现 `CN=ms` 时必须失败。

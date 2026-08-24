@@ -33,7 +33,7 @@ module.exports = {
     applicationId: process.env.APPX_APPLICATION_ID || "CollegeStudentToolkit",
     publisher: process.env.APPX_PUBLISHER || "CN=ms",
     publisherDisplayName:
-      process.env.APPX_PUBLISHER_DISPLAY_NAME || "大学生工具组",
+      process.env.APPX_PUBLISHER_DISPLAY_NAME || "Asanagi",
     displayName: "大学生工具组",
     backgroundColor: "#1677ff",
     languages: ["zh-CN", "en-US"],
