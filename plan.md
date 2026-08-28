@@ -1,10 +1,14 @@
 # 大学生工具组 `v0.3.0` Microsoft Store/MSIX 可交付版本实施计划
 
+> **2026-08-27 外部状态更新（优先于下方较早记录）**：用户已确认 Microsoft Store 授权/审核成功，产品“大学生工具组”（Product ID `9NV11V5BK23N`）已经成功公开上架。当前 Store 页面为 `https://apps.microsoft.com/detail/9NV11V5BK23N`。本轮按用户要求不再追加安装、更新、卸载、迁移、OCR 或真实教务系统实机验证；因此“已上架”不等于本地验收清单中的所有项目均已 PASS，也不自动改称 Store Stable。不要重新上传、取消或修改已上架提交。
+
+> **历史外部状态（2026-08-25，已被 2026-08-27 更新覆盖）**：Partner Center Submission 1 当时显示“正在认证”；“提交”和“预处理”已完成，认证通过后按页面设置立即发布。该记录已由用户 2026-08-27 对授权成功和公开上架的确认取代，仅保留作时间线审计。
+
 > 发布路线变更记录（2026-08-21）：用户已决定通过 Microsoft Store 分发 MSIX，正式渠道不再以购买 OV Authenticode 证书为前提。本计划保留 NSIS 作为本地 RC/备用构建，但 Store 版本由 Microsoft Store 负责签名、分发和更新。下文凡与 OV 证书、RFC 3161、GitHub Stable 自动更新相关的旧条目，均按本变更说明替换；未完成的 Store 外部验收不得被本地构建结果代替。
 
- > **当前交付修订（2026-08-24，优先于本文件中旧 v14/v15/v18 记录）**：当前本地候选为 `release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix`，产品版本 `0.3.0`、MSIX Identity Version `0.3.11.0`、大小 `136,149,551` bytes、SHA-256 `2B16F1E2606A4EFB0E75946F42D7081F4A1BFB8A4B742E80D787D48347341D87`。本轮完成提醒休眠补扫/串行重算、OCR 重定向 allowlist、性能报告 required metric 门禁、OCR fixture 可复现修复、编译、封装和静态包核对；受影响提醒/OCR 单元测试及类型检查已通过，完整门禁、实机验收和长性能采样仍未完成。它未签名；v19 已上传至 Partner Center Submission 1 草稿，包列表显示 `0.3.11.0` x64，当前没有包身份验证错误；仍有 `runFullTrust` 审批提示，提交尚未认证、审核或发布，最新只能称为“本地 RC / Microsoft Store 提交候选”。最终 Store 审核、资料/定价/IARC 法定确认、实际 Store 安装更新卸载、v0.2 迁移及真实教务导入仍未完成。交付和操作流程以 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md) 为准。
+ > **当前本地候选与外部状态（2026-08-27，优先于本文件中旧 v14/v15/v18 记录）**：当前本地候选为 `release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix`，产品版本 `0.3.0`、MSIX Identity Version `0.3.11.0`、大小 `136,149,551` bytes、SHA-256 `2B16F1E2606A4EFB0E75946F42D7081F4A1BFB8A4B742E80D787D48347341D87`。本轮完成提醒休眠补扫/串行重算、OCR 重定向 allowlist、性能报告 required metric 门禁、OCR fixture 可复现修复、编译、封装和静态包核对；受影响提醒/OCR 单元测试及类型检查已通过，完整门禁、实机验收和长性能采样仍未完成。它未签名；v19 已由用户确认获得 Microsoft Store 授权并公开上架，公开入口为 `https://apps.microsoft.com/detail/9NV11V5BK23N`；认证、审核和发布不再是当前阻塞项。提交选项页的 Partner Center“保存”已确认；当前仍需区分已上架与完整实机验收，实际 Store 安装更新卸载、v0.2 迁移及真实教务导入尚未完成。交付和操作流程以 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md) 为准。
 
- > 历史执行记录（2026-08-23，含 2026-08-24 上传前页面快照）：针对导入浏览器 generation 清理竞态修复重建的正式身份候选为 v14 `release-v0.3.0-msix-store-v14/college-student-toolkit-0.3.6-x64.msix`；该包已在 Partner Center 分析并保存为 `Validated`。它不是当前 v19。快照记录了当时页面尚未显示 v19；随后 v19 已上传至 Submission 1 草稿。商店资料、`runFullTrust` 审批、认证、审核、公开发布和实机验收仍未完成。
+ > 历史执行记录（2026-08-23，含 2026-08-24 上传前页面快照）：针对导入浏览器 generation 清理竞态修复重建的正式身份候选为 v14 `release-v0.3.0-msix-store-v14/college-student-toolkit-0.3.6-x64.msix`；该包已在 Partner Center 分析并保存为 `Validated`。它不是当前 v19。快照记录了当时页面尚未显示 v19；随后 v19 已上传至 Submission 1，并于 2026-08-25 进入认证、后于 2026-08-27 公开上架。商店资料、认证结果和发布不再是当前阻塞项，实机验收仍未完成。
 
 ## 一、目标、交付边界与已锁定决策
 
