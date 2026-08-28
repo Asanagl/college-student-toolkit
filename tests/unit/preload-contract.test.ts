@@ -69,6 +69,7 @@ describe("preload RendererApi contract", () => {
       "theme",
       "appearance",
       "ocrComponent",
+      "acm",
     ]);
   });
 
@@ -143,6 +144,15 @@ describe("preload RendererApi contract", () => {
     await call("ocrComponent", "install");
     await call("ocrComponent", "cancelInstall");
     await call("ocrComponent", "remove");
+    await call("acm", "getStatus");
+    await call("acm", "setEnabled", true);
+    await call("acm", "retry");
+    await call("acm", "getCompilerSelection");
+    await call("acm", "setCompilerSelection", {});
+    await call("acm", "probeCompiler");
+    await call("acm", "startRunner", {});
+    await call("acm", "stopRunner");
+    await call("acm", "releaseDocument", "document-id");
     expect(electronState.invoke.mock.calls.length).toBeGreaterThan(60);
   });
 
@@ -155,9 +165,10 @@ describe("preload RendererApi contract", () => {
       api().theme.onChange(callback),
       api().appearance.onChange(callback),
       api().ocrComponent.onStatusChange(callback),
+      api().acm.onRunnerEvent(callback),
     ];
-    expect(electronState.on).toHaveBeenCalledTimes(6);
+    expect(electronState.on).toHaveBeenCalledTimes(7);
     for (const unsubscribe of unsubscribers) unsubscribe();
-    expect(electronState.removeListener).toHaveBeenCalledTimes(6);
+    expect(electronState.removeListener).toHaveBeenCalledTimes(7);
   });
 });

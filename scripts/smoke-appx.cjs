@@ -5,7 +5,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
-const output = process.env.APPX_OUTPUT_DIR || "release-v0.3.0-msix-local";
+const output = process.env.APPX_OUTPUT_DIR || "release-v0.4.0-msix-local";
 const unpacked = path.join(root, output, "win-unpacked");
 const executable = path.join(unpacked, "大学生工具组.exe");
 const electron = path.join(

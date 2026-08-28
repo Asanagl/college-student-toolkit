@@ -2,7 +2,7 @@
 
 大学生 AI 工具组是一个 Windows 桌面应用，用于管理日程、课程表、考试、实验和成绩/GPA，并支持在用户主动操作后从教务系统导入数据。
 
-当前代码版本为 `0.3.0`。最新交付候选为本地 Microsoft Store 提交候选 **v19**：[`release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix`](release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix)，产品版本 `0.3.0`、MSIX Identity Version `0.3.11.0`、SHA-256 `2B16F1E2606A4EFB0E75946F42D7081F4A1BFB8A4B742E80D787D48347341D87`。它包含提醒扫描游标/休眠补扫、OCR 重定向 allowlist、性能报告 required metric 门禁和干净 checkout 的 OCR fixture 修复，并通过构建及静态清单/ASAR/x64 原生 SQLite binding 核对；该本地文件本身是 **未签名的 Store-only 候选**。用户已确认 v19 已通过 Microsoft Store 审核并公开上架，但本地文件和公开上架状态都不等于全部实机验收已完成。详见 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md)。
+当前代码版本为 `0.4.0`，正在 `codex/v0.4.0-acm-ide` 分支开发。v0.3.0 的 Microsoft Store v19 上架记录仍保留为历史交付，实际 Store 安装、更新、卸载/重装、v0.2 迁移、OCR 实机验收和真实教务导入边界不变，详见 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md)。v0.4.0 的 ACM 工具集范围、接口和门禁见 [`docs/v0.4.0-plan.md`](docs/v0.4.0-plan.md)。
 
 ## 功能概览
 
@@ -13,6 +13,7 @@
 - 教务导入支持 DOM 解析；OCR 是可选组件，用户点击安装后才从固定 Release 资产下载。
 - v0.2 数据库迁移、legacy v1 备份导入和 v2 完整备份导入。
 - 备份包含学习数据和可迁移设置，但不包含密码、教务 Cookie、登录会话、浏览器缓存、窗口坐标或 OCR 组件。
+- ACM 临时 IDE：单文件 C++17 编辑、模板、编译/运行、stdin/终端输出和本地 MinGW 探测；没有编译器时仍可编辑和保存。
 
 ## 当前交付状态
 
@@ -33,6 +34,7 @@
 | Store 实际安装、更新、卸载保留数据和重装恢复                | 未执行，需 Store 发布后在 Windows 实机验收                                                                                                                                                                  |
 | 真实 OCR Release 资产下载                                   | 固定 Release URL、真实 GitHub CDN 重定向 host/path、大小和双哈希已核对；真实应用内识别性能仍未执行                                                                                                           |
 | Windows 11 24H2/25H2 干净机及真实教务系统验收               | 未执行，阻断 Store Stable                                                                                                                                                                                   |
+| v0.4.0 ACM Workbench、runner 和内置工具链                     | 开发中；当前服务/契约已建立，UI、runner、helper、staging 实包和完整回归仍未完成                                                                                                                               |
 
 完整验收清单见 [`docs/v0.3.0-acceptance-checklist.md`](docs/v0.3.0-acceptance-checklist.md)，用户可见变更见 [`docs/v0.3.0-release-notes.md`](docs/v0.3.0-release-notes.md)。
 
@@ -134,6 +136,7 @@ npm run package:win
 ## 文档
 
 - [`plan.md`](plan.md)：v0.3.0 实施计划、技术决策和 Stable 退出标准。
+- [`docs/v0.4.0-plan.md`](docs/v0.4.0-plan.md)：ACM 工具集目标、架构、风险、阶段门禁和验证入口。
 - [`docs/v0.3.0-verification.md`](docs/v0.3.0-verification.md)：本地验证命令、结果、覆盖率范围和未执行项。
 - [`docs/v0.3.0-acceptance-checklist.md`](docs/v0.3.0-acceptance-checklist.md)：发布前逐项验收清单。
 - [`docs/v0.3.0-release-notes.md`](docs/v0.3.0-release-notes.md)：用户可见变更、迁移、隐私提示和已知限制。

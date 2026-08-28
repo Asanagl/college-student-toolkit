@@ -13,6 +13,7 @@ import {
   BulbFilled,
   DownOutlined,
   BgColorsOutlined,
+  CodeOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import type { ThemeMode } from '../../shared/types';
@@ -27,6 +28,7 @@ const MENU_ITEMS = [
   { key: '/exam', icon: <FileProtectOutlined />, label: '考试安排' },
   { key: '/lab', icon: <ExperimentOutlined />, label: '实验提醒' },
   { key: '/grade', icon: <TrophyOutlined />, label: '成绩显示' },
+  { key: '/acm', icon: <CodeOutlined />, label: 'ACM 临时 IDE' },
 ];
 
 /** 主题切换下拉菜单选项 */

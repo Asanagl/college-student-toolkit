@@ -5,6 +5,12 @@ import { contextBridge, ipcRenderer } from "electron";
 import {
   IPC_CHANNELS,
   type AppearanceConfig,
+  type CompilerSelection,
+  type AcmDocumentSaveRequest,
+  type AcmTemplateId,
+  type AcmDocument,
+  type RunnerEvent,
+  type RunnerStartRequest,
   type OcrComponentStatus,
   type RendererApi,
   type UpdateStatusPayload,
@@ -190,6 +196,37 @@ const api: RendererApi = {
           IPC_CHANNELS.OCR_COMPONENT_ON_STATUS_CHANGE,
           handler,
         );
+    },
+  },
+  acm: {
+    getStatus: () => invoke(IPC_CHANNELS.ACM_GET_STATUS),
+    setEnabled: (enabled: boolean) =>
+      invoke(IPC_CHANNELS.ACM_SET_ENABLED, enabled),
+    retry: () => invoke(IPC_CHANNELS.ACM_RETRY),
+    createDocument: (template: AcmTemplateId) =>
+      invoke(IPC_CHANNELS.ACM_DOCUMENT_CREATE, template),
+    openDocument: () => invoke(IPC_CHANNELS.ACM_DOCUMENT_OPEN),
+    saveDocument: (request: AcmDocumentSaveRequest) =>
+      invoke(IPC_CHANNELS.ACM_DOCUMENT_SAVE, request),
+    saveDocumentAs: (request: AcmDocumentSaveRequest) =>
+      invoke(IPC_CHANNELS.ACM_DOCUMENT_SAVE_AS, request),
+    releaseDocument: (documentId: string) =>
+      invoke(IPC_CHANNELS.ACM_DOCUMENT_RELEASE, documentId),
+    checkDocumentExternal: (
+      document: Pick<AcmDocument, "filePath" | "savedFingerprint">,
+    ) => invoke(IPC_CHANNELS.ACM_DOCUMENT_CHECK_EXTERNAL, document),
+    getCompilerSelection: () => invoke(IPC_CHANNELS.ACM_COMPILER_GET_SELECTION),
+    setCompilerSelection: (selection: CompilerSelection) =>
+      invoke(IPC_CHANNELS.ACM_COMPILER_SET_SELECTION, selection),
+    probeCompiler: () => invoke(IPC_CHANNELS.ACM_COMPILER_PROBE),
+    startRunner: (request: RunnerStartRequest) =>
+      invoke(IPC_CHANNELS.ACM_RUNNER_START, request),
+    stopRunner: () => invoke(IPC_CHANNELS.ACM_RUNNER_STOP),
+    onRunnerEvent: (callback: (event: RunnerEvent) => void) => {
+      const handler = (_event: unknown, event: RunnerEvent) => callback(event);
+      ipcRenderer.on(IPC_CHANNELS.ACM_RUNNER_EVENT, handler);
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.ACM_RUNNER_EVENT, handler);
     },
   },
 };

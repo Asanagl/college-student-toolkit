@@ -13,6 +13,9 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   IPC_CHANNELS,
+  type AcmDocument,
+  type AcmPluginStatus,
+  type CompilerProbeResult,
   type Course,
   type Exam,
   type GpaFormula,
@@ -22,6 +25,7 @@ import {
   type Lab,
   type MaterialMode,
   type PeriodConfig,
+  type RunnerEvent,
   type Schedule,
 } from "../shared/types";
 import { PRODUCT_VERSION } from "../shared/version";
@@ -40,6 +44,10 @@ import {
 } from "./services/ImportBrowserService";
 import { ocrComponentService } from "./services/OcrComponentService";
 import { ocrService } from "./services/OcrService";
+import { acmPluginService } from "./services/AcmPluginService";
+import { acmCompilerService } from "./services/AcmCompilerService";
+import { acmFileService } from "./services/AcmFileService";
+import { acmRunnerService } from "./services/AcmRunnerService";
 import { parseDomWithAllParsers } from "./services/parsers";
 import { parseDomForExams } from "./services/parsers/exam";
 import { parseOcrToExams } from "./services/ExamOcrParser";
@@ -77,6 +85,12 @@ import {
   IpcValidationError,
   formulaIdSchema,
   notificationPayloadSchema,
+  acmTemplateSchema,
+  acmDocumentSaveSchema,
+  acmDocumentReleaseSchema,
+  acmExternalDocumentSchema,
+  acmCompilerSelectionSchema,
+  acmRunnerStartSchema,
 } from "./validation";
 
 protocol.registerSchemesAsPrivileged([
@@ -91,6 +105,10 @@ if (!hasSingleInstanceLock) app.quit();
 
 const services = [
   portableSettingsService,
+  acmCompilerService,
+  acmFileService,
+  acmRunnerService,
+  acmPluginService,
   windowService,
   themeService,
   appearanceService,
@@ -642,6 +660,167 @@ function registerOcrComponentHandlers(): void {
   );
 }
 
+function acmUnavailable<T>(): IpcResult<T> | null {
+  const status = acmPluginService.getStatus();
+  if (!status.ok || !status.data) {
+    return {
+      ok: false,
+      error: status.error ?? "ACM 插件状态不可用",
+      errorCode: status.errorCode ?? "ACM_PLUGIN_INVALID",
+    };
+  }
+  if (status.data.state === "unsupported")
+    return {
+      ok: false,
+      error: "ACM 工具仅支持 Windows 11 x64",
+      errorCode: "ACM_UNSUPPORTED",
+    };
+  if (status.data.state === "disabled")
+    return { ok: false, error: "ACM 插件已禁用", errorCode: "ACM_DISABLED" };
+  if (status.data.state === "error")
+    return {
+      ok: false,
+      error: status.data.error ?? "ACM 插件初始化失败",
+      errorCode: status.data.errorCode ?? "ACM_PLUGIN_INVALID",
+    };
+  return null;
+}
+
+function withAcm<T>(fn: () => IpcResult<T>): IpcResult<T> {
+  return acmUnavailable<T>() ?? fn();
+}
+
+function registerAcmPluginHandlers(): void {
+  ipcMain.handle(IPC_CHANNELS.ACM_GET_STATUS, () =>
+    wrapIpc(() => acmPluginService.getStatus()),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_SET_ENABLED, (_event, enabled: unknown) =>
+    wrapIpcAsync<AcmPluginStatus>(async () => {
+      if (typeof enabled !== "boolean")
+        return {
+          ok: false,
+          error: "ACM 插件开关必须是布尔值",
+          errorCode: "VALIDATION_FAILED" as const,
+        };
+      if (!enabled) {
+        const stopped = await acmRunnerService.stop();
+        if (!stopped.ok)
+          return {
+            ok: false,
+            error: stopped.error,
+            errorCode: stopped.errorCode,
+          };
+      }
+      return acmPluginService.setEnabled(enabled);
+    }),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_RETRY, () =>
+    wrapIpc(() => acmPluginService.retry()),
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.ACM_DOCUMENT_CREATE,
+    (_event, template: unknown) =>
+      wrapIpc(() =>
+        withAcm(() =>
+          acmFileService.createDocument(parseIpc(acmTemplateSchema, template)),
+        ),
+      ),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_OPEN, (event) =>
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<AcmDocument | null>();
+      if (unavailable) return unavailable;
+      return acmFileService.openDocument(
+        BrowserWindow.fromWebContents(event.sender),
+      );
+    }),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_SAVE, (_event, request: unknown) =>
+    wrapIpc(() =>
+      withAcm(() =>
+        acmFileService.saveDocument(parseIpc(acmDocumentSaveSchema, request)),
+      ),
+    ),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_SAVE_AS, (event, request: unknown) =>
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<AcmDocument | null>();
+      if (unavailable) return unavailable;
+      return acmFileService.saveDocumentAs(
+        parseIpc(acmDocumentSaveSchema, request),
+        BrowserWindow.fromWebContents(event.sender),
+      );
+    }),
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.ACM_DOCUMENT_RELEASE,
+    (_event, documentId: unknown) =>
+      wrapIpc(() =>
+        acmFileService.releaseDocument(
+          parseIpc(acmDocumentReleaseSchema, documentId),
+        ),
+      ),
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.ACM_DOCUMENT_CHECK_EXTERNAL,
+    (_event, document: unknown) =>
+      wrapIpc(() =>
+        withAcm(() =>
+          acmFileService.checkExternal(
+            parseIpc(acmExternalDocumentSchema, document),
+          ),
+        ),
+      ),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_COMPILER_GET_SELECTION, () =>
+    wrapIpc(() => acmCompilerService.getSelection()),
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.ACM_COMPILER_SET_SELECTION,
+    (_event, selection: unknown) =>
+      wrapIpc(() =>
+        withAcm(() =>
+          acmCompilerService.setSelection(
+            parseIpc(acmCompilerSelectionSchema, selection),
+          ),
+        ),
+      ),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_COMPILER_PROBE, () =>
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<CompilerProbeResult>();
+      if (unavailable) return unavailable;
+      const result = await acmCompilerService.probe();
+      if (result.ok && result.data)
+        acmPluginService.setCompilerHealth(
+          result.data.available,
+          result.data.reason,
+        );
+      return result;
+    }),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_RUNNER_START, (_event, request: unknown) =>
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<{ taskId: string }>();
+      if (unavailable) return unavailable;
+      return acmRunnerService.start(parseIpc(acmRunnerStartSchema, request));
+    }),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_RUNNER_STOP, () =>
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<boolean>();
+      if (unavailable) return unavailable;
+      return acmRunnerService.stop();
+    }),
+  );
+  acmRunnerService.onEvent((event: RunnerEvent) => {
+    const win = windowService.getMainWindow();
+    if (win && !win.isDestroyed())
+      win.webContents.send(IPC_CHANNELS.ACM_RUNNER_EVENT, event);
+  });
+}
+
 function registerIpcHandlers(): void {
   registerCrudHandlers();
   registerImportHandlers();
@@ -649,6 +828,7 @@ function registerIpcHandlers(): void {
   registerDataHandlers();
   registerSettingsHandlers();
   registerOcrComponentHandlers();
+  registerAcmPluginHandlers();
 }
 
 async function disposeServices(): Promise<void> {

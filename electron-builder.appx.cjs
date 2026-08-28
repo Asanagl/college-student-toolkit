@@ -21,7 +21,7 @@ module.exports = {
   extends: "./electron-builder.yml",
   extraMetadata: packageVersion ? { version: packageVersion } : undefined,
   directories: {
-    output: process.env.APPX_OUTPUT_DIR || "release-v0.3.0-msix-local",
+    output: process.env.APPX_OUTPUT_DIR || "release-v0.4.0-msix-local",
   },
   win: {
     target: [{ target: "appx", arch: ["x64"] }],

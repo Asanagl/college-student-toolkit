@@ -14,7 +14,7 @@ body,
 }
 
 body {
-  font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif;
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
@@ -89,4 +89,301 @@ body.acrylic-mode #root {
 /* 可读性遮罩层：垫在背景图与内容之间，避免无卡片包裹的文字直接压在照片上 */
 .appearance-overlay {
   z-index: -1;
+}
+
+/* ACM 工作台：编辑器占据剩余空间，输入与终端面板保持固定高水位，避免输出增长挤压源码。 */
+.acm-workbench {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: calc(100vh - 72px);
+  min-height: 480px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--acm-editor-foreground);
+}
+
+.acm-workbench-header,
+.acm-command-bar,
+.acm-editor-meta,
+.acm-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.acm-workbench-header {
+  flex-shrink: 0;
+}
+
+.acm-page-title {
+  margin: 0 !important;
+}
+
+.acm-page-title .anticon {
+  margin-right: 8px;
+  color: var(--acm-primary);
+}
+
+.acm-status-banner {
+  flex-shrink: 0;
+}
+
+.acm-status-banner .ant-alert-action {
+  margin-inline-start: 16px;
+}
+
+.acm-command-bar {
+  flex-shrink: 0;
+  min-height: 32px;
+}
+
+.acm-compiler-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.acm-compiler-tools .ant-tag {
+  max-width: min(360px, 40vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acm-tab-strip {
+  flex-shrink: 0;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.acm-tab-strip .ant-tabs {
+  margin: 0;
+}
+
+.acm-tab-strip .ant-tabs-nav {
+  margin: 0;
+}
+
+.acm-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 190px;
+}
+
+.acm-tab-label > span:not(.acm-dirty-dot) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acm-dirty-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: var(--acm-warning);
+}
+
+.acm-editor-area {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 220px;
+  min-width: 0;
+}
+
+.acm-external-alert {
+  flex-shrink: 0;
+}
+
+.acm-editor-meta {
+  flex-shrink: 0;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.acm-editor-meta .ant-space {
+  min-width: 0;
+}
+
+.acm-editor-meta .ant-typography {
+  max-width: min(62vw, 760px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acm-editor-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--acm-editor-border);
+  border-radius: 6px;
+  background: var(--acm-editor-background);
+}
+
+.acm-code-editor,
+.acm-code-editor .cm-editor {
+  height: 100%;
+  min-height: 0;
+}
+
+.acm-code-editor .cm-scroller {
+  overflow: auto;
+}
+
+.acm-empty-editor {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 220px;
+  place-items: center;
+  border: 1px dashed var(--acm-editor-border);
+  border-radius: 6px;
+}
+
+.acm-io-grid {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(220px, 1fr) minmax(320px, 1.4fr);
+  gap: 8px;
+  min-height: 42px;
+  max-height: 240px;
+}
+
+.acm-io-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--acm-editor-border);
+  border-radius: 6px;
+  background: var(--acm-editor-background);
+}
+
+.acm-panel-heading {
+  min-height: 40px;
+  padding-right: 4px;
+}
+
+.acm-panel-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--acm-editor-foreground);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.acm-panel-toggle:focus-visible {
+  outline: 2px solid var(--acm-primary);
+  outline-offset: -2px;
+}
+
+.acm-stdin-input {
+  display: block;
+  height: 136px !important;
+  min-height: 136px !important;
+  resize: vertical;
+  border: 0 !important;
+  border-top: 1px solid var(--acm-editor-border) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  font-family: Consolas, "Cascadia Code", monospace;
+  font-size: 13px;
+}
+
+.acm-terminal-output {
+  height: 176px;
+  overflow: auto;
+  padding: 8px 12px;
+  border-top: 1px solid var(--acm-editor-border);
+  background: var(--acm-editor-background);
+  color: var(--acm-editor-foreground);
+  font-family: Consolas, "Cascadia Code", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.acm-terminal-line {
+  min-height: 1.55em;
+}
+
+.acm-terminal-line.error {
+  color: var(--acm-error);
+}
+
+.acm-terminal-line.success {
+  color: var(--acm-success);
+}
+
+.acm-terminal-line.info {
+  color: var(--acm-editor-foreground);
+}
+
+.acm-task-id {
+  position: absolute;
+  right: 20px;
+  bottom: 8px;
+  max-width: 35vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .acm-workbench {
+    height: auto;
+    min-height: calc(100vh - 72px);
+    overflow: visible;
+  }
+
+  .acm-workbench-header,
+  .acm-command-bar,
+  .acm-editor-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .acm-command-bar {
+    gap: 8px;
+  }
+
+  .acm-compiler-tools {
+    max-width: 100%;
+  }
+
+  .acm-compiler-tools .ant-tag {
+    max-width: 55vw;
+  }
+
+  .acm-editor-area {
+    min-height: 440px;
+  }
+
+  .acm-io-grid {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+
+  .acm-terminal-output {
+    height: 136px;
+  }
+
+  .acm-task-id {
+    position: static;
+    max-width: 100%;
+  }
 }

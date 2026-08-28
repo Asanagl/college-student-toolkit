@@ -146,9 +146,11 @@ export class PortableSettingsService {
     return this.get();
   }
 
-  replace(next: PortableSettings): PortableSettings {
-    if (!isSettings(next)) throw new Error("便携设置格式无效");
-    const replacement = cloneSettings(next);
+  replace(next: PortableSettings | LegacyPortableSettings): PortableSettings {
+    const replacement = isSettings(next)
+      ? cloneSettings(next)
+      : migrateLegacySettings(next);
+    if (!replacement) throw new Error("便携设置格式无效");
     this.writeToDisk(replacement);
     this.settings = replacement;
     return this.get();

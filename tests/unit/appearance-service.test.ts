@@ -34,7 +34,6 @@ vi.mock("electron", () => ({
 vi.mock("electron-store", () => ({ default: electronState.FakeStore }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  fsPromiseMocks.copyFile.mockImplementation(actual.copyFile);
   return { ...actual, copyFile: fsPromiseMocks.copyFile };
 });
 vi.mock("../../src/main/services/WindowService", () => ({
@@ -85,6 +84,9 @@ async function initializeWithBackground(
 }
 
 beforeEach(async () => {
+  fsPromiseMocks.copyFile.mockImplementation((source, destination) => {
+    fs.copyFileSync(source, destination);
+  });
   electronState.userData = fs.mkdtempSync(
     path.join(os.tmpdir(), "toolkit-appearance-"),
   );
@@ -112,11 +114,17 @@ describe("AppearanceService background replacement", () => {
     const fileName = await appearanceService.uploadBackgroundImage(source);
 
     expect(fileName).toMatch(/\.png$/);
-    expect(fs.existsSync(path.join(electronState.userData, "backgrounds", "old.png"))).toBe(false);
+    expect(
+      fs.existsSync(
+        path.join(electronState.userData, "backgrounds", "old.png"),
+      ),
+    ).toBe(false);
     expect(
       fs.existsSync(path.join(electronState.userData, "backgrounds", fileName)),
     ).toBe(true);
-    expect(portableSettingsService.get().appearance.backgroundImage).toBe(fileName);
+    expect(portableSettingsService.get().appearance.backgroundImage).toBe(
+      fileName,
+    );
   });
 
   it("preserves the existing background when copying the replacement fails", async () => {
@@ -125,12 +133,18 @@ describe("AppearanceService background replacement", () => {
     fs.writeFileSync(source, validPng);
     fsPromiseMocks.copyFile.mockRejectedValueOnce(new Error("disk full"));
 
-    await expect(appearanceService.uploadBackgroundImage(source)).rejects.toThrow(
-      "disk full",
-    );
+    await expect(
+      appearanceService.uploadBackgroundImage(source),
+    ).rejects.toThrow("disk full");
 
-    expect(fs.existsSync(path.join(electronState.userData, "backgrounds", "old.png"))).toBe(true);
-    expect(portableSettingsService.get().appearance.backgroundImage).toBe("old.png");
+    expect(
+      fs.existsSync(
+        path.join(electronState.userData, "backgrounds", "old.png"),
+      ),
+    ).toBe(true);
+    expect(portableSettingsService.get().appearance.backgroundImage).toBe(
+      "old.png",
+    );
     expect(appearanceService.getBackgroundImageUrl()).toBe(
       "app-background:///old.png",
     );
@@ -144,12 +158,18 @@ describe("AppearanceService background replacement", () => {
       throw new Error("settings unavailable");
     });
 
-    await expect(appearanceService.uploadBackgroundImage(source)).rejects.toThrow(
-      "settings unavailable",
-    );
+    await expect(
+      appearanceService.uploadBackgroundImage(source),
+    ).rejects.toThrow("settings unavailable");
 
-    expect(fs.existsSync(path.join(electronState.userData, "backgrounds", "old.png"))).toBe(true);
-    expect(portableSettingsService.get().appearance.backgroundImage).toBe("old.png");
+    expect(
+      fs.existsSync(
+        path.join(electronState.userData, "backgrounds", "old.png"),
+      ),
+    ).toBe(true);
+    expect(portableSettingsService.get().appearance.backgroundImage).toBe(
+      "old.png",
+    );
     expect(appearanceService.getBackgroundImageUrl()).toBe(
       "app-background:///old.png",
     );

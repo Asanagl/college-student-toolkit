@@ -14,6 +14,10 @@ import {
   labAddSchema,
   labPatchSchema,
   notificationPayloadSchema,
+  acmCompilerSelectionSchema,
+  acmDocumentSaveSchema,
+  acmRunnerStartSchema,
+  acmTemplateSchema,
   parseIpc,
   periodConfigSchema,
   scheduleAddSchema,
@@ -213,5 +217,48 @@ describe("IPC runtime validation", () => {
         refId: "default",
       }),
     ).toMatchObject({ source: "system" });
+  });
+
+  it("validates ACM document, compiler, and runner boundaries", () => {
+    expect(parseIpc(acmTemplateSchema, "basic-io")).toBe("basic-io");
+    const documentId = "11111111-1111-4111-8111-111111111111";
+    const document = {
+      documentId,
+      filePath: null,
+      content: "int main() {}",
+      lineEnding: "lf",
+      expectedFingerprint: null,
+      force: false,
+    } as const;
+    expect(parseIpc(acmDocumentSaveSchema, document)).toMatchObject({
+      documentId,
+      lineEnding: "lf",
+    });
+    expect(
+      parseIpc(acmCompilerSelectionSchema, { mode: "auto", path: null }),
+    ).toEqual({ mode: "auto", path: null });
+    expect(
+      parseIpc(acmRunnerStartSchema, {
+        documentId,
+        source: "int main() {}",
+        stdin: "",
+        mode: "run",
+      }),
+    ).toMatchObject({ mode: "run" });
+    expect(() => parseIpc(acmTemplateSchema, "shell")).toThrow();
+    expect(() =>
+      parseIpc(acmCompilerSelectionSchema, {
+        mode: "user",
+        path: "C:\\toolchain\\g++.exe",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      parseIpc(acmRunnerStartSchema, {
+        documentId,
+        source: "x".repeat(2 * 1024 * 1024 + 1),
+        stdin: "",
+        mode: "compile",
+      }),
+    ).toThrow();
   });
 });

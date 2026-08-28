@@ -35,7 +35,21 @@ export type IpcErrorCode =
   | "CRITICAL_SERVICE_UNAVAILABLE"
   | "DATABASE_MIGRATION_FAILED"
   | "DATABASE_INITIALIZATION_FAILED"
-  | "UPDATE_MANAGED_BY_STORE";
+  | "UPDATE_MANAGED_BY_STORE"
+  | "ACM_UNSUPPORTED"
+  | "ACM_DISABLED"
+  | "ACM_PLUGIN_INVALID"
+  | "ACM_COMPILER_MISSING"
+  | "ACM_COMPILER_INVALID"
+  | "ACM_RUNNER_BUSY"
+  | "ACM_RUNNER_FAILED"
+  | "ACM_RUNNER_TIMEOUT"
+  | "ACM_RUNNER_OUTPUT_LIMIT"
+  | "ACM_RUNNER_CANCELLED"
+  | "ACM_FILE_INVALID"
+  | "ACM_FILE_TOO_LARGE"
+  | "ACM_FILE_READONLY"
+  | "ACM_FILE_CHANGED";
 
 // ==================== 日程 Schedule ====================
 
@@ -438,6 +452,128 @@ export interface OcrComponentStatus {
   error?: string;
 }
 
+// ==================== ACM 临时 IDE ====================
+
+export type TrustedPluginCapability =
+  | "acm.documents"
+  | "acm.compiler"
+  | "acm.runner";
+
+export interface TrustedPluginManifest {
+  id: "acm-code-workbench";
+  name: "ACM 临时 IDE";
+  pluginApiVersion: 1;
+  capabilities: TrustedPluginCapability[];
+}
+
+export type AcmPluginState =
+  | "unsupported"
+  | "disabled"
+  | "initializing"
+  | "ready"
+  | "degraded"
+  | "error";
+
+export interface AcmPluginStatus {
+  manifest: TrustedPluginManifest;
+  enabled: boolean;
+  state: AcmPluginState;
+  platform: NodeJS.Platform;
+  errorCode?: IpcErrorCode;
+  error?: string;
+}
+
+export type AcmLineEnding = "crlf" | "lf" | "cr";
+
+export interface AcmDocument {
+  id: string;
+  name: string;
+  filePath: string | null;
+  content: string;
+  lineEnding: AcmLineEnding;
+  readOnly: boolean;
+  dirty: boolean;
+  savedFingerprint: DocumentFingerprint | null;
+}
+
+export type AcmTemplateId = "blank" | "basic-io" | "stl";
+
+export interface AcmDocumentSaveRequest {
+  documentId: string;
+  filePath: string | null;
+  content: string;
+  lineEnding: AcmLineEnding;
+  expectedFingerprint: DocumentFingerprint | null;
+  force: boolean;
+}
+
+export interface AcmDocumentExternalState {
+  changed: boolean;
+  fingerprint: DocumentFingerprint | null;
+}
+
+export interface DocumentFingerprint {
+  bytes: number;
+  mtimeMs: number;
+  sha256: string;
+}
+
+export type CompilerSelectionMode = "auto" | "user" | "builtin";
+
+export interface CompilerSelection {
+  mode: CompilerSelectionMode;
+  path: string | null;
+}
+
+export interface CompilerProbeResult {
+  available: boolean;
+  path: string | null;
+  version: string | null;
+  target: string | null;
+  reason?: string;
+}
+
+export interface RunnerLimits {
+  compileTimeoutMs: number;
+  runTimeoutMs: number;
+  stdinBytes: number;
+  stdoutBytes: number;
+  stderrBytes: number;
+  tempBytes: number;
+}
+
+export interface RunnerStartRequest {
+  documentId: string;
+  source: string;
+  stdin: string;
+  mode: "compile" | "run";
+}
+
+export type RunnerStage =
+  | "compile-started"
+  | "compile-finished"
+  | "run-started"
+  | "run-finished";
+
+export interface RunnerEvent {
+  taskId: string;
+  documentId: string;
+  stage?: RunnerStage;
+  stream?: "stdout" | "stderr";
+  text?: string;
+  status:
+    | "started"
+    | "data"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "timeout"
+    | "output-limit";
+  exitCode?: number | null;
+  errorCode?: IpcErrorCode;
+  durationMs?: number;
+}
+
 // ==================== IPC 通道常量 ====================
 // 命名规范：<域>:<资源>:<动作>
 // 注意：timetable 通道对应 courses 表，period 通道对应 period_config 表
@@ -537,6 +673,22 @@ export const IPC_CHANNELS = {
   OCR_COMPONENT_REMOVE: "ocr-component:remove",
   OCR_COMPONENT_ON_STATUS_CHANGE: "ocr-component:onStatusChange",
   UPDATE_GET_CURRENT_VERSION: "update:getCurrentVersion",
+  // ACM 受信插件
+  ACM_GET_STATUS: "acm:plugin:getStatus",
+  ACM_SET_ENABLED: "acm:plugin:setEnabled",
+  ACM_RETRY: "acm:plugin:retry",
+  ACM_DOCUMENT_CREATE: "acm:document:create",
+  ACM_DOCUMENT_OPEN: "acm:document:open",
+  ACM_DOCUMENT_SAVE: "acm:document:save",
+  ACM_DOCUMENT_SAVE_AS: "acm:document:saveAs",
+  ACM_DOCUMENT_RELEASE: "acm:document:release",
+  ACM_DOCUMENT_CHECK_EXTERNAL: "acm:document:checkExternal",
+  ACM_COMPILER_GET_SELECTION: "acm:compiler:getSelection",
+  ACM_COMPILER_SET_SELECTION: "acm:compiler:setSelection",
+  ACM_COMPILER_PROBE: "acm:compiler:probe",
+  ACM_RUNNER_START: "acm:runner:start",
+  ACM_RUNNER_STOP: "acm:runner:stop",
+  ACM_RUNNER_EVENT: "acm:runner:event",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
@@ -679,6 +831,35 @@ export interface RendererApi {
     onStatusChange: (
       callback: (status: OcrComponentStatus) => void,
     ) => () => void;
+  };
+  acm: {
+    getStatus: () => Promise<IpcResult<AcmPluginStatus>>;
+    setEnabled: (enabled: boolean) => Promise<IpcResult<AcmPluginStatus>>;
+    retry: () => Promise<IpcResult<AcmPluginStatus>>;
+    createDocument: (
+      template: AcmTemplateId,
+    ) => Promise<IpcResult<AcmDocument>>;
+    openDocument: () => Promise<IpcResult<AcmDocument | null>>;
+    saveDocument: (
+      request: AcmDocumentSaveRequest,
+    ) => Promise<IpcResult<AcmDocument>>;
+    saveDocumentAs: (
+      request: AcmDocumentSaveRequest,
+    ) => Promise<IpcResult<AcmDocument | null>>;
+    releaseDocument: (documentId: string) => Promise<IpcResult<boolean>>;
+    checkDocumentExternal: (
+      document: Pick<AcmDocument, "filePath" | "savedFingerprint">,
+    ) => Promise<IpcResult<AcmDocumentExternalState>>;
+    getCompilerSelection: () => Promise<IpcResult<CompilerSelection>>;
+    setCompilerSelection: (
+      selection: CompilerSelection,
+    ) => Promise<IpcResult<CompilerSelection>>;
+    probeCompiler: () => Promise<IpcResult<CompilerProbeResult>>;
+    startRunner: (
+      request: RunnerStartRequest,
+    ) => Promise<IpcResult<{ taskId: string }>>;
+    stopRunner: () => Promise<IpcResult<boolean>>;
+    onRunnerEvent: (callback: (event: RunnerEvent) => void) => () => void;
   };
 }
 

@@ -6,13 +6,14 @@ const asar = require("@electron/asar");
 const yauzl = require("yauzl");
 
 const root = path.resolve(__dirname, "..");
+const packageVersion = require(path.join(root, "package.json")).version;
 
 function resolveArtifact() {
   const supplied = process.argv[2] || process.env.APPX_PATH;
   if (supplied) return path.resolve(root, supplied);
   const output = path.join(
     root,
-    process.env.APPX_OUTPUT_DIR || "release-v0.3.0-msix-local",
+    process.env.APPX_OUTPUT_DIR || "release-v0.4.0-msix-local",
   );
   const candidates = fs.existsSync(output)
     ? fs.readdirSync(output).filter((name) => /\.(appx|msix)$/i.test(name))
@@ -118,7 +119,7 @@ function checkTargetFamilies(xml) {
   if (tags.length === 0)
     throw new Error("AppxManifest.xml 缺少 TargetDeviceFamily");
   const expected =
-    process.env.APPX_EXPECTED_MIN_VERSION?.trim() || "10.0.17763.0";
+    process.env.APPX_EXPECTED_MIN_VERSION?.trim() || "10.0.22621.0";
   const expectedParts = parseVersion(expected, "APPX_EXPECTED_MIN_VERSION");
   for (const tag of tags) {
     const minVersion = attribute(tag, "MinVersion");
@@ -160,7 +161,7 @@ function checkManifest(xml) {
   if (identity.architecture !== "x64")
     throw new Error(`AppX 架构不是 x64：${identity.architecture}`);
   const expectedVersion =
-    process.env.APPX_EXPECTED_VERSION?.trim() || "0.3.0.0";
+    process.env.APPX_EXPECTED_VERSION?.trim() || `${packageVersion}.0`;
   if (identity.version !== expectedVersion)
     throw new Error(
       `Manifest 版本不匹配：${identity.version}，期望 ${expectedVersion}`,
@@ -242,7 +243,9 @@ async function verify() {
   );
   const executableName = normalizeName(manifest.executable).toLowerCase();
   if (!lowerNames.has(executableName))
-    throw new Error(`Application.Executable 不存在于包内：${manifest.executable}`);
+    throw new Error(
+      `Application.Executable 不存在于包内：${manifest.executable}`,
+    );
   const asarName = names.find(
     (name) => name.toLowerCase() === "app/resources/app.asar",
   );
@@ -254,6 +257,11 @@ async function verify() {
   if (!asarName) throw new Error("包内缺少 app/resources/app.asar");
   if (!nativeName)
     throw new Error(`包内缺少 x64 SQLite binding：${expectedNativeName}`);
+  const toolchainBinary = names.find(
+    (name) => name.toLowerCase() === "app/resources/toolchain/bin/g++.exe",
+  );
+  if (!toolchainBinary)
+    throw new Error("ACM Store 包内缺少 resources/toolchain/bin/g++.exe");
   const staging = fs.mkdtempSync(
     path.join(os.tmpdir(), "college-toolkit-appx-"),
   );

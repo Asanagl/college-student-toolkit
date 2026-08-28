@@ -38,14 +38,14 @@ function clearPreviousArtifacts(outputDir) {
 function main() {
   const env = {
     ...process.env,
-    APPX_OUTPUT_DIR: process.env.APPX_OUTPUT_DIR || "release-v0.3.0-msix-local",
+    APPX_OUTPUT_DIR: process.env.APPX_OUTPUT_DIR || "release-v0.4.0-msix-local",
     CSC_IDENTITY_AUTO_DISCOVERY: "false",
   };
   const outputDir = path.resolve(root, env.APPX_OUTPUT_DIR);
   clearPreviousArtifacts(outputDir);
   const status = run(
     process.execPath,
-    [cli, "--config", "electron-builder.appx.cjs", "--win", "appx", "--x64"],
+    [cli, "--config", "electron-builder.acm.cjs", "--win", "appx", "--x64"],
     env,
   );
   if (status !== 0) return status;

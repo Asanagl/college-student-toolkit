@@ -4,6 +4,7 @@ node_modules/
 # Build output
 dist/
 dist-electron/
+.build/
 release/
 release-v0.3.0-rc-*/
 release-v0.3.0-rc/

@@ -913,7 +913,10 @@ describe("Backup v2 transfer", () => {
       new FakeSettings(),
       "0.3.0",
     );
-    let releasePicker!: (value: { canceled: boolean; filePaths: string[] }) => void;
+    let releasePicker!: (value: {
+      canceled: boolean;
+      filePaths: string[];
+    }) => void;
     dialogMock.showOpenDialog.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -922,7 +925,9 @@ describe("Backup v2 transfer", () => {
     );
 
     const first = service.prepareImport(1);
-    await vi.waitFor(() => expect(dialogMock.showOpenDialog).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(dialogMock.showOpenDialog).toHaveBeenCalledTimes(1),
+    );
     await expect(service.prepareImport(2)).resolves.toMatchObject({
       ok: false,
       errorCode: "BACKUP_BUSY",
@@ -961,10 +966,14 @@ describe("Backup v2 transfer", () => {
       originalRemoveStaging(stagingDir);
     };
 
-    await expect(service.cancelImport(1, token as string)).resolves.toMatchObject({
+    await expect(
+      service.cancelImport(1, token as string),
+    ).resolves.toMatchObject({
       ok: false,
     });
-    await expect(service.commitImport(1, token as string)).resolves.toMatchObject({
+    await expect(
+      service.commitImport(1, token as string),
+    ).resolves.toMatchObject({
       ok: false,
       errorCode: "BACKUP_BUSY",
     });
@@ -1003,8 +1012,14 @@ describe("Backup v2 transfer", () => {
     expect(recoveryWrites).toHaveLength(2);
     expect(recoveryWrites).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ status: "applying", stagingDir: expect.any(String) }),
-        expect.objectContaining({ status: "committed", stagingDir: expect.any(String) }),
+        expect.objectContaining({
+          status: "applying",
+          stagingDir: expect.any(String),
+        }),
+        expect.objectContaining({
+          status: "committed",
+          stagingDir: expect.any(String),
+        }),
       ]),
     );
   });
