@@ -4,11 +4,14 @@ import { app } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
-import type { PortableSettings } from "../../shared/types";
+import type {
+  LegacyPortableSettings,
+  PortableSettings,
+} from "../../shared/types";
 import { isSafeImageFileName } from "./ImageValidation";
 
 const DEFAULT_SETTINGS: PortableSettings = {
-  portableSettingsVersion: 1,
+  portableSettingsVersion: 2,
   themeMode: "system",
   timetable: { semesterStart: null },
   dnd: { enabled: false, startTime: "22:00", endTime: "08:00" },
@@ -19,6 +22,7 @@ const DEFAULT_SETTINGS: PortableSettings = {
     blurRadius: 0,
     clarity: 100,
   },
+  acm: { enabled: true },
 };
 
 const calendarDate = z
@@ -43,18 +47,30 @@ const notificationRecord = z.object({
   delivered: z.boolean(),
   summarized: z.boolean().optional(),
 });
-const settingsSchema = z.object({
-  portableSettingsVersion: z.literal(1),
+const settingsFields = {
   themeMode: z.enum(["system", "light", "dark"]),
   timetable: z.object({ semesterStart: calendarDate.nullable() }),
   dnd: z.object({ enabled: z.boolean(), startTime: time, endTime: time }),
   notificationHistory: z.array(notificationRecord).max(100),
   appearance: z.object({
     material: z.enum(["none", "acrylic"]),
-    backgroundImage: z.string().max(128).refine((value) => path.basename(value) === value).nullable(),
+    backgroundImage: z
+      .string()
+      .max(128)
+      .refine((value) => path.basename(value) === value)
+      .nullable(),
     blurRadius: z.number().int().min(0).max(50),
     clarity: z.number().int().min(0).max(100),
   }),
+};
+const settingsV1Schema = z.object({
+  portableSettingsVersion: z.literal(1),
+  ...settingsFields,
+});
+const settingsV2Schema = z.object({
+  portableSettingsVersion: z.literal(2),
+  ...settingsFields,
+  acm: z.object({ enabled: z.boolean() }),
 });
 
 function cloneSettings(settings: PortableSettings): PortableSettings {
@@ -62,7 +78,18 @@ function cloneSettings(settings: PortableSettings): PortableSettings {
 }
 
 function isSettings(value: unknown): value is PortableSettings {
-  return settingsSchema.safeParse(value).success;
+  return settingsV2Schema.safeParse(value).success;
+}
+
+function migrateLegacySettings(value: unknown): PortableSettings | null {
+  const parsed = settingsV1Schema.safeParse(value);
+  if (!parsed.success) return null;
+  const legacy = parsed.data as LegacyPortableSettings;
+  return {
+    ...legacy,
+    portableSettingsVersion: 2,
+    acm: { enabled: true },
+  };
 }
 
 export class PortableSettingsService {
@@ -142,6 +169,12 @@ export class PortableSettingsService {
         fs.readFileSync(this.getFilePath(), "utf8"),
       );
       if (isSettings(parsed)) return this.normalize(parsed);
+      const migrated = migrateLegacySettings(parsed);
+      if (migrated) {
+        const normalized = this.normalize(migrated);
+        this.writeToDisk(normalized);
+        return normalized;
+      }
       throw new Error("设置结构不完整");
     } catch (error) {
       if (fs.existsSync(this.getFilePath())) {
@@ -191,7 +224,7 @@ export class PortableSettingsService {
     }
     const legacyDnd = notification.dnd;
     if (legacyDnd && typeof legacyDnd === "object") {
-      const parsedDnd = settingsSchema.shape.dnd.safeParse({
+      const parsedDnd = settingsV2Schema.shape.dnd.safeParse({
         ...result.dnd,
         ...legacyDnd,
       });
@@ -235,6 +268,7 @@ export class PortableSettingsService {
     result.dnd = { ...result.dnd, ...value.dnd };
     result.notificationHistory = value.notificationHistory.slice(0, 100);
     result.appearance = { ...result.appearance, ...value.appearance };
+    result.acm = { enabled: value.acm?.enabled ?? true };
     if (
       result.appearance.backgroundImage &&
       !isSafeImageFileName(result.appearance.backgroundImage)

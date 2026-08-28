@@ -17,6 +17,7 @@ import type {
   IpcResult,
   PortableSettings,
 } from "../../shared/types";
+import { RELEASE_CONFIG } from "../../shared/releaseConfig";
 import { PRODUCT_VERSION } from "../../shared/version";
 import {
   CURRENT_DATABASE_SCHEMA_VERSION,
@@ -39,16 +40,16 @@ const MAX_DB_BYTES = 256 * 1024 * 1024;
 const MAX_SETTINGS_BYTES = 1 * 1024 * 1024;
 const MAX_ENTRIES = 16;
 const TOKEN_TTL_MS = 15 * 60 * 1000;
-const V2_DB = "data/data.db";
-const V2_SETTINGS = "settings/portable-settings.json";
-const V2_MANIFEST = "manifest.json";
+const VERSIONED_DB = "data/data.db";
+const VERSIONED_SETTINGS = "settings/portable-settings.json";
+const VERSIONED_MANIFEST = "manifest.json";
 const LEGACY_DB = "data.db";
 const LEGACY_CONFIG = "config.json";
 
 const manifestSchema = z.object({
-  backupFormatVersion: z.literal(2),
+  backupFormatVersion: z.union([z.literal(2), z.literal(3)]),
   databaseSchemaVersion: z.number().int().nonnegative(),
-  portableSettingsVersion: z.literal(1),
+  portableSettingsVersion: z.union([z.literal(1), z.literal(2)]),
   appVersion: z.string().max(64),
   exportedAt: z.string().datetime({ offset: true }),
   includesBackground: z.boolean(),
@@ -73,8 +74,7 @@ const manifestSchema = z.object({
     .max(3),
 });
 
-const settingsSchema = z.object({
-  portableSettingsVersion: z.literal(1),
+const settingsFields = {
   themeMode: z.enum(["system", "light", "dark"]),
   timetable: z.object({
     semesterStart: z
@@ -105,6 +105,7 @@ const settingsSchema = z.object({
         source: z.string().max(32),
         timestamp: z.string().datetime({ offset: true }),
         delivered: z.boolean(),
+        summarized: z.boolean().optional(),
       }),
     )
     .max(100),
@@ -118,6 +119,15 @@ const settingsSchema = z.object({
     blurRadius: z.number().int().min(0).max(50),
     clarity: z.number().int().min(0).max(100),
   }),
+};
+const settingsV1Schema = z.object({
+  portableSettingsVersion: z.literal(1),
+  ...settingsFields,
+});
+const settingsV2Schema = z.object({
+  portableSettingsVersion: z.literal(2),
+  ...settingsFields,
+  acm: z.object({ enabled: z.boolean() }),
 });
 
 interface ZipEntryInfo {
@@ -131,10 +141,11 @@ interface ZipEntryInfo {
 interface PendingImport {
   ownerId: number;
   stagingDir: string;
-  format: 1 | 2;
+  format: 1 | 2 | 3;
   sourcePath: string;
   inspection: BackupInspection;
   settings: PortableSettings | null;
+  settingsVersion: 0 | 1 | 2;
   backgroundName: string | null;
   cancelRequested: boolean;
 }
@@ -294,11 +305,18 @@ export class DataTransferService {
     const target = this.getSafeExportTarget(filePath, backgroundPath);
     try {
       this.dataService.closeDatabase();
-      await this.writeV2Archive(target, settings, counts, backgroundPath);
+      const format = this.appVersion === PRODUCT_VERSION ? 3 : 2;
+      await this.writeVersionedArchive(
+        target,
+        settings,
+        counts,
+        backgroundPath,
+        format,
+      );
       const stat = fs.statSync(target);
       return {
         filePath: target,
-        backupFormatVersion: 2,
+        backupFormatVersion: format,
         databaseSchemaVersion: CURRENT_DATABASE_SCHEMA_VERSION,
         includesBackground: !!backgroundPath,
         bytes: stat.size,
@@ -341,7 +359,11 @@ export class DataTransferService {
         ? await dialog.showOpenDialog(parent, this.openDialogOptions())
         : await dialog.showOpenDialog(this.openDialogOptions());
       if (result.canceled || result.filePaths.length === 0) return { ok: true };
-      const inspection = await this.stageImport(result.filePaths[0], ownerId, true);
+      const inspection = await this.stageImport(
+        result.filePaths[0],
+        ownerId,
+        true,
+      );
       return { ok: true, data: { inspection } };
     } catch (error) {
       return this.errorResult(error);
@@ -440,26 +462,35 @@ export class DataTransferService {
   ): Promise<BackupInspection> {
     if (!reservationHeld) {
       if (this.isBusy())
-        throw new BackupTransferError("BACKUP_BUSY", "已有备份预检正在等待确认");
+        throw new BackupTransferError(
+          "BACKUP_BUSY",
+          "已有备份预检正在等待确认",
+        );
       this.preparing = true;
     }
     let stagingDir: string | null = null;
     try {
       const entries = await this.readCentralDirectory(sourcePath);
-      const format = this.detectFormat(entries);
+      const detectedFormat = this.detectFormat(entries);
       const token = randomUUID();
       stagingDir = this.createStagingDir(token);
-      await this.extractAllowedEntries(sourcePath, entries, stagingDir, format);
-      const staged = await this.readStagedBackup(stagingDir, format);
+      await this.extractAllowedEntries(
+        sourcePath,
+        entries,
+        stagingDir,
+        detectedFormat,
+      );
+      const staged = await this.readStagedBackup(stagingDir, detectedFormat);
+      const format = staged.format;
       const counts = this.inspectDatabase(
-        path.join(stagingDir, format === 2 ? V2_DB : LEGACY_DB),
+        path.join(stagingDir, format > 1 ? VERSIONED_DB : LEGACY_DB),
       );
       const expiresAt = new Date(Date.now() + TOKEN_TTL_MS).toISOString();
       const inspection: BackupInspection = {
         token,
         backupFormatVersion: format,
         databaseSchemaVersion: CURRENT_DATABASE_SCHEMA_VERSION,
-        portableSettingsVersion: staged.settings ? 1 : 0,
+        portableSettingsVersion: staged.settings ? staged.settingsVersion : 0,
         recordCounts: counts,
         includesSettings: !!staged.settings,
         includesBackground: !!staged.backgroundName,
@@ -480,6 +511,7 @@ export class DataTransferService {
         sourcePath,
         inspection,
         settings: staged.settings,
+        settingsVersion: staged.settingsVersion,
         backgroundName: staged.backgroundName,
         cancelRequested: false,
       };
@@ -574,20 +606,21 @@ export class DataTransferService {
     }
   }
 
-  private async writeV2Archive(
+  private async writeVersionedArchive(
     filePath: string,
     settings: PortableSettings,
     counts: BackupRecordCounts,
     backgroundPath: string | null,
+    format: 2 | 3,
   ): Promise<void> {
     const target = path.resolve(filePath);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     if (!fs.existsSync(this.dbPath))
       throw new Error("数据库文件不存在，无法导出");
     const files: Array<{ path: string; source?: string; content?: Buffer }> = [
-      { path: V2_DB, source: this.dbPath },
+      { path: VERSIONED_DB, source: this.dbPath },
       {
-        path: V2_SETTINGS,
+        path: VERSIONED_SETTINGS,
         content: Buffer.from(JSON.stringify(settings, null, 2)),
       },
     ];
@@ -597,9 +630,10 @@ export class DataTransferService {
         source: backgroundPath,
       });
     const manifest = {
-      backupFormatVersion: 2,
+      backupFormatVersion: format,
       databaseSchemaVersion: CURRENT_DATABASE_SCHEMA_VERSION,
-      portableSettingsVersion: 1,
+      portableSettingsVersion:
+        format === 3 ? RELEASE_CONFIG.portableSettingsVersion : 1,
       appVersion: this.appVersion,
       exportedAt: new Date().toISOString(),
       includesBackground: !!backgroundPath,
@@ -637,10 +671,7 @@ export class DataTransferService {
   ): string {
     const supplied = path.resolve(filePath);
     if (fs.existsSync(supplied) && fs.lstatSync(supplied).isSymbolicLink())
-      throw new BackupTransferError(
-        "BACKUP_INVALID",
-        "备份目标不能是符号链接",
-      );
+      throw new BackupTransferError("BACKUP_INVALID", "备份目标不能是符号链接");
     const target = resolvePathThroughExistingParent(supplied);
     const userData = path.dirname(this.dbPath);
     const protectedFiles = [
@@ -684,7 +715,9 @@ export class DataTransferService {
       output.on("error", fail);
       archive.on("error", fail);
       archive.pipe(output);
-      archive.append(JSON.stringify(manifest, null, 2), { name: V2_MANIFEST });
+      archive.append(JSON.stringify(manifest, null, 2), {
+        name: VERSIONED_MANIFEST,
+      });
       for (const file of files) {
         if (file.source) archive.file(file.source, { name: file.path });
         else if (file.content)
@@ -785,11 +818,11 @@ export class DataTransferService {
 
   private detectFormat(entries: ZipEntryInfo[]): 1 | 2 {
     const names = new Set(entries.map((entry) => entry.fileName));
-    if (names.has(V2_MANIFEST)) return 2;
+    if (names.has(VERSIONED_MANIFEST)) return 2;
     if (names.has(LEGACY_DB) && names.has(LEGACY_CONFIG)) return 1;
     throw new BackupTransferError(
       "BACKUP_INVALID",
-      "不是支持的 v1/v2 备份格式",
+      "不是支持的 v1/v2/v3 备份格式",
     );
   }
 
@@ -797,14 +830,14 @@ export class DataTransferService {
     filePath: string,
     entries: ZipEntryInfo[],
     stagingDir: string,
-    format: 1 | 2,
+    format: 1 | 2 | 3,
   ): Promise<void> {
     const allowed =
-      format === 2
-        ? new Set([V2_MANIFEST, V2_DB, V2_SETTINGS])
+      format > 1
+        ? new Set([VERSIONED_MANIFEST, VERSIONED_DB, VERSIONED_SETTINGS])
         : new Set([LEGACY_DB, LEGACY_CONFIG, "timetable.json"]);
     for (const entry of entries) {
-      const isBackground = format === 2 && isBackgroundEntry(entry.fileName);
+      const isBackground = format > 1 && isBackgroundEntry(entry.fileName);
       if (!allowed.has(entry.fileName) && !isBackground)
         throw new BackupTransferError(
           "BACKUP_INVALID",
@@ -829,13 +862,21 @@ export class DataTransferService {
 
   private async readStagedBackup(
     stagingDir: string,
-    format: 1 | 2,
+    format: 1 | 2 | 3,
   ): Promise<{
+    format: 1 | 2 | 3;
     settings: PortableSettings | null;
+    settingsVersion: 0 | 1 | 2;
     backgroundName: string | null;
   }> {
-    if (format === 1) return { settings: null, backgroundName: null };
-    const manifest = this.readJson(path.join(stagingDir, V2_MANIFEST));
+    if (format === 1)
+      return {
+        format: 1,
+        settings: null,
+        settingsVersion: 0,
+        backgroundName: null,
+      };
+    const manifest = this.readJson(path.join(stagingDir, VERSIONED_MANIFEST));
     const parsedManifest = manifestSchema.safeParse(manifest);
     if (
       !parsedManifest.success ||
@@ -847,23 +888,38 @@ export class DataTransferService {
         "备份 manifest 无效或版本过新",
       );
     }
+    const expectedSettingsVersion =
+      parsedManifest.data.backupFormatVersion === 3 ? 2 : 1;
+    if (parsedManifest.data.portableSettingsVersion !== expectedSettingsVersion)
+      throw new BackupTransferError(
+        "BACKUP_INVALID",
+        "备份格式版本与便携设置版本不匹配",
+      );
     const files = new Map(
       parsedManifest.data.files.map((file) => [file.path, file]),
     );
     if (
       files.size !== parsedManifest.data.files.length ||
-      !files.has(V2_DB) ||
-      !files.has(V2_SETTINGS)
+      !files.has(VERSIONED_DB) ||
+      !files.has(VERSIONED_SETTINGS)
     ) {
       throw new BackupTransferError(
         "BACKUP_INVALID",
         "manifest 未完整声明数据库和便携设置",
       );
     }
-    const settings = settingsSchema.safeParse(
-      this.readJson(path.join(stagingDir, V2_SETTINGS)),
+    const rawSettings = this.readJson(
+      path.join(stagingDir, VERSIONED_SETTINGS),
     );
-    if (!settings.success)
+    const settings =
+      expectedSettingsVersion === 2
+        ? settingsV2Schema.safeParse(rawSettings)
+        : { success: false as const };
+    const legacySettings =
+      expectedSettingsVersion === 1
+        ? settingsV1Schema.safeParse(rawSettings)
+        : { success: false as const };
+    if (!settings.success && !legacySettings.success)
       throw new BackupTransferError("BACKUP_INVALID", "便携设置校验失败");
     const assetsDir = path.join(stagingDir, "assets");
     const backgrounds = fs.existsSync(assetsDir)
@@ -904,8 +960,29 @@ export class DataTransferService {
         this.verifyStagedFile(stagingDir, file.path, file.bytes, file.sha256),
       ),
     );
+    let importedSettings: PortableSettings;
+    if (settings.success) {
+      importedSettings = settings.data;
+    } else {
+      if (!legacySettings.success)
+        throw new BackupTransferError("BACKUP_INVALID", "便携设置校验失败");
+      const legacy = legacySettings.data;
+      importedSettings = {
+        portableSettingsVersion: RELEASE_CONFIG.portableSettingsVersion,
+        themeMode: legacy.themeMode,
+        timetable: { semesterStart: legacy.timetable.semesterStart },
+        dnd: { ...legacy.dnd },
+        notificationHistory: legacy.notificationHistory.map((item) => ({
+          ...item,
+        })),
+        appearance: { ...legacy.appearance },
+        acm: { enabled: true },
+      };
+    }
     return {
-      settings: settings.data as PortableSettings,
+      format: parsedManifest.data.backupFormatVersion,
+      settingsVersion: parsedManifest.data.portableSettingsVersion,
+      settings: importedSettings,
       backgroundName: background?.name ?? null,
     };
   }
@@ -1056,7 +1133,10 @@ export class DataTransferService {
         "导入预检已过期，请重新选择备份",
       );
     if (pending.cancelRequested && !allowCancellationRetry)
-      throw new BackupTransferError("BACKUP_BUSY", "导入预检正在取消，请先完成清理");
+      throw new BackupTransferError(
+        "BACKUP_BUSY",
+        "导入预检正在取消，请先完成清理",
+      );
     return pending;
   }
 
@@ -1095,8 +1175,8 @@ export class DataTransferService {
     }
   }
 
-  private replaceDatabase(stagingDir: string, format: 1 | 2): void {
-    const source = path.join(stagingDir, format === 2 ? V2_DB : LEGACY_DB);
+  private replaceDatabase(stagingDir: string, format: 1 | 2 | 3): void {
+    const source = path.join(stagingDir, format > 1 ? VERSIONED_DB : LEGACY_DB);
     const incoming = `${this.dbPath}.incoming`;
     fs.copyFileSync(source, incoming);
     fs.rmSync(`${this.dbPath}-wal`, { force: true });

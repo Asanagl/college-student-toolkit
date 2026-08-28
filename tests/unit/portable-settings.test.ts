@@ -40,7 +40,8 @@ describe("PortableSettingsService", () => {
     await service.init();
 
     expect(service.get()).toMatchObject({
-      portableSettingsVersion: 1,
+      portableSettingsVersion: 2,
+      acm: { enabled: true },
       timetable: { semesterStart: null },
       notificationHistory: [],
     });
@@ -84,10 +85,12 @@ describe("PortableSettingsService", () => {
 
     await service.init();
     expect(service.get()).toMatchObject({
+      portableSettingsVersion: 2,
       themeMode: "light",
       timetable: { semesterStart: "2026-03-02" },
       notificationHistory: [{ id: "history-1" }],
       appearance: { backgroundImage: "scene.png", blurRadius: 18 },
+      acm: { enabled: true },
     });
 
     service.update({ themeMode: "dark" });

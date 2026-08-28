@@ -315,6 +315,19 @@ export interface PortableAppearanceSettings {
 
 /** Backup v2 中允许迁移的设置集合。 */
 export interface PortableSettings {
+  portableSettingsVersion: 2;
+  themeMode: ThemeMode;
+  timetable: TimetablePreferences;
+  dnd: DndConfig;
+  notificationHistory: NotificationRecord[];
+  appearance: PortableAppearanceSettings;
+  acm: {
+    enabled: boolean;
+  };
+}
+
+/** v0.3 备份/设置的输入形状，读取后会正向迁移为 PortableSettings v2。 */
+export interface LegacyPortableSettings {
   portableSettingsVersion: 1;
   themeMode: ThemeMode;
   timetable: TimetablePreferences;
@@ -346,9 +359,9 @@ export interface BackupRecordCounts {
 
 export interface BackupInspection {
   token: string;
-  backupFormatVersion: 1 | 2;
+  backupFormatVersion: 1 | 2 | 3;
   databaseSchemaVersion: number;
-  portableSettingsVersion: 0 | 1;
+  portableSettingsVersion: 0 | 1 | 2;
   recordCounts: BackupRecordCounts;
   includesSettings: boolean;
   includesBackground: boolean;
@@ -358,7 +371,7 @@ export interface BackupInspection {
 
 export interface BackupExportResult {
   filePath: string;
-  backupFormatVersion: 2;
+  backupFormatVersion: 2 | 3;
   databaseSchemaVersion: number;
   includesBackground: boolean;
   bytes: number;
