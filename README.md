@@ -2,7 +2,7 @@
 
 大学生 AI 工具组是一个 Windows 桌面应用，用于管理日程、课程表、考试、实验和成绩/GPA，并支持在用户主动操作后从教务系统导入数据。
 
-当前代码版本为 `0.3.0`。最新交付为本地 Microsoft Store 提交候选 **v19**：[`release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix`](release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix)，产品版本 `0.3.0`、MSIX Identity Version `0.3.11.0`、SHA-256 `2B16F1E2606A4EFB0E75946F42D7081F4A1BFB8A4B742E80D787D48347341D87`。它包含提醒扫描游标/休眠补扫、OCR 重定向 allowlist、性能报告 required metric 门禁和干净 checkout 的 OCR fixture 修复，并通过构建及静态清单/ASAR/x64 原生 SQLite binding 核对；它是 **未签名的 Store-only 本地候选**，已上传至 Partner Center 的 Submission 1 草稿，但尚未审核、发布或称为 Microsoft Store Stable。当前包列表显示 `0.3.11.0` x64，未见包身份验证错误；`runFullTrust` 审批、商店资料、认证、真实 Windows 安装及 Store 验收仍未完成。详见 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md)。
+当前代码版本为 `0.3.0`。最新交付候选为本地 Microsoft Store 提交候选 **v19**：[`release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix`](release-v0.3.0-msix-store-v19/college-student-toolkit-0.3.11-x64.msix)，产品版本 `0.3.0`、MSIX Identity Version `0.3.11.0`、SHA-256 `2B16F1E2606A4EFB0E75946F42D7081F4A1BFB8A4B742E80D787D48347341D87`。它包含提醒扫描游标/休眠补扫、OCR 重定向 allowlist、性能报告 required metric 门禁和干净 checkout 的 OCR fixture 修复，并通过构建及静态清单/ASAR/x64 原生 SQLite binding 核对；该本地文件本身是 **未签名的 Store-only 候选**。用户已确认 v19 已通过 Microsoft Store 审核并公开上架，但本地文件和公开上架状态都不等于全部实机验收已完成。详见 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md)。
 
 ## 功能概览
 
@@ -28,7 +28,7 @@
 | 本地 x64 MSIX、manifest/native binding 检查和隔离启动 smoke | 已生成并通过；使用 `CN=ms` 测试身份，不可直接提交 Store                                                                                                                                                     |
 | 本地 `CN=ms` 测试包指纹                                     | `135,688,701` bytes；SHA-256 `36B65CBE8099259EEE37AE2BEF0DB1DE7C8382C17C715D6E81A7D72C3A24D4A8`                                                                                                             |
 | 当前正式身份 MSIX 提交候选                                  | `release-v0.3.0-msix-store-v19`；Identity Version `0.3.11.0`；`136,149,551` bytes；SHA-256 `2B16F1E2606A4EFB0E75946F42D7081F4A1BFB8A4B742E80D787D48347341D87`；本地验证通过；运行时/备份产品版本仍为 `0.3.0` |
-| Partner Center identity、审核/发布和 Store 页面             | v19 已上传至 Submission 1 草稿，包列表显示 `0.3.11.0` x64，当前无包身份验证错误；Submission 1 仍为草稿；`runFullTrust` 审批、商店资料、认证和发布仍未完成                                  |
+| Partner Center identity、审核/发布和 Store 页面             | v19 已通过审核并公开上架；Product ID 为 `9NV11V5BK23N`，页面为 `https://apps.microsoft.com/detail/9NV11V5BK23N`；本地候选的 identity/指纹仅作审计记录 |
 | Store 一览演示素材                                          | 已生成 5 张隔离演示截图，见 [`docs/store-assets`](docs/store-assets)；上传前仍需发布者确认文案和品牌素材                                                                                                    |
 | Store 实际安装、更新、卸载保留数据和重装恢复                | 未执行，需 Store 发布后在 Windows 实机验收                                                                                                                                                                  |
 | 真实 OCR Release 资产下载                                   | 固定 Release URL、真实 GitHub CDN 重定向 host/path、大小和双哈希已核对；真实应用内识别性能仍未执行                                                                                                           |
@@ -38,9 +38,9 @@
 
 ## Windows 用户
 
-正式 Windows 版本应从 Microsoft Store 页面获取。当前已记录 Product ID `9NV11V5BK23N` 和预期页面 URL；只读探测于 2026-08-24 返回 HTTP `410 Gone`，且 Submission 1 仍是草稿，因此不能把该 URL 或本地包当作已发布 Stable 下载。仓库中的 `release-v0.3.0-msix-local` 是 electron-builder 生成的本地 Store-only 测试包，Publisher 为 `CN=ms`，只用于包结构和隔离启动验证，不能直接提交 Store 或交付给普通用户。
+正式 Windows 版本应从 Microsoft Store 页面获取。当前已记录 Product ID `9NV11V5BK23N` 和公开页面 [`https://apps.microsoft.com/detail/9NV11V5BK23N`](https://apps.microsoft.com/detail/9NV11V5BK23N)。此前 2026-08-24 的 HTTP `410 Gone` 探测和 Submission 1 草稿状态属于历史记录，不能覆盖用户后来确认的公开上架事实。仓库中的 `release-v0.3.0-msix-local` 是 electron-builder 生成的本地 Store-only 测试包，Publisher 为 `CN=ms`，只用于包结构和隔离启动验证，不能直接提交 Store 或交付给普通用户。
 
-正式 Store 包由 Microsoft Store 管理安装、发布者信任、更新和卸载事务，应用内不会启动 `electron-updater`。NSIS 只保留为本地 RC/备用渠道。无论使用哪个渠道，覆盖升级前都应先导出 v0.2 原始数据和 legacy v1 备份；v0.3 的 v2 备份不能由旧版 v0.2 读取。
+正式 Store 包由 Microsoft Store 管理安装、发布者信任、更新和卸载事务，应用内不会启动 `electron-updater`。NSIS 只保留为本地 RC/备用渠道。当前 Store 已公开上架，但 Store 实际安装、更新、卸载/重装保留数据、v0.2 数据迁移、OCR 实机验收和真实教务系统导入仍未完成，不能仅凭上架状态称为完整 Store Stable。无论使用哪个渠道，覆盖升级前都应先导出 v0.2 原始数据和 legacy v1 备份；v0.3 的 v2 备份不能由旧版 v0.2 读取。
 
 ## 教务导入
 
