@@ -20,11 +20,19 @@ const EXPECTED_CAPABILITIES = [
   "acm.runner",
 ] as const;
 
+export interface AcmPluginEnvironment {
+  platform?: NodeJS.Platform;
+  arch?: NodeJS.Architecture;
+  osRelease?: string;
+}
+
 export class AcmPluginService {
   private state: AcmPluginState = "initializing";
   private error: string | undefined;
   private errorCode: AcmPluginStatus["errorCode"];
   private initialized = false;
+
+  constructor(private readonly environment: AcmPluginEnvironment = {}) {}
 
   async init(): Promise<void> {
     if (this.initialized) return;
@@ -183,8 +191,11 @@ export class AcmPluginService {
   }
 
   private isSupportedPlatform(): boolean {
-    if (process.platform !== "win32" || process.arch !== "x64") return false;
-    const build = Number.parseInt(os.release().split(".")[2] ?? "0", 10);
+    const platform = this.environment.platform ?? process.platform;
+    const arch = this.environment.arch ?? process.arch;
+    if (platform !== "win32" || arch !== "x64") return false;
+    const release = this.environment.osRelease ?? os.release();
+    const build = Number.parseInt(release.split(".")[2] ?? "0", 10);
     return Number.isInteger(build) && build >= 22621;
   }
 }

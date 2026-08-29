@@ -9,14 +9,55 @@ vi.mock("electron", () => ({
   app: { getPath: () => electronState.userData },
 }));
 
-import { AcmPluginService } from "../../src/main/services/AcmPluginService";
+import {
+  AcmPluginService,
+  type AcmPluginEnvironment,
+} from "../../src/main/services/AcmPluginService";
 import { portableSettingsService } from "../../src/main/services/PortableSettingsService";
 
 const tempPaths: string[] = [];
-const platformSupported =
-  process.platform === "win32" &&
-  process.arch === "x64" &&
-  Number.parseInt(os.release().split(".")[2] ?? "0", 10) >= 22621;
+const platformCases: Array<{
+  name: string;
+  environment: Required<AcmPluginEnvironment>;
+  supported: boolean;
+}> = [
+  {
+    name: "Windows 11 x64",
+    environment: {
+      platform: "win32",
+      arch: "x64",
+      osRelease: "10.0.22621",
+    },
+    supported: true,
+  },
+  {
+    name: "Windows 10 x64",
+    environment: {
+      platform: "win32",
+      arch: "x64",
+      osRelease: "10.0.22620",
+    },
+    supported: false,
+  },
+  {
+    name: "Windows 11 ARM64",
+    environment: {
+      platform: "win32",
+      arch: "arm64",
+      osRelease: "10.0.22621",
+    },
+    supported: false,
+  },
+  {
+    name: "Linux x64",
+    environment: {
+      platform: "linux",
+      arch: "x64",
+      osRelease: "6.8.0",
+    },
+    supported: false,
+  },
+];
 
 function createDirectory(): string {
   const directory = fs.mkdtempSync(
@@ -41,7 +82,7 @@ afterEach(async () => {
 
 describe("AcmPluginService", () => {
   it("rejects writes before initialization and reports the trusted manifest", () => {
-    const service = new AcmPluginService();
+    const service = new AcmPluginService(platformCases[0].environment);
 
     expect(service.setEnabled(false)).toMatchObject({
       ok: false,
@@ -61,74 +102,80 @@ describe("AcmPluginService", () => {
     });
   });
 
-  it("initializes as ready on the supported host and can be disabled", async () => {
-    const service = new AcmPluginService();
-    await service.init();
+  it.each(platformCases)(
+    "$name initializes, persists disablement, and retries deterministically",
+    async ({ environment, supported }) => {
+      const service = new AcmPluginService(environment);
+      await service.init();
 
-    expect(service.getStatus()).toMatchObject({
-      ok: true,
-      data: { state: platformSupported ? "ready" : "unsupported" },
-    });
-    if (!platformSupported) return;
+      expect(service.getStatus()).toMatchObject({
+        ok: true,
+        data: {
+          state: supported ? "ready" : "unsupported",
+          enabled: true,
+        },
+      });
+      expect(service.setEnabled(false)).toMatchObject({
+        ok: true,
+        data: { state: "disabled", enabled: false },
+      });
+      expect(portableSettingsService.get().acm.enabled).toBe(false);
+      await service.dispose();
 
-    expect(service.isEnabled()).toBe(true);
-    expect(service.setEnabled(false)).toMatchObject({
-      ok: true,
-      data: { state: "disabled", enabled: false },
-    });
-    expect(service.isEnabled()).toBe(false);
-  });
+      await portableSettingsService.dispose();
+      await portableSettingsService.init();
+      const restored = new AcmPluginService(environment);
+      await restored.init();
+      expect(restored.getStatus()).toMatchObject({
+        ok: true,
+        data: {
+          state: supported ? "disabled" : "unsupported",
+          enabled: false,
+        },
+      });
 
-  it("keeps the disabled setting across retry and restores the enabled state", async () => {
-    const service = new AcmPluginService();
-    await service.init();
-    expect(service.setEnabled(false)).toMatchObject({
-      ok: true,
-      data: { enabled: false },
-    });
+      expect(restored.setEnabled(true)).toMatchObject({
+        ok: true,
+        data: { state: supported ? "ready" : "unsupported", enabled: true },
+      });
+      expect(portableSettingsService.get().acm.enabled).toBe(true);
+      expect(restored.retry()).toMatchObject({
+        ok: true,
+        data: { state: supported ? "ready" : "unsupported", enabled: true },
+      });
+      await restored.dispose();
+    },
+  );
 
-    expect(service.retry()).toMatchObject({
-      ok: true,
-      data: { state: "disabled", enabled: false },
-    });
-    portableSettingsService.update({ acm: { enabled: true } });
-    expect(service.retry()).toMatchObject({
-      ok: true,
-      data: {
-        state: platformSupported ? "ready" : "unsupported",
-        enabled: true,
-      },
-    });
-  });
-
-  it("reports compiler degradation and clears it after recovery", async () => {
-    const service = new AcmPluginService();
-    await service.init();
-    if (!platformSupported) {
-      expect(service.isEnabled()).toBe(false);
-      return;
-    }
-
-    service.setCompilerHealth(false, "测试编译器不可用");
-    expect(service.getStatus()).toMatchObject({
-      ok: true,
-      data: {
-        state: "degraded",
-        errorCode: "ACM_COMPILER_MISSING",
-        error: "测试编译器不可用",
-      },
-    });
-    expect(service.isEnabled()).toBe(true);
-
-    service.setCompilerHealth(true);
-    expect(service.getStatus()).toMatchObject({
-      ok: true,
-      data: { state: "ready", errorCode: undefined, error: undefined },
-    });
-  });
+  it.each(platformCases)(
+    "$name handles compiler health without crossing platform state",
+    async ({ environment, supported }) => {
+      const service = new AcmPluginService(environment);
+      await service.init();
+      service.setCompilerHealth(false, "测试编译器不可用");
+      expect(service.getStatus()).toMatchObject({
+        ok: true,
+        data: supported
+          ? {
+              state: "degraded",
+              errorCode: "ACM_COMPILER_MISSING",
+              error: "测试编译器不可用",
+            }
+          : { state: "unsupported", enabled: true },
+      });
+      service.setCompilerHealth(true);
+      expect(service.getStatus()).toMatchObject({
+        ok: true,
+        data: supported
+          ? { state: "ready", errorCode: undefined, error: undefined }
+          : { state: "unsupported", enabled: true },
+      });
+      await service.dispose();
+    },
+  );
 
   it("returns to a non-running state after disposal", async () => {
-    const service = new AcmPluginService();
+    const service = new AcmPluginService(platformCases[0].environment);
     await service.init();
     await service.dispose();
 
