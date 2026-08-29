@@ -49,7 +49,8 @@ export type IpcErrorCode =
   | "ACM_FILE_INVALID"
   | "ACM_FILE_TOO_LARGE"
   | "ACM_FILE_READONLY"
-  | "ACM_FILE_CHANGED";
+  | "ACM_FILE_CHANGED"
+  | "ACM_FILE_RECOVERY_REQUIRED";
 
 // ==================== 日程 Schedule ====================
 
@@ -685,6 +686,7 @@ export const IPC_CHANNELS = {
   ACM_DOCUMENT_CHECK_EXTERNAL: "acm:document:checkExternal",
   ACM_COMPILER_GET_SELECTION: "acm:compiler:getSelection",
   ACM_COMPILER_SET_SELECTION: "acm:compiler:setSelection",
+  ACM_COMPILER_SELECT_PATH: "acm:compiler:selectPath",
   ACM_COMPILER_PROBE: "acm:compiler:probe",
   ACM_RUNNER_START: "acm:runner:start",
   ACM_RUNNER_STOP: "acm:runner:stop",
@@ -854,6 +856,7 @@ export interface RendererApi {
     setCompilerSelection: (
       selection: CompilerSelection,
     ) => Promise<IpcResult<CompilerSelection>>;
+    selectCompilerPath: () => Promise<IpcResult<CompilerSelection | null>>;
     probeCompiler: () => Promise<IpcResult<CompilerProbeResult>>;
     startRunner: (
       request: RunnerStartRequest,

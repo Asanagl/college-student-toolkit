@@ -23,7 +23,7 @@ test.setTimeout(120_000);
 type AppSession = { app: ElectronApplication; page: Page };
 
 const defaultExecutable = path.resolve(
-  "release-v0.3.0-msix-local/win-unpacked/大学生工具组.exe",
+  "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
 );
 
 function packagedExecutable(): string {
@@ -99,6 +99,7 @@ async function openSection(page: Page, name: string): Promise<void> {
     考试安排: "/exam",
     实验提醒: "/lab",
     成绩显示: "/grade",
+    "ACM 临时 IDE": "/acm",
   };
   await page.locator(".ant-menu-item").filter({ hasText: name }).click();
   await expect(page).toHaveURL(new RegExp(`#${routes[name]}$`));
@@ -122,7 +123,7 @@ test("packaged build performs CRUD, restart persistence, settings, Store channel
     session = await launchPackaged(profile, backupPath);
     const { page } = session;
 
-    await expect(page.locator(".ant-menu-item")).toHaveCount(5);
+    await expect(page.locator(".ant-menu-item")).toHaveCount(6);
     const schedulePayload: Omit<Schedule, "id" | "createdAt" | "updatedAt"> = {
       title: `${marker} 日程`,
       startTime: localIso(9, 0),
@@ -345,6 +346,10 @@ test("packaged build performs CRUD, restart persistence, settings, Store channel
     await openSection(page, "成绩显示");
     await expect(page.locator("body")).toContainText(`${marker} 成绩`);
     await expect(page.locator("body")).toContainText("4.00");
+    await openSection(page, "ACM 临时 IDE");
+    await expect(page.locator("body")).toContainText(
+      "单文件 C++ 快速编译与运行",
+    );
     await openSection(page, "日程");
     await expect(page.locator("body")).toContainText(
       `${marker} 日程（已更新）`,
@@ -392,7 +397,7 @@ test("packaged build performs CRUD, restart persistence, settings, Store channel
     const backupResult = unwrap(
       await page.evaluate(async () => window.api.data.exportBackup()),
     );
-    expect(backupResult.backupFormatVersion).toBe(2);
+    expect(backupResult.backupFormatVersion).toBe(3);
     expect(fs.existsSync(backupPath)).toBe(true);
     expect(fs.statSync(backupPath).size).toBeGreaterThan(0);
 
@@ -432,7 +437,7 @@ test("packaged build performs CRUD, restart persistence, settings, Store channel
       await restored.page.evaluate(async () => window.api.data.prepareImport()),
     );
     expect(inspectionResult.inspection).toMatchObject({
-      backupFormatVersion: 2,
+      backupFormatVersion: 3,
     });
     const inspection = inspectionResult.inspection as BackupInspection;
     expect(inspection.recordCounts.courses).toBeGreaterThan(0);

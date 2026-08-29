@@ -218,6 +218,7 @@ const api: RendererApi = {
     getCompilerSelection: () => invoke(IPC_CHANNELS.ACM_COMPILER_GET_SELECTION),
     setCompilerSelection: (selection: CompilerSelection) =>
       invoke(IPC_CHANNELS.ACM_COMPILER_SET_SELECTION, selection),
+    selectCompilerPath: () => invoke(IPC_CHANNELS.ACM_COMPILER_SELECT_PATH),
     probeCompiler: () => invoke(IPC_CHANNELS.ACM_COMPILER_PROBE),
     startRunner: (request: RunnerStartRequest) =>
       invoke(IPC_CHANNELS.ACM_RUNNER_START, request),

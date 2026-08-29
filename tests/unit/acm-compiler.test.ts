@@ -9,6 +9,9 @@ vi.mock("electron", () => ({
     isPackaged: false,
     getPath: () => electronState.userData,
   },
+  dialog: {
+    showOpenDialog: vi.fn(),
+  },
 }));
 
 import { AcmCompilerService } from "../../src/main/services/AcmCompilerService";
@@ -28,6 +31,30 @@ afterEach(() => {
 });
 
 describe("AcmCompilerService", () => {
+  it("rejects writes before initialization and supports choosing a user compiler", async () => {
+    const beforeInit = new AcmCompilerService();
+    expect(beforeInit.setSelection({ mode: "auto", path: null })).toMatchObject(
+      {
+        ok: false,
+        errorCode: "ACM_COMPILER_INVALID",
+      },
+    );
+    const dialogs = {
+      showOpenDialog: vi.fn(async () => ({
+        canceled: false,
+        filePaths: ["C:\\tools\\g++.exe"],
+      })),
+    };
+    const service = new AcmCompilerService(dialogs);
+    await service.init();
+    expect(await service.selectCompilerPath()).toMatchObject({
+      ok: true,
+      data: { mode: "user", path: "C:\\tools\\g++.exe" },
+    });
+    expect(dialogs.showOpenDialog).toHaveBeenCalledTimes(1);
+    await service.dispose();
+  });
+
   it("persists automatic selection without modifying PATH", async () => {
     const service = new AcmCompilerService();
     await service.init();

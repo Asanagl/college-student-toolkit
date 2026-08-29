@@ -18,6 +18,7 @@ import {
 } from "../../src/main/services/AcmRunnerService";
 import {
   AcmRunnerHelper,
+  createAcmProcessEnvironment,
   type RunnerProcessFactory,
 } from "../../src/main/services/AcmRunnerHelper";
 
@@ -37,6 +38,7 @@ interface FakeScenario {
   compileStderr: string;
   runOutput: string;
   runStderr: string;
+  runFileBytes?: number;
   holdRun: boolean;
 }
 
@@ -95,7 +97,7 @@ function child(): FakeChild {
 function factoryFor(scenario: FakeScenario): RunnerProcessFactory {
   let current: FakeChild | null = null;
   return {
-    spawn: (_command, args, _options) => {
+    spawn: (_command, args, options) => {
       const process = child();
       current = process;
       const isCompile = args.includes("-std=c++17");
@@ -110,6 +112,12 @@ function factoryFor(scenario: FakeScenario): RunnerProcessFactory {
           return;
         }
         if (scenario.holdRun) return;
+        if (scenario.runFileBytes) {
+          fs.writeFileSync(
+            path.join(options.cwd as string, "run-output.bin"),
+            Buffer.alloc(scenario.runFileBytes),
+          );
+        }
         if (scenario.runOutput) process.stdout.write(scenario.runOutput);
         if (scenario.runStderr) process.stderr.write(scenario.runStderr);
         process.exitCode = 0;
@@ -152,6 +160,7 @@ function createService(
         compileStderr: "",
         runOutput: "",
         runStderr: "",
+        runFileBytes: undefined,
         holdRun: false,
         ...scenario,
       }),
@@ -217,6 +226,7 @@ describe("AcmRunnerService", () => {
       platform: "win32",
       tempRoot: createTempRoot(),
     });
+    await unavailableService.init();
     expect(await unavailableService.start(request())).toMatchObject({
       ok: false,
       errorCode: "ACM_COMPILER_MISSING",
@@ -275,6 +285,7 @@ describe("AcmRunnerService", () => {
     });
     const events: RunnerEvent[] = [];
     service.onEvent((event) => events.push(event));
+    await service.init();
     const started = await service.start(request({ mode: "compile" }));
     expect(started.ok).toBe(true);
     expect(await service.start(request())).toMatchObject({
@@ -294,6 +305,7 @@ describe("AcmRunnerService", () => {
     const service = createService({ holdRun: true });
     const events: RunnerEvent[] = [];
     service.onEvent((event) => events.push(event));
+    await service.init();
     expect((await service.start(request())).ok).toBe(true);
     await waitFor(events, (event) => event.stage === "run-started");
     expect(await service.stop()).toEqual({ ok: true, data: true });
@@ -313,6 +325,7 @@ describe("AcmRunnerService", () => {
     );
     const timeoutEvents: RunnerEvent[] = [];
     timeoutService.onEvent((event) => timeoutEvents.push(event));
+    await timeoutService.init();
     expect((await timeoutService.start(request())).ok).toBe(true);
     await waitFor(timeoutEvents, (event) => event.stage === "run-finished");
     expect(timeoutEvents.at(-1)).toMatchObject({
@@ -327,6 +340,7 @@ describe("AcmRunnerService", () => {
     );
     const outputEvents: RunnerEvent[] = [];
     outputService.onEvent((event) => outputEvents.push(event));
+    await outputService.init();
     expect((await outputService.start(request())).ok).toBe(true);
     await waitFor(outputEvents, (event) => event.stage === "run-finished");
     expect(outputEvents.at(-1)).toMatchObject({
@@ -334,5 +348,118 @@ describe("AcmRunnerService", () => {
       errorCode: "ACM_RUNNER_OUTPUT_LIMIT",
     });
     await outputService.dispose();
+
+    const tempService = createService(
+      { runFileBytes: 1024 },
+      { tempBytes: 512 },
+    );
+    const tempEvents: RunnerEvent[] = [];
+    tempService.onEvent((event) => tempEvents.push(event));
+    await tempService.init();
+    expect((await tempService.start(request())).ok).toBe(true);
+    await waitFor(tempEvents, (event) => event.stage === "run-finished");
+    expect(tempEvents.at(-1)).toMatchObject({
+      status: "output-limit",
+      errorCode: "ACM_RUNNER_OUTPUT_LIMIT",
+    });
+    await tempService.dispose();
+  });
+});
+
+describe("AcmRunnerHelper", () => {
+  it("rejects termination when the child never confirms exit", async () => {
+    const process = child();
+    process.kill = () => false;
+    const factory: RunnerProcessFactory = {
+      spawn: () => process as unknown as ChildProcess,
+      execFile: (_file, _args, _options, callback) => {
+        const killer = new EventEmitter() as ChildProcess;
+        queueMicrotask(() => callback(null));
+        return killer;
+      },
+    };
+    const helper = new AcmRunnerHelper(factory, "win32", 5);
+    await expect(
+      helper.terminate(process as unknown as ChildProcess),
+    ).rejects.toThrow("未确认退出");
+  });
+
+  it("keeps the runtime toolchain directory in the controlled PATH", () => {
+    const environment = createAcmProcessEnvironment(
+      "C:\\task\\program.exe",
+      "C:\\toolchain\\bin",
+    );
+    expect(environment.PATH).toContain("C:\\toolchain\\bin");
+    expect(environment.PATH).toContain("System32");
+  });
+
+  it("force-kills the child when taskkill exits with an error", async () => {
+    const process = child();
+    const factory: RunnerProcessFactory = {
+      spawn: () => process as unknown as ChildProcess,
+      execFile: (_file, _args, _options, callback) => {
+        const killer = new EventEmitter() as ChildProcess;
+        queueMicrotask(() => callback(new Error("taskkill failed")));
+        return killer;
+      },
+    };
+    const helper = new AcmRunnerHelper(factory, "win32");
+    await helper.terminate(process as unknown as ChildProcess);
+    expect(process.killed).toBe(true);
+  });
+
+  it("cleans stale runner directories during initialization", async () => {
+    const tempRoot = createTempRoot();
+    const now = Date.now();
+    const staleTtlMs = 60_000;
+    const stale = path.join(tempRoot, "college-toolkit-runner-stale");
+    fs.mkdirSync(stale);
+    fs.writeFileSync(
+      path.join(stale, ".college-toolkit-runner-owner.json"),
+      JSON.stringify({
+        formatVersion: 1,
+        owner: "college-student-toolkit-acm",
+        instanceId: "old-instance",
+        pid: 1,
+        createdAt: now - staleTtlMs - 1,
+      }),
+    );
+    const unowned = path.join(tempRoot, "college-toolkit-runner-unowned");
+    fs.mkdirSync(unowned);
+    const fresh = path.join(tempRoot, "college-toolkit-runner-fresh");
+    fs.mkdirSync(fresh);
+    fs.writeFileSync(
+      path.join(fresh, ".college-toolkit-runner-owner.json"),
+      JSON.stringify({
+        formatVersion: 1,
+        owner: "college-student-toolkit-acm",
+        instanceId: "fresh-instance",
+        pid: process.pid,
+        createdAt: now,
+      }),
+    );
+    const service = new AcmRunnerService({
+      platform: "win32",
+      compiler: compiler(),
+      tempRoot,
+      staleTempTtlMs: staleTtlMs,
+    });
+    await service.init();
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(unowned)).toBe(true);
+    expect(fs.existsSync(fresh)).toBe(true);
+    await service.dispose();
+  });
+
+  it("rejects start and stop before initialization", async () => {
+    const service = createService();
+    expect(await service.start(request())).toMatchObject({
+      ok: false,
+      errorCode: "ACM_PLUGIN_INVALID",
+    });
+    expect(await service.stop()).toMatchObject({
+      ok: false,
+      errorCode: "ACM_PLUGIN_INVALID",
+    });
   });
 });

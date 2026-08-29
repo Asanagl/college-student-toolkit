@@ -28,6 +28,12 @@ export const DEFAULT_RUNNER_LIMITS: RunnerLimits = {
   tempBytes: 128 * 1024 * 1024,
 };
 
+export const ACM_RUNNER_TEMP_TTL_MS = 24 * 60 * 60 * 1000;
+const RUNNER_TEMP_PREFIX = "college-toolkit-runner-";
+const RUNNER_OWNER_FILE = ".college-toolkit-runner-owner.json";
+const RUNNER_OWNER = "college-student-toolkit-acm";
+const DEFAULT_TEMP_ROOT = path.join(os.tmpdir(), "college-student-toolkit-acm");
+
 const requestSchema = z.object({
   documentId: z.string().trim().min(1).max(128),
   source: z.string(),
@@ -46,6 +52,7 @@ export interface AcmRunnerServiceOptions {
   helper?: AcmRunnerHelper;
   platform?: NodeJS.Platform;
   tempRoot?: string;
+  staleTempTtlMs?: number;
   limits?: Partial<RunnerLimits>;
 }
 
@@ -59,9 +66,12 @@ interface RunnerTask {
   request: RunnerStartRequest;
   phase: Phase | "preparing";
   tempDir: string | null;
+  runtimePath: string | null;
   child: ChildProcess | null;
   stopRequested: boolean;
   phaseReason: StopReason | null;
+  termination: Promise<void> | null;
+  cleanupBlocked: boolean;
   done: Promise<void> | null;
 }
 
@@ -104,11 +114,38 @@ function phaseLabel(phase: Phase): string {
   return phase === "compile" ? "编译" : "运行";
 }
 
+function comparablePath(value: string): string {
+  return path
+    .resolve(value)
+    .replace(/^\\\\\?\\/, "")
+    .replace(/[\\/]+$/, "")
+    .toLowerCase();
+}
+
+function isReparsePoint(
+  filePath: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) return true;
+    if (platform !== "win32") return false;
+    return (
+      comparablePath(fs.realpathSync.native(filePath)) !==
+      comparablePath(filePath)
+    );
+  } catch {
+    return true;
+  }
+}
+
 export class AcmRunnerService {
   private readonly compiler: AcmRunnerCompiler;
   private readonly helper: AcmRunnerHelper;
   private readonly platform: NodeJS.Platform;
   private readonly tempRoot: string;
+  private readonly staleTempTtlMs: number;
+  private readonly instanceId = randomUUID();
   private readonly limits: RunnerLimits;
   private readonly listeners = new Set<(event: RunnerEvent) => void>();
   private active: RunnerTask | null = null;
@@ -124,11 +161,17 @@ export class AcmRunnerService {
     this.compiler = options.compiler ?? acmCompilerService;
     this.helper = options.helper ?? acmRunnerHelper;
     this.platform = options.platform ?? process.platform;
-    this.tempRoot = options.tempRoot ?? os.tmpdir();
+    this.tempRoot = path.resolve(options.tempRoot ?? DEFAULT_TEMP_ROOT);
+    this.staleTempTtlMs = Math.max(
+      1,
+      options.staleTempTtlMs ?? ACM_RUNNER_TEMP_TTL_MS,
+    );
     this.limits = { ...DEFAULT_RUNNER_LIMITS, ...options.limits };
   }
 
   async init(): Promise<void> {
+    this.ensureTempRoot();
+    this.cleanupStaleTempDirectories();
     this.initialized = true;
   }
 
@@ -147,6 +190,8 @@ export class AcmRunnerService {
     if (!checked.ok) return checked;
     if (this.platform !== "win32")
       return errorResult("ACM_UNSUPPORTED", "ACM runner 仅支持 Windows");
+    if (!this.initialized)
+      return errorResult("ACM_PLUGIN_INVALID", "ACM runner 尚未初始化");
     if (this.active)
       return errorResult("ACM_RUNNER_BUSY", "已有编译或运行任务正在执行");
 
@@ -155,9 +200,12 @@ export class AcmRunnerService {
       request: parsed.data,
       phase: "preparing",
       tempDir: null,
+      runtimePath: null,
       child: null,
       stopRequested: false,
       phaseReason: null,
+      termination: null,
+      cleanupBlocked: false,
       done: null,
     };
     this.active = task;
@@ -169,11 +217,10 @@ export class AcmRunnerService {
         await this.finishPreparingTask(task);
         return { ok: true, data: { taskId: task.id } };
       }
-      task.tempDir = fs.mkdtempSync(
-        path.join(this.tempRoot, "college-toolkit-runner-"),
-      );
+      task.runtimePath = path.dirname(compilerPath);
+      task.tempDir = this.createTaskTempDirectory(task);
       this.writeSource(task);
-      task.done = this.execute(task, compilerPath);
+      task.done = this.scheduleExecution(task, compilerPath);
       void task.done;
       return { ok: true, data: { taskId: task.id } };
     } catch (error) {
@@ -183,13 +230,19 @@ export class AcmRunnerService {
   }
 
   async stop(): Promise<IpcResult<boolean>> {
+    if (!this.initialized)
+      return errorResult("ACM_PLUGIN_INVALID", "ACM runner 尚未初始化");
+    return this.stopActiveTask();
+  }
+
+  private async stopActiveTask(): Promise<IpcResult<boolean>> {
     const task = this.active;
     if (!task) return { ok: true, data: false };
     task.stopRequested = true;
     if (task.child) {
       task.phaseReason ??= "cancelled";
       try {
-        await this.helper.terminate(task.child);
+        await this.terminateChild(task, task.child);
       } catch (error) {
         return errorResult(
           "ACM_RUNNER_FAILED",
@@ -197,19 +250,20 @@ export class AcmRunnerService {
         );
       }
     }
+    if (task.done) await task.done;
     return { ok: true, data: true };
   }
 
   async dispose(): Promise<void> {
-    this.initialized = false;
     const task = this.active;
-    if (!task) {
-      this.listeners.clear();
-      return;
+    if (task) {
+      const stopped = await this.stopActiveTask();
+      if (!stopped.ok)
+        console.warn(`[acm-runner] 释放时终止子进程失败: ${stopped.error}`);
+      else if (task.done) await task.done;
+      else await this.finishPreparingTask(task);
     }
-    await this.stop();
-    if (task.done) await task.done;
-    else await this.finishPreparingTask(task);
+    this.initialized = false;
     this.listeners.clear();
   }
 
@@ -269,6 +323,18 @@ export class AcmRunnerService {
     }
   }
 
+  private scheduleExecution(
+    task: RunnerTask,
+    compilerPath: string,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      // Let the IPC response publish taskId before a fast child can emit a terminal event.
+      setImmediate(() => {
+        void this.execute(task, compilerPath).then(resolve, resolve);
+      });
+    });
+  }
+
   private async runPhase(
     task: RunnerTask,
     phase: Phase,
@@ -294,9 +360,9 @@ export class AcmRunnerService {
     }
     const outcome = await this.waitForChild(task, phase, child, startedAt);
     task.child = null;
-    if (outcome.status === "completed" && phase === "compile") {
+    if (outcome.status === "completed") {
       try {
-        this.assertExecutable(task);
+        if (phase === "compile") this.assertExecutable(task);
         this.assertTempSize(task.tempDir as string);
       } catch (error) {
         const failed = this.unexpectedOutcome(error, startedAt);
@@ -322,12 +388,19 @@ export class AcmRunnerService {
     phase: Phase,
     command: string,
   ): ChildProcess {
+    task.termination = null;
     const args = this.phaseArguments(task, phase);
     const stdio =
       phase === "compile"
         ? (["ignore", "pipe", "pipe"] as const)
         : (["pipe", "pipe", "pipe"] as const);
-    return this.helper.spawn(command, args, task.tempDir as string, stdio);
+    return this.helper.spawn(
+      command,
+      args,
+      task.tempDir as string,
+      stdio,
+      task.runtimePath,
+    );
   }
 
   private phaseArguments(task: RunnerTask, phase: Phase): string[] {
@@ -353,24 +426,49 @@ export class AcmRunnerService {
         stderr: new StringDecoder("utf8"),
       };
       const byteCounts = { stdout: 0, stderr: 0 };
-      const finish = (exitCode: number | null, error?: Error): void => {
+      let terminationError: Error | undefined;
+      const finish = async (
+        exitCode: number | null,
+        error?: Error,
+        exitConfirmed = false,
+      ): Promise<void> => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         clearInterval(tempTimer);
+        if (error || task.phaseReason) {
+          try {
+            await this.terminateChild(task, child);
+          } catch (terminationFailure) {
+            if (!exitConfirmed) task.cleanupBlocked = true;
+            const value =
+              terminationFailure instanceof Error
+                ? terminationFailure
+                : new Error(String(terminationFailure));
+            error ??= value;
+            if (!exitConfirmed) terminationError = value;
+          }
+        }
         this.emitDecoderTails(task, decoders);
-        resolve(this.outcome(task, exitCode, error, startedAt));
+        const result = this.outcome(task, exitCode, error, startedAt);
+        if (terminationError && !exitConfirmed) {
+          result.status = "failed";
+          result.exitCode = exitCode;
+          result.errorCode = "ACM_RUNNER_FAILED";
+          result.error = terminationError.message;
+        }
+        resolve(result);
       };
       const timer = setTimeout(() => {
         if (task.phaseReason) return;
         task.phaseReason = "timeout";
-        void this.helper.terminate(child).catch(() => undefined);
+        void this.terminateChild(task, child).catch(() => undefined);
       }, this.timeoutFor(phase));
       const tempTimer = setInterval(() => {
         if (task.phaseReason || !task.tempDir) return;
         if (!this.tempDirectoryExceeded(task)) return;
         task.phaseReason = "output-limit";
-        void this.helper.terminate(child).catch(() => undefined);
+        void this.terminateChild(task, child).catch(() => undefined);
       }, 100);
       child.stdout?.on("data", (chunk: Buffer | string) =>
         this.consumeOutput(task, child, "stdout", chunk, byteCounts, decoders),
@@ -379,19 +477,20 @@ export class AcmRunnerService {
         this.consumeOutput(task, child, "stderr", chunk, byteCounts, decoders),
       );
       const failStream = (error: Error): void => {
-        void this.helper.terminate(child).catch(() => undefined);
-        finish(null, error);
+        void finish(null, error);
       };
       child.stdout?.once("error", failStream);
       child.stderr?.once("error", failStream);
       child.stdin?.once("error", () => undefined);
-      child.once("error", (error) => finish(null, error));
-      child.once("close", (code) =>
-        finish(typeof code === "number" ? code : null),
+      child.once("error", (error) => void finish(null, error));
+      child.once(
+        "close",
+        (code) =>
+          void finish(typeof code === "number" ? code : null, undefined, true),
       );
       if (task.stopRequested) {
         task.phaseReason ??= "cancelled";
-        void this.helper.terminate(child).catch(() => undefined);
+        void this.terminateChild(task, child).catch(() => undefined);
       }
       if (phase === "run" && child.stdin) {
         child.stdin.end(Buffer.from(task.request.stdin, "utf8"));
@@ -425,7 +524,7 @@ export class AcmRunnerService {
       });
     if (accepted.byteLength < buffer.byteLength) {
       task.phaseReason = "output-limit";
-      void this.helper.terminate(child).catch(() => undefined);
+      void this.terminateChild(task, child).catch(() => undefined);
     }
   }
 
@@ -507,7 +606,8 @@ export class AcmRunnerService {
   ): ProcessOutcome {
     const known = error instanceof RunnerFailure ? error : null;
     return {
-      status: "failed",
+      status:
+        known?.code === "ACM_RUNNER_OUTPUT_LIMIT" ? "output-limit" : "failed",
       exitCode: null,
       errorCode: known?.code ?? "ACM_RUNNER_FAILED",
       error: error instanceof Error ? error.message : String(error),
@@ -578,8 +678,18 @@ export class AcmRunnerService {
     const pending = [directory];
     while (pending.length) {
       const current = pending.pop() as string;
+      if (isReparsePoint(current, this.platform))
+        throw new RunnerFailure(
+          "ACM_RUNNER_FAILED",
+          "临时构建目录包含不支持的 reparse point",
+        );
       for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
         const target = path.join(current, entry.name);
+        if (isReparsePoint(target, this.platform))
+          throw new RunnerFailure(
+            "ACM_RUNNER_FAILED",
+            "临时构建目录包含不支持的 reparse point",
+          );
         if (entry.isDirectory()) pending.push(target);
         else if (entry.isFile()) total += fs.statSync(target).size;
         else
@@ -591,6 +701,111 @@ export class AcmRunnerService {
       }
     }
     return total;
+  }
+
+  private cleanupStaleTempDirectories(): void {
+    try {
+      if (!fs.existsSync(this.tempRoot)) return;
+      const root = path.resolve(this.tempRoot);
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.name.startsWith(RUNNER_TEMP_PREFIX)) continue;
+        const target = path.join(root, entry.name);
+        if (!entry.isDirectory() || isReparsePoint(target, this.platform))
+          continue;
+        const owner = this.readOwnerMetadata(target);
+        if (!owner || !this.isExpiredOwner(owner)) continue;
+        if (this.containsReparsePoint(target)) continue;
+        fs.rmSync(target, {
+          recursive: true,
+          force: true,
+          maxRetries: 2,
+          retryDelay: 50,
+        });
+      }
+    } catch (error) {
+      console.warn(`[acm-runner] 启动时清理旧临时目录失败: ${String(error)}`);
+    }
+  }
+
+  private ensureTempRoot(): void {
+    fs.mkdirSync(this.tempRoot, { recursive: true });
+    if (isReparsePoint(this.tempRoot, this.platform))
+      throw new RunnerFailure(
+        "ACM_RUNNER_FAILED",
+        "ACM runner 临时根目录不能是 reparse point",
+      );
+    const stat = fs.lstatSync(this.tempRoot);
+    if (!stat.isDirectory())
+      throw new RunnerFailure("ACM_RUNNER_FAILED", "ACM runner 临时根目录无效");
+  }
+
+  private createTaskTempDirectory(task: RunnerTask): string {
+    const directory = fs.mkdtempSync(
+      path.join(this.tempRoot, RUNNER_TEMP_PREFIX),
+    );
+    const metadata = {
+      formatVersion: 1,
+      owner: RUNNER_OWNER,
+      instanceId: this.instanceId,
+      pid: process.pid,
+      createdAt: Date.now(),
+      taskId: task.id,
+    };
+    fs.writeFileSync(
+      path.join(directory, RUNNER_OWNER_FILE),
+      `${JSON.stringify(metadata)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+    return directory;
+  }
+
+  private readOwnerMetadata(directory: string): {
+    owner: string;
+    createdAt: number;
+  } | null {
+    const marker = path.join(directory, RUNNER_OWNER_FILE);
+    try {
+      if (isReparsePoint(marker, this.platform)) return null;
+      const value: unknown = JSON.parse(fs.readFileSync(marker, "utf8"));
+      if (!value || typeof value !== "object") return null;
+      const metadata = value as Record<string, unknown>;
+      if (
+        metadata.formatVersion !== 1 ||
+        metadata.owner !== RUNNER_OWNER ||
+        typeof metadata.createdAt !== "number" ||
+        !Number.isFinite(metadata.createdAt)
+      )
+        return null;
+      return {
+        owner: metadata.owner,
+        createdAt: metadata.createdAt,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private isExpiredOwner(owner: { createdAt: number }): boolean {
+    const age = Date.now() - owner.createdAt;
+    return age >= this.staleTempTtlMs && age < Number.MAX_SAFE_INTEGER;
+  }
+
+  private containsReparsePoint(directory: string): boolean {
+    const pending = [directory];
+    try {
+      while (pending.length) {
+        const current = pending.pop() as string;
+        if (isReparsePoint(current, this.platform)) return true;
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+          const target = path.join(current, entry.name);
+          if (isReparsePoint(target, this.platform)) return true;
+          if (entry.isDirectory()) pending.push(target);
+        }
+      }
+      return false;
+    } catch {
+      return true;
+    }
   }
 
   private async failBeforeExecution(task: RunnerTask): Promise<void> {
@@ -613,12 +828,19 @@ export class AcmRunnerService {
 
   private async cleanupTask(task: RunnerTask): Promise<void> {
     task.child = null;
+    task.termination = null;
     if (!task.tempDir) {
       if (this.active === task) this.active = null;
       return;
     }
     const directory = task.tempDir;
     try {
+      if (task.cleanupBlocked || this.containsReparsePoint(directory)) {
+        console.warn(
+          `[acm-runner] 临时目录包含未清理资源，保留供恢复: ${directory}`,
+        );
+        return;
+      }
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
           fs.rmSync(directory, {
@@ -638,6 +860,17 @@ export class AcmRunnerService {
       task.tempDir = null;
       if (this.active === task) this.active = null;
     }
+  }
+
+  private terminateChild(task: RunnerTask, child: ChildProcess): Promise<void> {
+    if (!task.termination) {
+      const termination = this.helper.terminate(child).catch((error) => {
+        if (task.termination === termination) task.termination = null;
+        throw error;
+      });
+      task.termination = termination;
+    }
+    return task.termination;
   }
 
   private failureResult(error: unknown): IpcResult<{ taskId: string }> {

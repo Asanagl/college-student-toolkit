@@ -19,9 +19,9 @@
 
 | 项目                                                        | 状态                                                                                                                                                                                                        |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 版本与依赖升级                                              | `0.3.0` 已写入 `package.json` 和锁文件                                                                                                                                                                      |
-| v19 受影响单元测试与主进程类型检查                           | 已通过（提醒 10 用例、OCR 12 用例、Node 类型检查），完整门禁仍待执行                                                                                                                                            |
-| Electron 源码与 packaged E2E                                | 已通过（v14 `npm run test:e2e:packaged`：3 passed；导入浏览器 fixture 单独执行：2 passed）                                                                                                                   |
+| 版本与依赖升级                                              | `0.4.0` 已写入 `package.json` 和锁文件                                                                                                                                                                      |
+| v19 受影响单元测试与主进程类型检查                           | 已通过（提醒 10 用例、OCR 12 用例、Node 类型检查）；v0.4.0 完整本地门禁已通过                                                                                                                                    |
+| Electron 源码与 packaged E2E                                | 已通过（当前 v0.4.0 `npm run test:e2e:packaged`：3 passed；导入浏览器 fixture 单独执行：2 passed；ACM 编译/运行闭环仍未纳入）                                                                                  |
 | 本地生产构建和包前置 smoke                                  | 已通过                                                                                                                                                                                                      |
 | 依赖安全审计                                                | `npm audit --omit=dev` 已通过                                                                                                                                                                               |
 | Windows Release 性能与 30 分钟 soak                         | 已通过（30 次采样、5 次预热、5 分钟 idle、30 分钟/180 周期 soak）                                                                                                                                           |
@@ -34,7 +34,7 @@
 | Store 实际安装、更新、卸载保留数据和重装恢复                | 未执行，需 Store 发布后在 Windows 实机验收                                                                                                                                                                  |
 | 真实 OCR Release 资产下载                                   | 固定 Release URL、真实 GitHub CDN 重定向 host/path、大小和双哈希已核对；真实应用内识别性能仍未执行                                                                                                           |
 | Windows 11 24H2/25H2 干净机及真实教务系统验收               | 未执行，阻断 Store Stable                                                                                                                                                                                   |
-| v0.4.0 ACM Workbench、runner 和内置工具链                     | 开发中；当前服务/契约已建立，UI、runner、helper、staging 实包和完整回归仍未完成                                                                                                                               |
+| v0.4.0 ACM Workbench、runner 和内置工具链                     | 本地 RC 开发中；服务、UI、runner、staging 和 `verify:appx` 已通过，原生 Job Object、ACM packaged 编译/运行闭环、Store/实机验收仍未完成                                                                               |
 
 完整验收清单见 [`docs/v0.3.0-acceptance-checklist.md`](docs/v0.3.0-acceptance-checklist.md)，用户可见变更见 [`docs/v0.3.0-release-notes.md`](docs/v0.3.0-release-notes.md)。
 
@@ -95,7 +95,18 @@ npm run verify:appx
 npm run test:smoke:appx
 ```
 
-正式 Store 构建必须使用 Partner Center 提供的准确 package identity；这些字段不是账号凭据，不要把密码、Cookie、私钥或访问令牌放入环境以外的文件。由于 Partner Center 不接受非零第四段版本，当前候选使用三段 Store 身份版本 `0.3.11`，由清单生成 `0.3.11.0`；应用运行时和备份 manifest 仍保持产品版本 `0.3.0`：
+v0.4.0 ACM 本地包需要先显式 staging 一份受控 x64 MinGW 闭包；脚本不会读取 PATH、在线下载工具链或修改系统设置：
+
+```powershell
+$env:ACM_MINGW_SOURCE = "C:\Algo Bootstrap\mingw64"
+npm run stage:toolchain
+npm run package:appx
+npm run verify:appx
+```
+
+当前本地包使用 `CN=ms` 测试身份，验证结果只代表结构、x64 native binding、工具链入口和最低系统版本检查通过，不代表 Store 签名、上架、安装更新或 ACM 实机验收。Runner 当前使用 `taskkill /PID /T /F` 进程树兜底，原生 Job Object helper 仍是后续工作。
+
+上一轮 v0.3.0 的正式 Store 构建使用 Partner Center 提供的准确 package identity；以下是历史候选的复现入口，不是当前 v0.4.0 产品版本。Partner Center 不接受非零第四段版本，因此该历史候选使用三段 Store 身份版本 `0.3.11`，由清单生成 `0.3.11.0`；其应用运行时和备份 manifest 保持产品版本 `0.3.0`：
 
 ```powershell
 $env:APPX_IDENTITY_NAME = "<Partner Center Name>"

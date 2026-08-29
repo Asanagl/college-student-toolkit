@@ -114,6 +114,13 @@ describe("AcmFileService", () => {
       ok: false,
       errorCode: "ACM_FILE_CHANGED",
     });
+    const missingFingerprint = service.saveDocument(
+      request(opened.data.id, filePath, "unsafe", null),
+    );
+    expect(missingFingerprint).toMatchObject({
+      ok: false,
+      errorCode: "ACM_FILE_CHANGED",
+    });
     const forced = service.saveDocument(
       request(opened.data.id, filePath, "forced", null, true),
     );

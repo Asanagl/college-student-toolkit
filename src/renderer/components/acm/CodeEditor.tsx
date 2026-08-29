@@ -7,10 +7,11 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { useEffect, useRef } from "react";
 
 interface CodeEditorProps {
+  documentId: string;
   value: string;
   readOnly: boolean;
   dark: boolean;
-  onChange: (value: string) => void;
+  onChange: (documentId: string, value: string) => void;
 }
 
 const lightTheme = EditorView.theme(
@@ -53,6 +54,7 @@ function editorTheme(dark: boolean): Extension {
 }
 
 export default function CodeEditor({
+  documentId,
   value,
   readOnly,
   dark,
@@ -61,12 +63,15 @@ export default function CodeEditor({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const readOnlyRef = useRef(new Compartment());
+  const contentAttributesRef = useRef(new Compartment());
   const themeRef = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
+  const documentIdRef = useRef(documentId);
 
   useEffect(() => {
     onChangeRef.current = onChange;
-  }, [onChange]);
+    documentIdRef.current = documentId;
+  }, [documentId, onChange]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -82,11 +87,20 @@ export default function CodeEditor({
           EditorState.readOnly.of(readOnly),
           EditorView.editable.of(!readOnly),
         ]),
+        contentAttributesRef.current.of(
+          EditorView.contentAttributes.of({
+            "aria-label": "C++ 源码编辑器",
+            "aria-readonly": String(readOnly),
+          }),
+        ),
         themeRef.current.of(editorTheme(dark)),
         keymap.of([indentWithTab]),
         EditorView.updateListener.of((update) => {
           if (update.docChanged)
-            onChangeRef.current(update.state.doc.toString());
+            onChangeRef.current(
+              documentIdRef.current,
+              update.state.doc.toString(),
+            );
         }),
       ],
     });
@@ -109,10 +123,18 @@ export default function CodeEditor({
 
   useEffect(() => {
     viewRef.current?.dispatch({
-      effects: readOnlyRef.current.reconfigure([
-        EditorState.readOnly.of(readOnly),
-        EditorView.editable.of(!readOnly),
-      ]),
+      effects: [
+        readOnlyRef.current.reconfigure([
+          EditorState.readOnly.of(readOnly),
+          EditorView.editable.of(!readOnly),
+        ]),
+        contentAttributesRef.current.reconfigure(
+          EditorView.contentAttributes.of({
+            "aria-label": "C++ 源码编辑器",
+            "aria-readonly": String(readOnly),
+          }),
+        ),
+      ],
     });
   }, [readOnly]);
 
@@ -122,11 +144,5 @@ export default function CodeEditor({
     });
   }, [dark]);
 
-  return (
-    <div
-      ref={hostRef}
-      className="acm-code-editor"
-      aria-label="C++ 源码编辑器"
-    />
-  );
+  return <div ref={hostRef} className="acm-code-editor" />;
 }

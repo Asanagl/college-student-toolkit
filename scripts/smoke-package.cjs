@@ -48,7 +48,7 @@ if (
   !source.includes("DATA_EXPORT_BACKUP") ||
   !source.includes("OCR_COMPONENT_INSTALL")
 ) {
-  throw new Error("共享 IPC 契约缺少 v0.3.0 数据备份或 OCR 通道");
+  throw new Error("共享 IPC 契约缺少数据备份或 OCR 通道");
 }
 
 console.log(

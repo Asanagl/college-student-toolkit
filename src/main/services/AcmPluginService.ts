@@ -1,4 +1,3 @@
-import { app } from "electron";
 import * as os from "node:os";
 import type {
   AcmPluginState,
@@ -15,6 +14,11 @@ const MANIFEST: TrustedPluginManifest = {
   pluginApiVersion: RELEASE_CONFIG.pluginApiVersion,
   capabilities: ["acm.documents", "acm.compiler", "acm.runner"],
 };
+const EXPECTED_CAPABILITIES = [
+  "acm.documents",
+  "acm.compiler",
+  "acm.runner",
+] as const;
 
 export class AcmPluginService {
   private state: AcmPluginState = "initializing";
@@ -59,6 +63,27 @@ export class AcmPluginService {
 
   setEnabled(enabled: boolean): IpcResult<AcmPluginStatus> {
     try {
+      if (!this.initialized)
+        return {
+          ok: false,
+          error: "ACM 插件尚未初始化",
+          errorCode: "ACM_PLUGIN_INVALID",
+        };
+      if (this.state === "initializing")
+        return {
+          ok: false,
+          error: "ACM 插件仍在初始化，请稍后重试",
+          errorCode: "ACM_PLUGIN_INVALID",
+        };
+      if (enabled && this.isSupportedPlatform() && !this.validateManifest()) {
+        this.state = "error";
+        this.errorCode = "ACM_PLUGIN_INVALID";
+        return {
+          ok: false,
+          error: this.error ?? "ACM 插件 manifest 无效",
+          errorCode: "ACM_PLUGIN_INVALID",
+        };
+      }
       portableSettingsService.update({ acm: { enabled } });
       this.error = undefined;
       this.errorCode = undefined;
@@ -141,8 +166,20 @@ export class AcmPluginService {
       this.error = "ACM 插件 API 版本不受支持";
       return false;
     }
-    if (!app.isPackaged && process.env.NODE_ENV !== "test") return true;
-    return MANIFEST.capabilities.length === 3;
+    const capabilitiesMatch =
+      MANIFEST.capabilities.length === EXPECTED_CAPABILITIES.length &&
+      MANIFEST.capabilities.every(
+        (capability, index) => capability === EXPECTED_CAPABILITIES[index],
+      );
+    if (
+      MANIFEST.id !== "acm-code-workbench" ||
+      MANIFEST.name !== "ACM 临时 IDE" ||
+      !capabilitiesMatch
+    ) {
+      this.error = "ACM 插件 manifest 内容不完整";
+      return false;
+    }
+    return true;
   }
 
   private isSupportedPlatform(): boolean {

@@ -9,7 +9,7 @@ test.setTimeout(60_000);
 test("packaged Electron entrypoint starts with an isolated profile and secure renderer", async () => {
   const executable = path.resolve(
     process.env.PACKAGED_EXECUTABLE?.trim() ||
-      "release-v0.3.0-msix-local/win-unpacked/大学生工具组.exe",
+      "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
   );
   if (!fs.existsSync(executable)) {
     throw new Error(`找不到 packaged E2E 可执行文件：${executable}`);
@@ -27,7 +27,7 @@ test("packaged Electron entrypoint starts with an isolated profile and secure re
     const page = await app.firstWindow();
     await page.waitForLoadState("domcontentloaded");
     await expect(page).toHaveTitle("大学生工具组");
-    await expect(page.locator(".ant-menu-item")).toHaveCount(5);
+    await expect(page.locator(".ant-menu-item")).toHaveCount(6);
     const security = await page.evaluate(() => ({
       hasApi: typeof window.api === "object",
       hasRequire:

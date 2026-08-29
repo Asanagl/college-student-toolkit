@@ -1,5 +1,6 @@
 /* eslint-env node */
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 const asar = require("@electron/asar");
@@ -7,6 +8,19 @@ const yauzl = require("yauzl");
 
 const root = path.resolve(__dirname, "..");
 const packageVersion = require(path.join(root, "package.json")).version;
+const TOOLCHAIN_PREFIX = "app/resources/toolchain/";
+const REQUIRED_TOOLCHAIN_FILES = [
+  "bin/g++.exe",
+  "bin/gcc.exe",
+  "bin/c++.exe",
+  "bin/as.exe",
+  "bin/ld.exe",
+  "bin/ar.exe",
+  "bin/libgcc_s_seh-1.dll",
+  "bin/libstdc++-6.dll",
+  "bin/libwinpthread-1.dll",
+  "bin/libmcfgthread-2.dll",
+];
 
 function resolveArtifact() {
   const supplied = process.argv[2] || process.env.APPX_PATH;
@@ -219,6 +233,145 @@ function checkPeMachine(buffer) {
   return `0x${buffer.readUInt16LE(peOffset + 4).toString(16)}`;
 }
 
+function isSafeManifestPath(value) {
+  if (
+    value.length === 0 ||
+    value.length > 1024 ||
+    value.includes("\\") ||
+    value.includes(":") ||
+    [...value].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || code === 0x7f;
+    }) ||
+    value.startsWith("/")
+  )
+    return false;
+  const segments = value.split("/");
+  return segments.every(
+    (segment) => segment.length > 0 && segment !== "." && segment !== "..",
+  );
+}
+
+function parseToolchainManifest(buffer) {
+  let manifest;
+  try {
+    manifest = JSON.parse(buffer.toString("utf8"));
+  } catch {
+    throw new Error("工具链 manifest 无法解析");
+  }
+  if (
+    manifest.formatVersion !== 1 ||
+    manifest.productVersion !== packageVersion ||
+    !/^x86_64-w64-mingw32(?:-.*)?$/.test(manifest.compiler?.target || "") ||
+    !Array.isArray(manifest.files) ||
+    !Number.isSafeInteger(manifest.totalBytes) ||
+    manifest.totalBytes < 0
+  )
+    throw new Error("工具链 manifest 版本、目标或总大小无效");
+  const files = new Map();
+  for (const item of manifest.files) {
+    if (
+      !item ||
+      typeof item.path !== "string" ||
+      !isSafeManifestPath(item.path) ||
+      !Number.isSafeInteger(item.bytes) ||
+      item.bytes < 0 ||
+      !/^[a-f0-9]{64}$/.test(item.sha256)
+    )
+      throw new Error("工具链 manifest 文件条目无效");
+    const key = item.path.toLowerCase();
+    if (files.has(key)) throw new Error("工具链 manifest 文件路径重复");
+    files.set(key, item);
+  }
+  for (const required of REQUIRED_TOOLCHAIN_FILES)
+    if (!files.has(required.toLowerCase()))
+      throw new Error(`工具链 manifest 缺少必要文件：${required}`);
+  return { manifest, files };
+}
+
+function verifyToolchainArchive(filePath, manifestData) {
+  return new Promise((resolve, reject) => {
+    yauzl.open(
+      filePath,
+      { lazyEntries: true, autoClose: true },
+      (error, zip) => {
+        if (error || !zip)
+          return reject(error || new Error("无法打开工具链归档"));
+        const seen = new Set();
+        let totalBytes = 0;
+        let settled = false;
+        const fail = (reason) => {
+          if (settled) return;
+          settled = true;
+          try {
+            zip.close();
+          } catch {
+            // The archive may already be closing after a stream error.
+          }
+          reject(reason);
+        };
+        const finishEntry = (entry, expected, bytes, hash) => {
+          if (bytes !== expected.bytes || hash !== expected.sha256)
+            return fail(
+              new Error(`工具链文件大小或 SHA-256 不匹配：${expected.path}`),
+            );
+          seen.add(expected.path.toLowerCase());
+          totalBytes += bytes;
+          zip.readEntry();
+        };
+        zip.on("error", fail);
+        zip.on("entry", (entry) => {
+          if (settled) return;
+          const name = normalizeName(entry.fileName);
+          if (
+            !name.toLowerCase().startsWith(TOOLCHAIN_PREFIX) ||
+            name.toLowerCase() ===
+              `${TOOLCHAIN_PREFIX}toolchain-manifest.json`.toLowerCase()
+          ) {
+            zip.readEntry();
+            return;
+          }
+          const relative = name.slice(TOOLCHAIN_PREFIX.length);
+          const expected = manifestData.files.get(relative.toLowerCase());
+          if (!expected || seen.has(relative.toLowerCase()))
+            return fail(
+              new Error(`工具链归档包含未声明或重复文件：${relative}`),
+            );
+          zip.openReadStream(entry, (streamError, stream) => {
+            if (streamError || !stream)
+              return fail(
+                streamError || new Error(`无法读取工具链文件：${relative}`),
+              );
+            let bytes = 0;
+            const hash = crypto.createHash("sha256");
+            stream.on("data", (chunk) => {
+              bytes += chunk.byteLength;
+              hash.update(chunk);
+            });
+            stream.once("error", fail);
+            stream.once("end", () =>
+              finishEntry(entry, expected, bytes, hash.digest("hex")),
+            );
+          });
+        });
+        zip.on("end", () => {
+          if (settled) return;
+          settled = true;
+          if (
+            seen.size !== manifestData.files.size ||
+            totalBytes !== manifestData.manifest.totalBytes
+          )
+            return reject(
+              new Error("工具链归档与 manifest 文件集合或总大小不一致"),
+            );
+          resolve();
+        });
+        zip.readEntry();
+      },
+    );
+  });
+}
+
 async function verify() {
   const artifact = resolveArtifact();
   if (!fs.existsSync(artifact))
@@ -262,6 +415,17 @@ async function verify() {
   );
   if (!toolchainBinary)
     throw new Error("ACM Store 包内缺少 resources/toolchain/bin/g++.exe");
+  const toolchainManifestName = names.find(
+    (name) =>
+      name.toLowerCase() ===
+      "app/resources/toolchain/toolchain-manifest.json".toLowerCase(),
+  );
+  if (!toolchainManifestName)
+    throw new Error("ACM Store 包内缺少 toolchain-manifest.json");
+  const toolchainManifest = parseToolchainManifest(
+    await readEntry(artifact, toolchainManifestName),
+  );
+  await verifyToolchainArchive(artifact, toolchainManifest);
   const staging = fs.mkdtempSync(
     path.join(os.tmpdir(), "college-toolkit-appx-"),
   );

@@ -1,4 +1,10 @@
-import { app } from "electron";
+import {
+  app,
+  dialog,
+  type BrowserWindow,
+  type OpenDialogOptions,
+  type OpenDialogReturnValue,
+} from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { createAcmProcessEnvironment } from "./AcmRunnerHelper";
 import type {
   CompilerProbeResult,
   CompilerSelection,
@@ -29,6 +36,14 @@ const selectionSchema = z.object({
 });
 
 const HELLO_SOURCE = '#include <iostream>\nint main(){std::cout << "ok\\n";}\n';
+
+interface CompilerDialogAccess {
+  showOpenDialog(options: OpenDialogOptions): Promise<OpenDialogReturnValue>;
+  showOpenDialog(
+    parent: BrowserWindow,
+    options: OpenDialogOptions,
+  ): Promise<OpenDialogReturnValue>;
+}
 
 function resultError<T>(
   errorCode: IpcResult<T>["errorCode"],
@@ -60,6 +75,28 @@ function isUnsafePath(filePath: string): boolean {
   );
 }
 
+function comparablePath(filePath: string): string {
+  return path
+    .resolve(filePath)
+    .replace(/^\\\\\?\\/, "")
+    .replace(/[\\/]+$/, "")
+    .toLowerCase();
+}
+
+function isReparsePoint(filePath: string): boolean {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) return true;
+    if (process.platform !== "win32") return false;
+    return (
+      comparablePath(fs.realpathSync.native(filePath)) !==
+      comparablePath(filePath)
+    );
+  } catch {
+    return true;
+  }
+}
+
 function normalizeCompilerPath(filePath: string): string {
   if (typeof filePath !== "string" || filePath.trim().length === 0)
     throw new Error("编译器路径不能为空");
@@ -72,12 +109,37 @@ function normalizeCompilerPath(filePath: string): string {
   return resolved;
 }
 
+function isRegularCompilerPath(filePath: string): boolean {
+  try {
+    const resolved = normalizeCompilerPath(filePath);
+    const parsed = path.parse(resolved);
+    let current = parsed.root;
+    const segments = parsed.dir
+      .slice(parsed.root.length)
+      .split(path.sep)
+      .filter(Boolean);
+    for (const segment of [...segments, parsed.base]) {
+      current = path.join(current, segment);
+      if (!fs.existsSync(current)) return false;
+      const stat = fs.lstatSync(current);
+      if (isReparsePoint(current)) return false;
+      if (current === resolved ? !stat.isFile() : !stat.isDirectory())
+        return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class AcmCompilerService {
   private initialized = false;
   private selection: CompilerSelection = { mode: "auto", path: null };
   private configPath = "";
   private cached: CompilerProbeResult | null = null;
   private probePromise: Promise<IpcResult<CompilerProbeResult>> | null = null;
+
+  constructor(private readonly dialogs: CompilerDialogAccess = dialog) {}
 
   async init(): Promise<void> {
     if (this.initialized) return;
@@ -91,6 +153,8 @@ export class AcmCompilerService {
   }
 
   setSelection(selection: CompilerSelection): IpcResult<CompilerSelection> {
+    if (!this.initialized)
+      return resultError("ACM_COMPILER_INVALID", "编译器服务尚未初始化");
     const parsed = selectionSchema.safeParse(selection);
     if (!parsed.success)
       return resultError("ACM_COMPILER_INVALID", "编译器选择无效");
@@ -114,6 +178,26 @@ export class AcmCompilerService {
       return this.getSelection();
     } catch (error) {
       this.selection = previous;
+      return resultError(
+        "ACM_COMPILER_INVALID",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
+  async selectCompilerPath(
+    parent: BrowserWindow | null = null,
+  ): Promise<IpcResult<CompilerSelection | null>> {
+    if (!this.initialized)
+      return resultError("ACM_COMPILER_INVALID", "编译器服务尚未初始化");
+    try {
+      const result = parent
+        ? await this.dialogs.showOpenDialog(parent, this.pathDialogOptions())
+        : await this.dialogs.showOpenDialog(this.pathDialogOptions());
+      if (result.canceled || !result.filePaths[0])
+        return { ok: true, data: null };
+      return this.setSelection({ mode: "user", path: result.filePaths[0] });
+    } catch (error) {
       return resultError(
         "ACM_COMPILER_INVALID",
         error instanceof Error ? error.message : String(error),
@@ -195,7 +279,11 @@ export class AcmCompilerService {
   ): Promise<CompilerProbeResult> {
     const executable =
       candidate === "g++" ? await this.findOnPath() : candidate;
-    if (!executable || !fs.existsSync(executable) || !isX64Pe(executable))
+    if (
+      !executable ||
+      !isRegularCompilerPath(executable) ||
+      !isX64Pe(executable)
+    )
       return {
         available: false,
         path: executable ?? null,
@@ -233,17 +321,13 @@ export class AcmCompilerService {
   }
 
   private async findOnPath(): Promise<string | null> {
-    try {
-      const result = await this.run("where.exe", ["g++.exe"]);
-      return (
-        result
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .find((line) => line.toLowerCase().endsWith("g++.exe")) ?? null
-      );
-    } catch {
-      return null;
+    const entries = (process.env.PATH ?? "").split(path.delimiter);
+    for (const entry of entries) {
+      if (!entry.trim()) continue;
+      const candidate = path.resolve(entry, "g++.exe");
+      if (isRegularCompilerPath(candidate)) return candidate;
     }
+    return null;
   }
 
   private async compileProbe(executable: string): Promise<void> {
@@ -257,7 +341,7 @@ export class AcmCompilerService {
       await this.run(executable, [...CXX_FLAGS, source, "-o", output], 30000);
       if (!fs.existsSync(output) || !isX64Pe(output))
         throw new Error("C++17 探针未生成 x64 程序");
-      const result = await this.run(output, [], 3000);
+      const result = await this.run(output, [], 3000, path.dirname(executable));
       if (result.trim() !== "ok") throw new Error("C++17 探针运行结果不正确");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
@@ -268,12 +352,14 @@ export class AcmCompilerService {
     command: string,
     args: string[],
     timeout = 10000,
+    runtimePath?: string | null,
   ): Promise<string> {
     const result = await execFileAsync(command, args, {
       windowsHide: true,
       timeout,
       maxBuffer: 2 * 1024 * 1024,
       shell: false,
+      env: createAcmProcessEnvironment(command, runtimePath),
     });
     return `${result.stdout}${result.stderr}`;
   }
@@ -308,13 +394,19 @@ export class AcmCompilerService {
       JSON.stringify(this.selection, null, 2),
       "utf8",
     );
+    let backupRetained = false;
     try {
       if (fs.existsSync(this.configPath)) {
         fs.renameSync(this.configPath, backup);
         try {
           fs.renameSync(temporary, this.configPath);
         } catch (error) {
-          fs.renameSync(backup, this.configPath);
+          try {
+            fs.renameSync(backup, this.configPath);
+          } catch {
+            backupRetained = true;
+            throw new Error(`编译器设置恢复失败，恢复副本保留在：${backup}`);
+          }
           throw error;
         }
         fs.rmSync(backup, { force: true });
@@ -323,9 +415,16 @@ export class AcmCompilerService {
       }
     } catch (error) {
       fs.rmSync(temporary, { force: true });
-      fs.rmSync(backup, { force: true });
+      if (!backupRetained) fs.rmSync(backup, { force: true });
       throw error;
     }
+  }
+
+  private pathDialogOptions(): OpenDialogOptions {
+    return {
+      properties: ["openFile"],
+      filters: [{ name: "GNU C++ 编译器", extensions: ["exe"] }],
+    };
   }
 }
 

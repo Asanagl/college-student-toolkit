@@ -18,7 +18,7 @@ type FixtureServer = { server: Server; origin: string };
 
 const executablePath = path.resolve(
   process.env.PACKAGED_EXECUTABLE?.trim() ||
-    "release-v0.3.0-msix-local/win-unpacked/大学生工具组.exe",
+    "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
 );
 const entryFixturePath = path.resolve(
   "tests/fixtures/import-browser-entry.html",

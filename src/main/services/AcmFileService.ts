@@ -54,11 +54,27 @@ interface OpenDocumentState {
   filePath: string | null;
 }
 
+class RecoveryRequiredError extends Error {
+  constructor(readonly backupPath: string) {
+    super(`保存失败，原文件已保留在恢复副本：${backupPath}`);
+    this.name = "RecoveryRequiredError";
+  }
+}
+
 function errorResult<T>(
   errorCode: IpcResult<T>["errorCode"],
   error: string,
 ): IpcResult<T> {
   return { ok: false, errorCode, error };
+}
+
+function fileErrorCode(error: unknown): IpcResult<unknown>["errorCode"] {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof RecoveryRequiredError)
+    return "ACM_FILE_RECOVERY_REQUIRED";
+  if (message.includes("只读")) return "ACM_FILE_READONLY";
+  if (message.includes("外部")) return "ACM_FILE_CHANGED";
+  return "ACM_FILE_INVALID";
 }
 
 function isDevicePath(filePath: string): boolean {
@@ -67,6 +83,28 @@ function isDevicePath(filePath: string): boolean {
 
 function isUncPath(filePath: string): boolean {
   return /^\\\\[^\\]+\\[^\\]+/.test(filePath);
+}
+
+function comparablePath(filePath: string): string {
+  return path
+    .resolve(filePath)
+    .replace(/^\\\\\?\\/, "")
+    .replace(/[\\/]+$/, "")
+    .toLowerCase();
+}
+
+function isReparsePoint(filePath: string): boolean {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) return true;
+    if (process.platform !== "win32") return false;
+    return (
+      comparablePath(fs.realpathSync.native(filePath)) !==
+      comparablePath(filePath)
+    );
+  } catch {
+    return true;
+  }
 }
 
 function ensureCppPath(filePath: string): string {
@@ -97,7 +135,7 @@ function assertRegularPath(filePath: string, allowMissing: boolean): void {
     current = path.join(current, segment);
     if (!fs.existsSync(current)) continue;
     const stat = fs.lstatSync(current);
-    if (stat.isSymbolicLink()) throw new Error("不允许符号链接或联接点");
+    if (isReparsePoint(current)) throw new Error("不允许符号链接或联接点");
     if (current === resolved && !stat.isFile())
       throw new Error("目标不是普通文件");
     if (current !== resolved && !stat.isDirectory())
@@ -240,12 +278,7 @@ export class AcmFileService {
       return { ok: true, data: document };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const code = message.includes("只读")
-        ? "ACM_FILE_READONLY"
-        : message.includes("外部")
-          ? "ACM_FILE_CHANGED"
-          : "ACM_FILE_INVALID";
-      return errorResult(code, message);
+      return errorResult(fileErrorCode(error), message);
     }
   }
 
@@ -284,7 +317,7 @@ export class AcmFileService {
       return { ok: true, data: document };
     } catch (error) {
       return errorResult(
-        "ACM_FILE_INVALID",
+        fileErrorCode(error),
         error instanceof Error ? error.message : String(error),
       );
     }
@@ -334,6 +367,9 @@ export class AcmFileService {
   private readDocument(filePath: string): AcmDocument {
     const resolved = ensureCppPath(filePath);
     assertRegularPath(resolved, false);
+    const stat = fs.statSync(resolved);
+    if (stat.size > ACM_MAX_DOCUMENT_BYTES)
+      throw new Error("源文件超过 2 MiB 限制");
     const buffer = fs.readFileSync(resolved);
     const openBytes = [...this.openDocuments.values()].reduce(
       (total, state) => total + state.bytes,
@@ -348,7 +384,6 @@ export class AcmFileService {
       throw new Error("文件不是 UTF-8 编码，请先转换后再打开");
     }
     const content = normalizeLineEnding(rawContent, "lf");
-    const stat = fs.statSync(resolved);
     const document: AcmDocument = {
       id: randomUUID(),
       name: path.basename(resolved),
@@ -377,12 +412,16 @@ export class AcmFileService {
       const stat = fs.statSync(filePath);
       if (isReadOnly(filePath, stat))
         throw new Error("目标文件是只读文件，请使用另存为");
-      if (
-        !request.force &&
-        request.expectedFingerprint &&
-        !sameFingerprint(fingerprint(filePath), request.expectedFingerprint)
-      )
-        throw new Error("文件已被外部修改，请重新加载、另存为或确认覆盖");
+      if (!request.force) {
+        if (!request.expectedFingerprint)
+          throw new Error(
+            "缺少文件指纹，文件可能已被外部修改，请重新加载后再保存",
+          );
+        if (
+          !sameFingerprint(fingerprint(filePath), request.expectedFingerprint)
+        )
+          throw new Error("文件已被外部修改，请重新加载、另存为或确认覆盖");
+      }
     }
     const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
     const backupPath = `${filePath}.${process.pid}.${randomUUID()}.bak`;
@@ -391,13 +430,19 @@ export class AcmFileService {
       normalizeLineEnding(request.content, request.lineEnding),
       "utf8",
     );
+    let backupRetained = false;
     try {
       if (fs.existsSync(filePath)) {
         fs.renameSync(filePath, backupPath);
         try {
           fs.renameSync(tempPath, filePath);
         } catch (error) {
-          fs.renameSync(backupPath, filePath);
+          try {
+            fs.renameSync(backupPath, filePath);
+          } catch {
+            backupRetained = true;
+            throw new RecoveryRequiredError(backupPath);
+          }
           throw error;
         }
         fs.rmSync(backupPath, { force: true });
@@ -406,7 +451,7 @@ export class AcmFileService {
       }
     } catch (error) {
       fs.rmSync(tempPath, { force: true });
-      fs.rmSync(backupPath, { force: true });
+      if (!backupRetained) fs.rmSync(backupPath, { force: true });
       throw error;
     }
   }

@@ -234,6 +234,11 @@ body.acrylic-mode #root {
   min-height: 0;
 }
 
+.acm-code-editor:focus-within {
+  outline: 2px solid var(--acm-primary);
+  outline-offset: -2px;
+}
+
 .acm-code-editor .cm-scroller {
   overflow: auto;
 }

@@ -16,6 +16,7 @@ import {
   type AcmDocument,
   type AcmPluginStatus,
   type CompilerProbeResult,
+  type CompilerSelection,
   type Course,
   type Exam,
   type GpaFormula,
@@ -677,6 +678,12 @@ function acmUnavailable<T>(): IpcResult<T> | null {
     };
   if (status.data.state === "disabled")
     return { ok: false, error: "ACM 插件已禁用", errorCode: "ACM_DISABLED" };
+  if (status.data.state === "initializing")
+    return {
+      ok: false,
+      error: "ACM 插件仍在初始化，请稍后重试",
+      errorCode: "ACM_PLUGIN_INVALID",
+    };
   if (status.data.state === "error")
     return {
       ok: false,
@@ -695,12 +702,20 @@ function registerAcmPluginHandlers(): void {
     wrapIpc(() => acmPluginService.getStatus()),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_SET_ENABLED, (_event, enabled: unknown) =>
-    wrapIpcAsync<AcmPluginStatus>(async () => {
+    wrapWriteIpcAsync<AcmPluginStatus>(async () => {
       if (typeof enabled !== "boolean")
         return {
           ok: false,
           error: "ACM 插件开关必须是布尔值",
           errorCode: "VALIDATION_FAILED" as const,
+        };
+      const current = acmPluginService.getStatus();
+      if (!current.ok || !current.data) return current;
+      if (current.data.state === "initializing")
+        return {
+          ok: false,
+          error: "ACM 插件仍在初始化，请稍后重试",
+          errorCode: "ACM_PLUGIN_INVALID",
         };
       if (!enabled) {
         const stopped = await acmRunnerService.stop();
@@ -774,7 +789,7 @@ function registerAcmPluginHandlers(): void {
       ),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_COMPILER_GET_SELECTION, () =>
-    wrapIpc(() => acmCompilerService.getSelection()),
+    wrapIpc(() => withAcm(() => acmCompilerService.getSelection())),
   );
   ipcMain.handle(
     IPC_CHANNELS.ACM_COMPILER_SET_SELECTION,
@@ -786,6 +801,15 @@ function registerAcmPluginHandlers(): void {
           ),
         ),
       ),
+  );
+  ipcMain.handle(IPC_CHANNELS.ACM_COMPILER_SELECT_PATH, (event) =>
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<CompilerSelection | null>();
+      if (unavailable) return unavailable;
+      return acmCompilerService.selectCompilerPath(
+        BrowserWindow.fromWebContents(event.sender),
+      );
+    }),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_COMPILER_PROBE, () =>
     wrapIpcAsync(async () => {

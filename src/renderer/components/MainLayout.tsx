@@ -1,7 +1,15 @@
 // 主布局组件
 // 职责：左侧可折叠 Sider 导航 + 自定义标题栏 Header（拖拽区 + 主题切换）+ Content 渲染子路由
-import { useState, useEffect, useMemo } from 'react';
-import { Layout, Menu, theme, Dropdown, Button, Space, type MenuProps } from 'antd';
+import { useState, useEffect, useMemo, useCallback } from "react";
+import {
+  Layout,
+  Menu,
+  theme,
+  Dropdown,
+  Button,
+  Space,
+  type MenuProps,
+} from "antd";
 import {
   CalendarOutlined,
   TableOutlined,
@@ -14,36 +22,46 @@ import {
   DownOutlined,
   BgColorsOutlined,
   CodeOutlined,
-} from '@ant-design/icons';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import type { ThemeMode } from '../../shared/types';
-import SettingsModal from './SettingsModal';
+} from "@ant-design/icons";
+import {
+  Outlet,
+  useBlocker,
+  useLocation,
+  useNavigate,
+  type BlockerFunction,
+} from "react-router-dom";
+import type { ThemeMode } from "../../shared/types";
+import SettingsModal from "./SettingsModal";
+import {
+  confirmAcmNavigation,
+  isAcmNavigationGuardActive,
+} from "../services/AcmNavigationGuard";
 
 const { Header, Sider, Content } = Layout;
 
 // 菜单项配置：key 与路由 path 保持一致，便于联动
 const MENU_ITEMS = [
-  { key: '/schedule', icon: <CalendarOutlined />, label: '日程' },
-  { key: '/timetable', icon: <TableOutlined />, label: '课程表' },
-  { key: '/exam', icon: <FileProtectOutlined />, label: '考试安排' },
-  { key: '/lab', icon: <ExperimentOutlined />, label: '实验提醒' },
-  { key: '/grade', icon: <TrophyOutlined />, label: '成绩显示' },
-  { key: '/acm', icon: <CodeOutlined />, label: 'ACM 临时 IDE' },
+  { key: "/schedule", icon: <CalendarOutlined />, label: "日程" },
+  { key: "/timetable", icon: <TableOutlined />, label: "课程表" },
+  { key: "/exam", icon: <FileProtectOutlined />, label: "考试安排" },
+  { key: "/lab", icon: <ExperimentOutlined />, label: "实验提醒" },
+  { key: "/grade", icon: <TrophyOutlined />, label: "成绩显示" },
+  { key: "/acm", icon: <CodeOutlined />, label: "ACM 临时 IDE" },
 ];
 
 /** 主题切换下拉菜单选项 */
-const THEME_OPTIONS: MenuProps['items'] = [
-  { key: 'system', icon: <DesktopOutlined />, label: '跟随系统' },
-  { key: 'light', icon: <BulbOutlined />, label: '亮色模式' },
-  { key: 'dark', icon: <BulbFilled />, label: '暗黑模式' },
-  { type: 'divider' },
-  { key: 'appearance', icon: <BgColorsOutlined />, label: '设置' },
+const THEME_OPTIONS: MenuProps["items"] = [
+  { key: "system", icon: <DesktopOutlined />, label: "跟随系统" },
+  { key: "light", icon: <BulbOutlined />, label: "亮色模式" },
+  { key: "dark", icon: <BulbFilled />, label: "暗黑模式" },
+  { type: "divider" },
+  { key: "appearance", icon: <BgColorsOutlined />, label: "设置" },
 ];
 
 export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [themeMode, setThemeMode] = useState<ThemeMode>('system');
+  const [themeMode, setThemeMode] = useState<ThemeMode>("system");
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // 启动时从主进程读取已持久化的主题偏好
@@ -57,20 +75,45 @@ export default function MainLayout() {
 
   // 根据当前路径计算选中的菜单项，避免菜单高亮与路由不同步
   const selectedKey = useMemo(() => {
-    const match = MENU_ITEMS.find((item) => location.pathname.startsWith(item.key));
-    return match ? match.key : '/schedule';
+    const match = MENU_ITEMS.find((item) =>
+      location.pathname.startsWith(item.key),
+    );
+    return match ? match.key : "/schedule";
   }, [location.pathname]);
 
   const {
     token: { colorBgContainer },
   } = theme.useToken();
 
+  const shouldBlockNavigation = useCallback<BlockerFunction>(
+    ({ currentLocation, nextLocation }) =>
+      isAcmNavigationGuardActive() &&
+      currentLocation.pathname.startsWith("/acm") &&
+      nextLocation.pathname !== currentLocation.pathname,
+    [],
+  );
+  const blocker = useBlocker(shouldBlockNavigation);
+
+  useEffect(() => {
+    if (blocker.state !== "blocked") return;
+    let active = true;
+    void confirmAcmNavigation().then((allow) => {
+      if (!active || blocker.state !== "blocked") return;
+      if (allow) blocker.proceed();
+      else blocker.reset();
+    });
+    return () => {
+      active = false;
+    };
+  }, [blocker]);
+
   const handleMenuClick = (key: string) => {
+    if (key === location.pathname) return;
     navigate(key);
   };
 
-  const handleThemeChange: MenuProps['onClick'] = ({ key }) => {
-    if (key === 'appearance') {
+  const handleThemeChange: MenuProps["onClick"] = ({ key }) => {
+    if (key === "appearance") {
       setSettingsOpen(true);
       return;
     }
@@ -81,25 +124,25 @@ export default function MainLayout() {
 
   // 标题栏右侧主题切换按钮图标：跟随系统用桌面图标，亮色用空心灯泡，暗黑用实心灯泡
   const themeIcon =
-    themeMode === 'system' ? (
+    themeMode === "system" ? (
       <DesktopOutlined />
-    ) : themeMode === 'dark' ? (
+    ) : themeMode === "dark" ? (
       <BulbFilled />
     ) : (
       <BulbOutlined />
     );
 
   return (
-    <Layout style={{ height: '100vh' }}>
+    <Layout style={{ height: "100vh" }}>
       <Sider collapsible breakpoint="lg">
         <div
           style={{
             height: 32,
             margin: 16,
-            color: '#fff',
+            color: "#fff",
             fontWeight: 600,
-            textAlign: 'center',
-            lineHeight: '32px',
+            textAlign: "center",
+            lineHeight: "32px",
           }}
         >
           大学生工具组
@@ -109,7 +152,7 @@ export default function MainLayout() {
           mode="inline"
           selectedKeys={[selectedKey]}
           items={MENU_ITEMS}
-          onClick={({ key }) => handleMenuClick(key)}
+          onClick={({ key }) => void handleMenuClick(key)}
         />
       </Sider>
       <Layout>
@@ -118,33 +161,43 @@ export default function MainLayout() {
         <Header
           className="titlebar-drag"
           style={{
-            padding: '0 150px 0 24px',
+            padding: "0 150px 0 24px",
             background: colorBgContainer,
             fontSize: 18,
             fontWeight: 600,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
             height: 40,
-            lineHeight: '40px',
+            lineHeight: "40px",
           }}
         >
           <span>大学生工具组</span>
           {/* 主题切换按钮：no-drag 排除拖拽，确保可点击 */}
           <Space className="titlebar-no-drag">
-            <Dropdown menu={{ items: THEME_OPTIONS, onClick: handleThemeChange }} placement="bottomRight">
+            <Dropdown
+              menu={{ items: THEME_OPTIONS, onClick: handleThemeChange }}
+              placement="bottomRight"
+            >
               <Button type="text" icon={themeIcon}>
-                {themeMode === 'system' ? '跟随系统' : themeMode === 'dark' ? '暗黑' : '亮色'}
+                {themeMode === "system"
+                  ? "跟随系统"
+                  : themeMode === "dark"
+                    ? "暗黑"
+                    : "亮色"}
                 <DownOutlined style={{ fontSize: 10 }} />
               </Button>
             </Dropdown>
           </Space>
         </Header>
-        <Content style={{ margin: 16, overflow: 'auto' }}>
+        <Content style={{ margin: 16, overflow: "auto" }}>
           <Outlet />
         </Content>
       </Layout>
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </Layout>
   );
 }

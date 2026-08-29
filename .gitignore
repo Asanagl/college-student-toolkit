@@ -9,6 +9,7 @@ release/
 release-v0.3.0-rc-*/
 release-v0.3.0-rc/
 release-v0.3.0-msix-*/
+release-v0.4.0-msix-*/
 
 # Electron builder
 *.exe

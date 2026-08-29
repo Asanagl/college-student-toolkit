@@ -5,7 +5,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const STORE_FLOOR = "10.0.17134.0";
-const DEFAULT_MIN_VERSION = "10.0.17763.0";
+const DEFAULT_MIN_VERSION = "10.0.22621.0";
 const DEFAULT_MAX_VERSION = "10.0.26100.0";
 
 function parseVersion(value, label) {

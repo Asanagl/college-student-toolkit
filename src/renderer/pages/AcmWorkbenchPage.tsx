@@ -50,6 +50,7 @@ import type {
   RunnerEvent,
 } from "../../shared/types";
 import CodeEditor from "../components/acm/CodeEditor";
+import { registerAcmNavigationGuard } from "../services/AcmNavigationGuard";
 
 const TEMPLATE_LABELS: Record<AcmTemplateId, string> = {
   blank: "空白文件",
@@ -84,6 +85,8 @@ interface AcmTabState {
 
 type RunnerEventsByDocument = Record<string, RunnerEvent[]>;
 type ExternalChanges = Record<string, boolean>;
+
+const MAX_RENDERED_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 function isPluginUsable(status: AcmPluginStatus | null): boolean {
   return status?.state === "ready" || status?.state === "degraded";
@@ -127,7 +130,57 @@ function eventText(event: RunnerEvent): string {
   return `[${RUNNER_STATUS_LABELS[event.status]}]${exitCode}${errorCode}${duration}`;
 }
 
-function isTerminalRunnerEvent(
+function eventBytes(event: RunnerEvent): number {
+  return new TextEncoder().encode(event.text ?? "").byteLength;
+}
+
+export function appendRunnerEvent(
+  events: RunnerEvent[],
+  event: RunnerEvent,
+): { events: RunnerEvent[]; truncated: boolean } {
+  const countTruncated = events.length >= 500;
+  const next = [...events, event].slice(-500);
+  let remaining = MAX_RENDERED_OUTPUT_BYTES;
+  let truncated = false;
+  const kept: RunnerEvent[] = [];
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const candidate = next[index];
+    const bytes = eventBytes(candidate);
+    if (bytes <= remaining) {
+      kept.unshift(candidate);
+      remaining -= bytes;
+      continue;
+    }
+    truncated = true;
+    if (candidate.status === "data" && remaining > 0) {
+      const encoded = new TextEncoder().encode(candidate.text ?? "");
+      const text = new TextDecoder().decode(encoded.subarray(0, remaining));
+      kept.unshift({ ...candidate, text });
+      remaining = 0;
+    }
+    if (remaining === 0) break;
+  }
+  return { events: kept, truncated: truncated || countTruncated };
+}
+
+function confirmDiscardDocuments(count: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    Modal.confirm({
+      title: "离开 ACM 临时 IDE？",
+      content:
+        count === 1
+          ? "有一个文件包含未保存修改，离开后修改会丢失。"
+          : `有 ${count} 个文件包含未保存修改，离开后修改会丢失。`,
+      okText: "离开并丢弃",
+      cancelText: "留在此页",
+      okButtonProps: { danger: true },
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    });
+  });
+}
+
+export function isTerminalRunnerEvent(
   event: RunnerEvent,
   mode: "compile" | "run" | null,
 ): boolean {
@@ -253,6 +306,7 @@ function IoPanels({
   stdinOpen,
   terminalOpen,
   events,
+  truncated,
   onStdinChange,
   onToggleStdin,
   onToggleTerminal,
@@ -262,6 +316,7 @@ function IoPanels({
   stdinOpen: boolean;
   terminalOpen: boolean;
   events: RunnerEvent[];
+  truncated: boolean;
   onStdinChange: (value: string) => void;
   onToggleStdin: () => void;
   onToggleTerminal: () => void;
@@ -325,14 +380,21 @@ function IoPanels({
                 运行或编译后，输出会显示在这里。
               </Typography.Text>
             ) : (
-              events.map((event, index) => (
-                <div
-                  key={`${event.taskId}-${index}`}
-                  className={`acm-terminal-line ${eventClass(event)}`}
-                >
-                  {eventText(event)}
-                </div>
-              ))
+              <>
+                {truncated && (
+                  <Typography.Text type="warning">
+                    较早输出已截断
+                  </Typography.Text>
+                )}
+                {events.map((event, index) => (
+                  <div
+                    key={`${event.taskId}-${index}`}
+                    className={`acm-terminal-line ${eventClass(event)}`}
+                  >
+                    {eventText(event)}
+                  </div>
+                ))}
+              </>
             )}
           </div>
         )}
@@ -347,6 +409,7 @@ function CompilerToolbar({
   loading,
   disabled,
   onProbe,
+  onSelectPath,
   onSelectionChange,
 }: {
   selection: CompilerSelection | null;
@@ -354,6 +417,7 @@ function CompilerToolbar({
   loading: boolean;
   disabled: boolean;
   onProbe: () => void;
+  onSelectPath: () => void;
   onSelectionChange: (mode: CompilerSelectionMode) => void;
 }) {
   const compilerLabel = probe?.available
@@ -376,13 +440,19 @@ function CompilerToolbar({
         options={[
           { value: "auto", label: "自动选择" },
           { value: "builtin", label: "内置工具链" },
-          {
-            value: "user",
-            label: "自定义工具链",
-            disabled: !selection?.path,
-          },
+          { value: "user", label: "自定义工具链" },
         ]}
       />
+      <Tooltip title="选择本机 g++.exe">
+        <Button
+          size="small"
+          type="text"
+          icon={<FolderOpenOutlined />}
+          aria-label="选择本机 g++.exe"
+          disabled={disabled}
+          onClick={onSelectPath}
+        />
+      </Tooltip>
       <Tooltip title="重新探测编译器">
         <Button
           size="small"
@@ -413,6 +483,9 @@ export default function AcmWorkbenchPage() {
   const [terminalOpen, setTerminalOpen] = useState(true);
   const [eventsByDocument, setEventsByDocument] =
     useState<RunnerEventsByDocument>({});
+  const [truncatedByDocument, setTruncatedByDocument] = useState<
+    Record<string, boolean>
+  >({});
   const [externalChanges, setExternalChanges] = useState<ExternalChanges>({});
   const [compilerSelection, setCompilerSelection] =
     useState<CompilerSelection | null>(null);
@@ -422,7 +495,9 @@ export default function AcmWorkbenchPage() {
   const [runnerBusy, setRunnerBusy] = useState(false);
   const [runnerDocumentId, setRunnerDocumentId] = useState<string | null>(null);
   const [runnerTaskId, setRunnerTaskId] = useState<string | null>(null);
-  const [runnerMode, setRunnerMode] = useState<"compile" | "run" | null>(null);
+  const [runnerPhase, setRunnerPhase] = useState<"compile" | "run" | null>(
+    null,
+  );
   const activeDocument = useMemo(
     () => tabs.find((tab) => tab.document.id === activeId)?.document ?? null,
     [activeId, tabs],
@@ -432,8 +507,15 @@ export default function AcmWorkbenchPage() {
     [activeId, tabs],
   );
   const activeDocumentRef = useRef<AcmDocument | null>(null);
+  const activeIdRef = useRef<string | null>(null);
   const runnerTaskRef = useRef<string | null>(null);
+  const pendingRunnerEventsRef = useRef<RunnerEvent[]>([]);
+  const runnerBusyRef = useRef(false);
+  const runnerDocumentIdRef = useRef<string | null>(null);
   const tabsRef = useRef<AcmTabState[]>([]);
+  const eventsByDocumentRef = useRef<RunnerEventsByDocument>({});
+  const truncatedByDocumentRef = useRef<Record<string, boolean>>({});
+  const openingRef = useRef(false);
   const runnerModeRef = useRef<"compile" | "run" | null>(null);
 
   useEffect(() => {
@@ -441,45 +523,77 @@ export default function AcmWorkbenchPage() {
   }, [activeDocument]);
 
   useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
+
+  useEffect(() => {
+    runnerBusyRef.current = runnerBusy;
+    runnerDocumentIdRef.current = runnerDocumentId;
+  }, [runnerBusy, runnerDocumentId]);
+
+  useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
 
-  useEffect(() => () => {
-    tabsRef.current.forEach((tab) => {
-      void releaseAcmDocument(tab.document.id);
-    });
+  useEffect(
+    () => () => {
+      if (runnerBusyRef.current) {
+        void window.api.acm.stopRunner().catch((error: unknown) => {
+          console.warn("释放 ACM Runner 失败", error);
+        });
+      }
+      tabsRef.current.forEach((tab) => {
+        void releaseAcmDocument(tab.document.id);
+      });
+    },
+    [],
+  );
+
+  const finishRunner = useCallback((taskId?: string) => {
+    runnerTaskRef.current = null;
+    runnerModeRef.current = null;
+    runnerBusyRef.current = false;
+    runnerDocumentIdRef.current = null;
+    pendingRunnerEventsRef.current = taskId
+      ? pendingRunnerEventsRef.current.filter(
+          (pending) => pending.taskId !== taskId,
+        )
+      : [];
+    setRunnerBusy(false);
+    setRunnerTaskId(null);
+    setRunnerDocumentId(null);
+    setRunnerPhase(null);
   }, []);
 
   const applySavedDocument = useCallback((document: AcmDocument) => {
-    setTabs((current) =>
-      current.map((tab) =>
-        tab.document.id === document.id
-          ? { ...tab, document, savedContent: document.content }
-          : tab,
-      ),
+    const nextTabs = tabsRef.current.map((tab) =>
+      tab.document.id === document.id
+        ? { ...tab, document, savedContent: document.content }
+        : tab,
     );
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
   }, []);
 
-  const addDocumentTab = useCallback(
-    (document: AcmDocument) => {
-      const duplicate = tabs.find(
-        (tab) =>
-          tab.document.filePath === document.filePath && document.filePath,
-      );
-      if (duplicate) {
-        void releaseAcmDocument(document.id);
-        setActiveId(duplicate.document.id);
-        message.info("该文件已经打开");
-        return;
-      }
-      setTabs((current) => [
-        ...current,
-        { document, stdin: "", savedContent: document.content },
-      ]);
-      setActiveId(document.id);
-    },
-    [tabs],
-  );
+  const addDocumentTab = useCallback((document: AcmDocument) => {
+    const currentTabs = tabsRef.current;
+    const duplicate = document.filePath
+      ? currentTabs.find((tab) => tab.document.filePath === document.filePath)
+      : undefined;
+    if (duplicate) {
+      void releaseAcmDocument(document.id);
+      setActiveId(duplicate.document.id);
+      message.info("该文件已经打开");
+      return;
+    }
+    const nextTabs = [
+      ...currentTabs,
+      { document, stdin: "", savedContent: document.content },
+    ];
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
+    setActiveId(document.id);
+  }, []);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -534,20 +648,37 @@ export default function AcmWorkbenchPage() {
     let unsubscribe: (() => void) | null = null;
     try {
       unsubscribe = window.api.acm.onRunnerEvent((event) => {
-        setEventsByDocument((current) => {
-          const previous = current[event.documentId] ?? [];
-          const next = [...previous, event].slice(-500);
-          return { ...current, [event.documentId]: next };
-        });
-        if (runnerTaskRef.current && event.taskId !== runnerTaskRef.current)
+        const previous = eventsByDocumentRef.current[event.documentId] ?? [];
+        const appended = appendRunnerEvent(previous, event);
+        const nextEvents = {
+          ...eventsByDocumentRef.current,
+          [event.documentId]: appended.events,
+        };
+        eventsByDocumentRef.current = nextEvents;
+        setEventsByDocument(nextEvents);
+        if (appended.truncated) {
+          const nextTruncated = {
+            ...truncatedByDocumentRef.current,
+            [event.documentId]: true,
+          };
+          truncatedByDocumentRef.current = nextTruncated;
+          setTruncatedByDocument(nextTruncated);
+        }
+        const currentTaskId = runnerTaskRef.current;
+        const currentDocumentId = runnerDocumentIdRef.current;
+        const isCurrentEvent = currentTaskId
+          ? event.taskId === currentTaskId
+          : runnerBusyRef.current && event.documentId === currentDocumentId;
+        if (!isCurrentEvent) return;
+        if (event.stage === "compile-started") setRunnerPhase("compile");
+        if (event.stage === "run-started") setRunnerPhase("run");
+        if (!currentTaskId) {
+          if (isTerminalRunnerEvent(event, runnerModeRef.current))
+            pendingRunnerEventsRef.current.push(event);
           return;
+        }
         if (isTerminalRunnerEvent(event, runnerModeRef.current)) {
-          runnerTaskRef.current = null;
-          runnerModeRef.current = null;
-          setRunnerBusy(false);
-          setRunnerTaskId(null);
-          setRunnerDocumentId(null);
-          setRunnerMode(null);
+          finishRunner(event.taskId);
         }
       });
     } catch (error) {
@@ -556,7 +687,7 @@ export default function AcmWorkbenchPage() {
       );
     }
     return () => unsubscribe?.();
-  }, [loadStatus]);
+  }, [finishRunner, loadStatus]);
 
   const docsAvailable = isPluginUsable(pluginStatus);
 
@@ -617,6 +748,8 @@ export default function AcmWorkbenchPage() {
       message.warning("ACM 插件当前不可用");
       return;
     }
+    if (openingRef.current) return;
+    openingRef.current = true;
     setOpening(true);
     try {
       const result = await window.api.acm.openDocument();
@@ -628,6 +761,7 @@ export default function AcmWorkbenchPage() {
     } catch (error) {
       message.error(error instanceof Error ? error.message : "打开文件失败");
     } finally {
+      openingRef.current = false;
       setOpening(false);
     }
   }, [addDocumentTab, docsAvailable]);
@@ -654,19 +788,23 @@ export default function AcmWorkbenchPage() {
     }
   }, [applySavedDocument, docsAvailable]);
 
-  const saveDocument = useCallback(
-    async (force = false) => {
-      const document = activeDocumentRef.current;
-      if (!document || !docsAvailable) return;
-      if (document.readOnly || !document.filePath) {
-        await saveAsDocument();
-        return;
-      }
+  const saveDocumentRequest = useCallback(
+    async (
+      documentId: string,
+      force: boolean,
+      expectedFingerprint?: AcmDocument["savedFingerprint"],
+    ): Promise<void> => {
+      const tab = tabsRef.current.find(
+        (item) => item.document.id === documentId,
+      );
+      if (!tab) return;
+      const document = tab.document;
+      const request = buildSaveRequest(document, force);
+      if (expectedFingerprint !== undefined)
+        request.expectedFingerprint = expectedFingerprint;
       setSaving(true);
       try {
-        const result = await window.api.acm.saveDocument(
-          buildSaveRequest(document, force),
-        );
+        const result = await window.api.acm.saveDocument(request);
         if (result.ok && result.data) {
           applySavedDocument(result.data);
           setExternalChanges((current) => ({
@@ -681,7 +819,12 @@ export default function AcmWorkbenchPage() {
             okText: "覆盖保存",
             cancelText: "取消",
             okButtonProps: { danger: true },
-            onOk: () => saveDocument(true),
+            onOk: () =>
+              void saveDocumentRequest(
+                documentId,
+                true,
+                document.savedFingerprint,
+              ),
           });
         } else if (!result.ok) {
           message.error(errorText(result));
@@ -692,49 +835,67 @@ export default function AcmWorkbenchPage() {
         setSaving(false);
       }
     },
-    [applySavedDocument, docsAvailable, saveAsDocument],
+    [applySavedDocument],
   );
 
-  const closeDocument = useCallback(
-    (documentId: string) => {
-      const tab = tabs.find((item) => item.document.id === documentId);
-      if (!tab) return;
-      if (runnerBusy && runnerDocumentId === documentId) {
-        message.warning("请先停止当前运行任务");
-        return;
-      }
-      const commitClose = () => {
-        const nextTabs = tabs.filter((item) => item.document.id !== documentId);
-        void releaseAcmDocument(documentId);
-        setTabs(nextTabs);
-        setEventsByDocument((current) => {
-          const next = { ...current };
-          delete next[documentId];
-          return next;
-        });
-        setExternalChanges((current) => {
-          const next = { ...current };
-          delete next[documentId];
-          return next;
-        });
-        if (activeId === documentId)
-          setActiveId(nextTabs[nextTabs.length - 1]?.document.id ?? null);
-      };
-      if (!tab.document.dirty) {
-        commitClose();
-        return;
-      }
-      Modal.confirm({
-        title: `关闭 ${tab.document.name}？`,
-        content: "该文件有未保存修改。关闭后修改会丢失。",
-        okText: "关闭并丢弃",
-        cancelText: "取消",
-        okButtonProps: { danger: true },
-        onOk: commitClose,
+  const saveDocument = useCallback(async () => {
+    const document = activeDocumentRef.current;
+    if (!document || !docsAvailable) return;
+    if (document.readOnly || !document.filePath) {
+      await saveAsDocument();
+      return;
+    }
+    await saveDocumentRequest(document.id, false);
+  }, [docsAvailable, saveAsDocument, saveDocumentRequest]);
+
+  const closeDocument = useCallback((documentId: string) => {
+    const tab = tabsRef.current.find((item) => item.document.id === documentId);
+    if (!tab) return;
+    if (runnerBusyRef.current && runnerDocumentIdRef.current === documentId) {
+      message.warning("请先停止当前运行任务");
+      return;
+    }
+    const commitClose = () => {
+      const currentTabs = tabsRef.current;
+      const nextTabs = currentTabs.filter(
+        (item) => item.document.id !== documentId,
+      );
+      if (nextTabs.length === currentTabs.length) return;
+      tabsRef.current = nextTabs;
+      void releaseAcmDocument(documentId);
+      setTabs(nextTabs);
+      const nextEvents = { ...eventsByDocumentRef.current };
+      delete nextEvents[documentId];
+      eventsByDocumentRef.current = nextEvents;
+      setEventsByDocument(nextEvents);
+      const nextTruncated = { ...truncatedByDocumentRef.current };
+      delete nextTruncated[documentId];
+      truncatedByDocumentRef.current = nextTruncated;
+      setTruncatedByDocument(nextTruncated);
+      setExternalChanges((current) => {
+        const next = { ...current };
+        delete next[documentId];
+        return next;
       });
-    },
-    [activeId, runnerBusy, runnerDocumentId, tabs],
-  );
+      if (activeIdRef.current === documentId) {
+        const nextActiveId = nextTabs[nextTabs.length - 1]?.document.id ?? null;
+        activeIdRef.current = nextActiveId;
+        setActiveId(nextActiveId);
+      }
+    };
+    if (!tab.document.dirty) {
+      commitClose();
+      return;
+    }
+    Modal.confirm({
+      title: `关闭 ${tab.document.name}？`,
+      content: "该文件有未保存修改。关闭后修改会丢失。",
+      okText: "关闭并丢弃",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: commitClose,
+    });
+  }, []);
 
   const startRunner = useCallback(
     async (mode: "compile" | "run") => {
@@ -745,12 +906,14 @@ export default function AcmWorkbenchPage() {
         !document ||
         !docsAvailable ||
         !compilerProbe?.available ||
-        runnerBusy
+        runnerBusyRef.current
       )
         return;
       setRunnerBusy(true);
       setRunnerDocumentId(document.id);
-      setRunnerMode(mode);
+      setRunnerPhase("compile");
+      runnerBusyRef.current = true;
+      runnerDocumentIdRef.current = document.id;
       runnerModeRef.current = mode;
       setTerminalOpen(true);
       try {
@@ -763,24 +926,23 @@ export default function AcmWorkbenchPage() {
         if (result.ok && result.data) {
           runnerTaskRef.current = result.data.taskId;
           setRunnerTaskId(result.data.taskId);
+          const pending = pendingRunnerEventsRef.current.find(
+            (event) => event.taskId === result.data?.taskId,
+          );
+          if (pending && isTerminalRunnerEvent(pending, mode))
+            finishRunner(pending.taskId);
         } else {
-          runnerModeRef.current = null;
-          setRunnerBusy(false);
-          setRunnerDocumentId(null);
-          setRunnerMode(null);
+          finishRunner();
           message.error(errorText(result));
         }
       } catch (error) {
-        runnerModeRef.current = null;
-        setRunnerBusy(false);
-        setRunnerDocumentId(null);
-        setRunnerMode(null);
+        finishRunner();
         message.error(
           error instanceof Error ? error.message : "启动 Runner 失败",
         );
       }
     },
-    [compilerProbe?.available, docsAvailable, runnerBusy, tabs],
+    [compilerProbe?.available, docsAvailable, finishRunner, tabs],
   );
 
   const stopRunner = useCallback(async () => {
@@ -795,11 +957,49 @@ export default function AcmWorkbenchPage() {
     }
   }, [runnerBusy]);
 
+  const confirmLeave = useCallback(async (): Promise<boolean> => {
+    const dirtyCount = tabsRef.current.filter(
+      (tab) => tab.document.dirty,
+    ).length;
+    if (dirtyCount > 0 && !(await confirmDiscardDocuments(dirtyCount)))
+      return false;
+    if (!runnerBusyRef.current) return true;
+    try {
+      const result = await window.api.acm.stopRunner();
+      if (!result.ok) {
+        message.error(errorText(result));
+        return false;
+      }
+      return true;
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : "停止 Runner 失败",
+      );
+      return false;
+    }
+  }, []);
+
+  useEffect(() => registerAcmNavigationGuard(confirmLeave), [confirmLeave]);
+
+  const selectCompilerPath = useCallback(async () => {
+    try {
+      const result = await window.api.acm.selectCompilerPath();
+      if (result.ok && result.data) {
+        setCompilerSelection(result.data);
+        await probeCompiler();
+      } else if (!result.ok) {
+        message.error(errorText(result));
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "选择编译器失败");
+    }
+  }, [probeCompiler]);
+
   const handleCompilerSelection = useCallback(
     async (mode: CompilerSelectionMode) => {
       const current = compilerSelection;
       if (mode === "user" && !current?.path) {
-        message.warning("尚未配置自定义编译器路径");
+        await selectCompilerPath();
         return;
       }
       try {
@@ -819,7 +1019,7 @@ export default function AcmWorkbenchPage() {
         );
       }
     },
-    [compilerSelection, probeCompiler],
+    [compilerSelection, probeCompiler, selectCompilerPath],
   );
 
   const retryPlugin = useCallback(async () => {
@@ -856,30 +1056,28 @@ export default function AcmWorkbenchPage() {
   const updateStdin = useCallback((value: string) => {
     const documentId = activeDocumentRef.current?.id;
     if (!documentId) return;
-    setTabs((current) =>
-      current.map((tab) =>
-        tab.document.id === documentId ? { ...tab, stdin: value } : tab,
-      ),
+    const nextTabs = tabsRef.current.map((tab) =>
+      tab.document.id === documentId ? { ...tab, stdin: value } : tab,
     );
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
   }, []);
 
-  const updateContent = useCallback((value: string) => {
-    const documentId = activeDocumentRef.current?.id;
-    if (!documentId) return;
-    setTabs((current) =>
-      current.map((tab) =>
-        tab.document.id === documentId
-          ? {
-              ...tab,
-              document: {
-                ...tab.document,
-                content: value,
-                dirty: value !== tab.savedContent,
-              },
-            }
-          : tab,
-      ),
+  const updateContent = useCallback((documentId: string, value: string) => {
+    const nextTabs = tabsRef.current.map((tab) =>
+      tab.document.id === documentId
+        ? {
+            ...tab,
+            document: {
+              ...tab.document,
+              content: value,
+              dirty: value !== tab.savedContent,
+            },
+          }
+        : tab,
     );
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
   }, []);
 
   const shortcutHandlers = useMemo(
@@ -1052,7 +1250,7 @@ export default function AcmWorkbenchPage() {
           </Button>
           {runnerForActive && (
             <Tag color="processing">
-              {runnerMode === "compile" ? "编译中" : "运行中"}
+              {runnerPhase === "compile" ? "编译中" : "运行中"}
             </Tag>
           )}
           {runnerBusy && runnerDocumentId !== activeId && (
@@ -1065,6 +1263,7 @@ export default function AcmWorkbenchPage() {
           loading={compilerLoading}
           disabled={!docsAvailable || runnerBusy}
           onProbe={() => void probeCompiler()}
+          onSelectPath={() => void selectCompilerPath()}
           onSelectionChange={(mode) => void handleCompilerSelection(mode)}
         />
       </div>
@@ -1114,6 +1313,8 @@ export default function AcmWorkbenchPage() {
           </div>
           <div className="acm-editor-frame">
             <CodeEditor
+              key={activeDocument.id}
+              documentId={activeDocument.id}
               value={activeDocument.content}
               readOnly={activeDocument.readOnly || !docsAvailable}
               dark={dark}
@@ -1153,12 +1354,24 @@ export default function AcmWorkbenchPage() {
         stdinOpen={stdinOpen}
         terminalOpen={terminalOpen}
         events={activeEvents}
+        truncated={activeId ? truncatedByDocument[activeId] === true : false}
         onStdinChange={updateStdin}
         onToggleStdin={() => setStdinOpen((value) => !value)}
         onToggleTerminal={() => setTerminalOpen((value) => !value)}
         onClearTerminal={() => {
-          if (activeId)
-            setEventsByDocument((current) => ({ ...current, [activeId]: [] }));
+          if (!activeId) return;
+          const nextEvents = {
+            ...eventsByDocumentRef.current,
+            [activeId]: [],
+          };
+          eventsByDocumentRef.current = nextEvents;
+          setEventsByDocument(nextEvents);
+          const nextTruncated = {
+            ...truncatedByDocumentRef.current,
+            [activeId]: false,
+          };
+          truncatedByDocumentRef.current = nextTruncated;
+          setTruncatedByDocument(nextTruncated);
         }}
       />
 
