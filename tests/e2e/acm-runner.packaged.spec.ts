@@ -681,3 +681,43 @@ test("packaged ACM workbench exposes interaction and accessibility states", asyn
     );
   });
 });
+
+test("packaged ACM IPC rejects invalid runner requests and enforces plugin gate", async () => {
+  await runWithWorkbench(async ({ page }) => {
+    const invalid = await page.evaluate(() =>
+      window.api.acm.startRunner({
+        documentId: "not-a-uuid",
+        source: "",
+        stdin: "",
+        mode: "compile",
+      }),
+    );
+    expect(invalid).toMatchObject({
+      ok: false,
+      errorCode: "VALIDATION_FAILED",
+    });
+
+    await page
+      .locator(".acm-status-banner")
+      .getByRole("button", { name: "禁用" })
+      .click();
+    await expect(page.locator(".acm-status-banner")).toContainText(
+      "插件已禁用",
+    );
+    const validRequest = {
+      documentId: "00000000-0000-0000-0000-000000000001",
+      source: "",
+      stdin: "",
+      mode: "compile" as const,
+    };
+    await expect(
+      page.evaluate(
+        (request) => window.api.acm.startRunner(request),
+        validRequest,
+      ),
+    ).resolves.toMatchObject({ ok: false, errorCode: "ACM_DISABLED" });
+    await expect(
+      page.evaluate(() => window.api.acm.stopRunner()),
+    ).resolves.toMatchObject({ ok: false, errorCode: "ACM_DISABLED" });
+  });
+});
