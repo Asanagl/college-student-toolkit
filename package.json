@@ -32,7 +32,9 @@
     "test:smoke:package": "node scripts/smoke-package.cjs",
     "test:smoke:appx": "node scripts/smoke-appx.cjs",
     "test:perf": "node scripts/test-perf.cjs",
+    "pretest:perf:release": "electron-builder install-app-deps --arch=x64",
     "test:perf:release": "node scripts/test-release-perf.cjs",
+    "pretest:perf:release:quick": "electron-builder install-app-deps --arch=x64",
     "test:perf:release:quick": "cross-env PERF_ITERATIONS=3 PERF_WARMUPS=1 PERF_IDLE_MINUTES=0 PERF_SOAK_MINUTES=0 PERF_ENFORCE=0 node scripts/test-release-perf.cjs",
     "verify": "npm run typecheck && npm run lint && npm run format:check && npm run test:unit && npm run test:coverage"
   },
