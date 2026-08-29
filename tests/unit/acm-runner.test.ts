@@ -1,9 +1,9 @@
+import { execFileSync, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
   CompilerProbeResult,
@@ -178,6 +178,76 @@ function createTempRoot(): string {
   );
   directories.push(tempRoot);
   return tempRoot;
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
+}
+
+function readMarkerPids(marker: string): number[] {
+  try {
+    return fs
+      .readFileSync(marker, "utf8")
+      .split(/\r?\n/)
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isInteger(value) && value > 0)
+      .slice(0, 3);
+  } catch {
+    return [];
+  }
+}
+
+async function waitForMarkerPids(
+  marker: string,
+  timeoutMs = 10_000,
+): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pids = readMarkerPids(marker);
+    if (pids.length >= 2) return pids.slice(0, 2);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("等待 taskkill fallback 目标 PID 超时");
+}
+
+async function waitForPidsToExit(
+  pids: number[],
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pids.every((pid) => !processExists(pid))) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`taskkill fallback 后仍有进程存活：${pids.join(", ")}`);
+}
+
+function cleanupPid(pid: number): void {
+  if (!processExists(pid)) return;
+  const root = process.env.SystemRoot?.trim() || "C:\\Windows";
+  try {
+    execFileSync(
+      path.join(root, "System32", "taskkill.exe"),
+      ["/PID", String(pid), "/T", "/F"],
+      { windowsHide: true, stdio: "ignore" },
+    );
+  } catch {
+    // The test already captured the assertion failure; cleanup is best effort.
+  }
+}
+
+function fallbackTreeCommand(marker: string): string {
+  return [
+    "$ErrorActionPreference='Stop';",
+    "$child = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\\ping.exe') -ArgumentList @('127.0.0.1','-t') -PassThru;",
+    `Set-Content -LiteralPath '${marker.replaceAll("'", "''")}' -Value @($PID,$child.Id);`,
+    "Start-Sleep -Seconds 60",
+  ].join(" ");
 }
 
 afterEach(() => {
@@ -367,6 +437,55 @@ describe("AcmRunnerService", () => {
 });
 
 describe("AcmRunnerHelper", () => {
+  it.skipIf(process.platform !== "win32" || process.arch !== "x64")(
+    "terminates a real process tree with the taskkill fallback",
+    async () => {
+      const directory = createTempRoot();
+      const marker = path.join(directory, "fallback-pids.txt");
+      const powershell = path.join(
+        process.env.SystemRoot?.trim() || "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const helper = new AcmRunnerHelper(undefined, "win32", 3_000, null);
+      let childProcess: ChildProcess | null = null;
+      let pids: number[] = [];
+      try {
+        childProcess = helper.spawn(
+          powershell,
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            fallbackTreeCommand(marker),
+          ],
+          directory,
+          ["ignore", "pipe", "pipe"],
+        );
+        pids = await waitForMarkerPids(marker);
+        expect(
+          pids.every(processExists),
+          `fallback marker PIDs: ${JSON.stringify(pids.map((pid) => ({ pid, alive: processExists(pid) })))}`,
+        ).toBe(true);
+        await helper.terminate(childProcess);
+        await waitForPidsToExit(pids);
+        expect(
+          childProcess.exitCode !== null || childProcess.signalCode !== null,
+        ).toBe(true);
+      } finally {
+        if (
+          childProcess &&
+          childProcess.exitCode === null &&
+          childProcess.signalCode === null
+        )
+          await helper.terminate(childProcess).catch(() => undefined);
+        pids.forEach(cleanupPid);
+      }
+    },
+  );
+
   it("uses the native Job Object wrapper when it is available", () => {
     const helperPath = path.join(createTempRoot(), "acm-job-runner.exe");
     fs.writeFileSync(helperPath, "test");
