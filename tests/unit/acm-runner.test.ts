@@ -396,6 +396,34 @@ describe("AcmRunnerHelper", () => {
     });
   });
 
+  it("falls back to the target process when the native helper is missing", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const factory: RunnerProcessFactory = {
+      spawn: (command, args) => {
+        calls.push({ command, args });
+        return child() as unknown as ChildProcess;
+      },
+      execFile: (_file, _args, _options, callback) => {
+        const process = new EventEmitter() as ChildProcess;
+        callback(null);
+        return process;
+      },
+    };
+    const helper = new AcmRunnerHelper(factory, "win32", 3_000, null);
+    helper.spawn(
+      "C:\\temp\\g++.exe",
+      ["-std=c++17", "source.cpp"],
+      "C:\\temp",
+      ["ignore", "pipe", "pipe"],
+    );
+    expect(calls).toEqual([
+      expect.objectContaining({
+        command: "C:\\temp\\g++.exe",
+        args: ["-std=c++17", "source.cpp"],
+      }),
+    ]);
+  });
+
   it("does not use a Windows helper on unsupported platforms", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const factory: RunnerProcessFactory = {

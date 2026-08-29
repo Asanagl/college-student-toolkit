@@ -21,7 +21,7 @@
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 版本与依赖升级                                              | `0.4.0` 已写入 `package.json` 和锁文件                                                                                                                                                                      |
 | v19 受影响单元测试与主进程类型检查                           | 已通过（提醒 10 用例、OCR 12 用例、Node 类型检查）；v0.4.0 完整本地门禁已通过                                                                                                                                    |
-| Electron 源码与 packaged E2E                                | 已通过（当前 v0.4.0 `npm run test:e2e:packaged`：4 passed；其中包含 ACM C++17 编译/运行闭环；导入浏览器 fixture 单独执行：2 passed）                                                                             |
+| Electron 源码与 packaged E2E                                | 已通过（当前 v0.4.0 `npm run test:e2e:packaged`：10 passed，其中 ACM Runner/Workbench 7/7；导入浏览器 fixture 2 passed，CRUD/设置 smoke 1 passed）                                                                 |
 | 本地生产构建和包前置 smoke                                  | 已通过                                                                                                                                                                                                      |
 | 依赖安全审计                                                | `npm audit --omit=dev` 已通过                                                                                                                                                                               |
 | Windows Release 性能与 30 分钟 soak                         | 已通过（30 次采样、5 次预热、5 分钟 idle、30 分钟/180 周期 soak）                                                                                                                                           |
@@ -34,7 +34,7 @@
 | Store 实际安装、更新、卸载保留数据和重装恢复                | 未执行，需 Store 发布后在 Windows 实机验收                                                                                                                                                                  |
 | 真实 OCR Release 资产下载                                   | 固定 Release URL、真实 GitHub CDN 重定向 host/path、大小和双哈希已核对；真实应用内识别性能仍未执行                                                                                                           |
 | Windows 11 24H2/25H2 干净机及真实教务系统验收               | 未执行，阻断 Store Stable                                                                                                                                                                                   |
-| v0.4.0 ACM Workbench、runner 和内置工具链                     | 本地 RC 开发中；服务、UI、runner、staging、`verify:appx` 和 ACM packaged 编译/运行闭环已通过；AppX 已包含 x64 native Job Object helper，目标及 `cmd.exe`/`ping.exe` 后代终止测试通过；开发/旧包保留 `taskkill` fallback，专门 UI 覆盖、Store/实机验收仍未完成 |
+| v0.4.0 ACM Workbench、runner 和内置工具链                     | 本地 RC 开发中；服务、UI、runner、staging、`verify:appx` 和 ACM packaged 7/7 核心正/负面闭环已通过；AppX 已包含 x64 native Job Object helper，目标及 `cmd.exe`/`ping.exe` 后代终止测试通过；开发/旧包保留 `taskkill` fallback，完整 UI 矩阵、Store/实机验收仍未完成 |
 
 完整验收清单见 [`docs/v0.3.0-acceptance-checklist.md`](docs/v0.3.0-acceptance-checklist.md)，用户可见变更见 [`docs/v0.3.0-release-notes.md`](docs/v0.3.0-release-notes.md)。
 

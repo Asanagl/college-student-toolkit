@@ -111,21 +111,18 @@ async function verifyExitCode(target, directory) {
   }
 }
 
-async function run() {
-  if (process.platform !== "win32") {
-    console.log("ACM Job Object helper test skipped: Windows only.");
-    return;
-  }
-  if (!fs.existsSync(helper))
-    throw new Error(
-      `找不到 helper：${helper}，请先运行 npm run build:runner-helper`,
-    );
-
-  const directory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "college-toolkit-job-runner-test-"),
+function powershellTarget() {
+  return path.join(
+    process.env.SystemRoot?.trim() || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
   );
-  const marker = path.join(directory, "marker with spaces.txt");
-  const command =
+}
+
+function treeTerminationCommand() {
+  return (
     "$child = Start-Process -FilePath $env:ComSpec " +
     "-ArgumentList @('/d','/c','ping','127.0.0.1','-t') -PassThru; " +
     "$grandchild = $null; for ($i = 0; $i -lt 20 -and -not $grandchild; $i++) { " +
@@ -134,21 +131,23 @@ async function run() {
     "if (-not $grandchild) { Start-Sleep -Milliseconds 100 } }; " +
     "if (-not $grandchild) { exit 8 }; " +
     "$value = @($PID, $child.Id, $grandchild.ProcessId); Set-Content -LiteralPath " +
-    "$env:ACM_JOB_RUNNER_MARKER -Value $value; Start-Sleep -Seconds 60";
-  const target = path.join(
-    process.env.SystemRoot?.trim() || "C:\\Windows",
-    "System32",
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
+    "$env:ACM_JOB_RUNNER_MARKER -Value $value; Start-Sleep -Seconds 60"
   );
+}
+
+async function verifyTreeTermination(target, directory, marker) {
   let runner;
   let pids = [];
   try {
-    await verifyExitCode(target, directory);
     runner = spawn(
       helper,
-      [target, "-NoProfile", "-NonInteractive", "-Command", command],
+      [
+        target,
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        treeTerminationCommand(),
+      ],
       {
         cwd: directory,
         windowsHide: true,
@@ -167,6 +166,28 @@ async function run() {
   } finally {
     if (runner?.pid && processExists(runner.pid)) killPid(runner.pid);
     pids.forEach(killPid);
+  }
+}
+
+async function run() {
+  if (process.platform !== "win32") {
+    console.log("ACM Job Object helper test skipped: Windows only.");
+    return;
+  }
+  if (!fs.existsSync(helper))
+    throw new Error(
+      `找不到 helper：${helper}，请先运行 npm run build:runner-helper`,
+    );
+
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "college-toolkit-job-runner-test-"),
+  );
+  const marker = path.join(directory, "marker with spaces.txt");
+  try {
+    const target = powershellTarget();
+    await verifyExitCode(target, directory);
+    await verifyTreeTermination(target, directory, marker);
+  } finally {
     await removeDirectory(directory);
   }
 }
