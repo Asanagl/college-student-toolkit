@@ -38,6 +38,42 @@ function createProfile(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "college-toolkit-acm-e2e-"));
 }
 
+function createCppFixture(content: string): {
+  directory: string;
+  filePath: string;
+} {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "college-toolkit-acm-file-"),
+  );
+  const filePath = path.join(directory, "fixture.cpp");
+  fs.writeFileSync(filePath, content, "utf8");
+  return { directory, filePath };
+}
+
+async function patchAcmDialogs(
+  app: ElectronApplication,
+  paths: { openPath?: string; savePath?: string },
+): Promise<void> {
+  await app.evaluate(({ dialog }, value) => {
+    const target = dialog as unknown as {
+      showOpenDialog: (...args: unknown[]) => Promise<unknown>;
+      showSaveDialog: (...args: unknown[]) => Promise<unknown>;
+    };
+    if (value.openPath) {
+      target.showOpenDialog = async () => ({
+        canceled: false,
+        filePaths: [value.openPath],
+      });
+    }
+    if (value.savePath) {
+      target.showSaveDialog = async () => ({
+        canceled: false,
+        filePath: value.savePath,
+      });
+    }
+  }, paths);
+}
+
 async function launchPackaged(profile: string) {
   const app = await electron.launch({
     executablePath: packagedExecutable(),
@@ -191,6 +227,14 @@ function commandButton(
 function panelToggle(page: Page, label: "标准输入" | "终端输出"): Locator {
   const labels = { 标准输入: /^标准输入$/, 终端输出: /^终端输出$/ };
   return page.locator(".acm-panel-toggle").filter({ hasText: labels[label] });
+}
+
+async function pressWorkbenchShortcut(
+  page: Page,
+  shortcut: "Control+N" | "Control+O" | "Control+S" | "Control+Shift+S",
+): Promise<void> {
+  await page.locator(".acm-page-title").click();
+  await page.keyboard.press(shortcut);
 }
 
 test("packaged ACM workbench compiles and runs a C++17 program", async () => {
@@ -434,6 +478,146 @@ test("packaged ACM stdout and stderr limits terminate the run", async () => {
       await expectRunnerIdle(page);
     });
   }
+});
+
+test("packaged ACM keyboard shortcuts cover new, open, save and save-as", async () => {
+  const fixture = createCppFixture(
+    ["#include <iostream>", 'int main() { std::cout << "opened"; }', ""].join(
+      "\n",
+    ),
+  );
+  const saveDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "college-toolkit-acm-save-"),
+  );
+  const savePath = path.join(saveDirectory, "shortcut-save.cpp");
+  const saveAsPath = path.join(saveDirectory, "shortcut-save-as.cpp");
+  try {
+    await runWithWorkbench(async ({ app, page }) => {
+      await pressWorkbenchShortcut(page, "Control+N");
+      await expect(page.locator(".ant-tabs-tab")).toHaveCount(1);
+      await replaceSource(
+        page,
+        ["#include <iostream>", "int main() { return 0; }", ""].join("\n"),
+      );
+
+      await patchAcmDialogs(app, { savePath });
+      await pressWorkbenchShortcut(page, "Control+S");
+      await expect.poll(() => fs.existsSync(savePath)).toBe(true);
+      await expect(page.locator(".acm-dirty-dot")).toHaveCount(0);
+
+      await patchAcmDialogs(app, { savePath: saveAsPath });
+      await pressWorkbenchShortcut(page, "Control+Shift+S");
+      await expect.poll(() => fs.existsSync(saveAsPath)).toBe(true);
+      await expect(page.locator(".acm-editor-meta")).toContainText(
+        "shortcut-save-as.cpp",
+      );
+
+      await patchAcmDialogs(app, { openPath: fixture.filePath });
+      await pressWorkbenchShortcut(page, "Control+O");
+      await expect(page.locator(".ant-tabs-tab")).toHaveCount(2);
+      await expect(page.locator(".cm-content")).toContainText("opened");
+    });
+  } finally {
+    fs.rmSync(fixture.directory, { recursive: true, force: true });
+    fs.rmSync(saveDirectory, { recursive: true, force: true });
+  }
+});
+
+test("packaged ACM read-only documents route Ctrl+S to save-as", async () => {
+  const fixture = createCppFixture(
+    ["#include <iostream>", "int main() { return 7; }", ""].join("\n"),
+  );
+  const saveDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "college-toolkit-acm-readonly-"),
+  );
+  const savePath = path.join(saveDirectory, "readonly-copy.cpp");
+  try {
+    fs.chmodSync(fixture.filePath, 0o444);
+    await runWithWorkbench(async ({ app, page }) => {
+      await patchAcmDialogs(app, { openPath: fixture.filePath, savePath });
+      await pressWorkbenchShortcut(page, "Control+O");
+      await expect(page.locator(".cm-content")).toHaveAttribute(
+        "aria-readonly",
+        "true",
+      );
+      await expect(page.getByText("只读", { exact: true })).toBeVisible();
+
+      await pressWorkbenchShortcut(page, "Control+S");
+      await expect.poll(() => fs.existsSync(savePath)).toBe(true);
+      await expect(page.locator(".cm-content")).toHaveAttribute(
+        "aria-readonly",
+        "false",
+      );
+      expect(fs.readFileSync(fixture.filePath, "utf8")).toContain("return 7");
+      await expect(page.locator(".acm-editor-meta")).toContainText(
+        "readonly-copy.cpp",
+      );
+    });
+  } finally {
+    fs.chmodSync(fixture.filePath, 0o666);
+    fs.rmSync(fixture.directory, { recursive: true, force: true });
+    fs.rmSync(saveDirectory, { recursive: true, force: true });
+  }
+});
+
+test("packaged ACM external changes require explicit overwrite confirmation", async () => {
+  const source = [
+    "#include <iostream>",
+    'int main() { std::cout << "original"; }',
+    "",
+  ].join("\n");
+  const fixture = createCppFixture(source);
+  try {
+    await runWithWorkbench(async ({ app, page }) => {
+      await patchAcmDialogs(app, { openPath: fixture.filePath });
+      await pressWorkbenchShortcut(page, "Control+O");
+      await expect(page.locator(".cm-content")).toContainText("original");
+
+      fs.writeFileSync(fixture.filePath, "// external replacement\n", "utf8");
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await expect(page.locator(".acm-external-alert")).toBeVisible();
+
+      await pressWorkbenchShortcut(page, "Control+S");
+      await page.getByRole("button", { name: "覆盖保存", exact: true }).click();
+      await expect
+        .poll(() => fs.readFileSync(fixture.filePath, "utf8"))
+        .toBe(source);
+      await expect(page.locator(".acm-external-alert")).toHaveCount(0);
+    });
+  } finally {
+    fs.rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("packaged ACM tabs keep source, stdin and dirty state independent", async () => {
+  await runWithWorkbench(async ({ page }) => {
+    await pressWorkbenchShortcut(page, "Control+N");
+    await replaceSource(
+      page,
+      ["#include <iostream>", "int main() { return 1; }", ""].join("\n"),
+    );
+    await page.getByRole("textbox", { name: "程序标准输入" }).fill("stdin-a");
+
+    await pressWorkbenchShortcut(page, "Control+N");
+    await replaceSource(
+      page,
+      ["#include <iostream>", "int main() { return 2; }", ""].join("\n"),
+    );
+    await page.getByRole("textbox", { name: "程序标准输入" }).fill("stdin-b");
+    await expect(page.locator(".acm-dirty-dot")).toHaveCount(2);
+
+    await page.locator(".ant-tabs-tab").nth(0).click();
+    await expect(page.locator(".cm-content")).toContainText("return 1");
+    await expect(
+      page.getByRole("textbox", { name: "程序标准输入" }),
+    ).toHaveValue("stdin-a");
+    await page.locator(".ant-tabs-tab").nth(1).click();
+    await expect(page.locator(".cm-content")).toContainText("return 2");
+    await expect(
+      page.getByRole("textbox", { name: "程序标准输入" }),
+    ).toHaveValue("stdin-b");
+    await expect(page.locator(".acm-dirty-dot")).toHaveCount(2);
+  });
 });
 
 test("packaged ACM workbench exposes interaction and accessibility states", async () => {
