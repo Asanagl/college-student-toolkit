@@ -5,6 +5,7 @@ import {
   type ExecFileOptions,
   type SpawnOptions,
 } from "node:child_process";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -27,6 +28,7 @@ export interface RunnerProcessFactory {
 }
 
 const DEFAULT_TERMINATION_TIMEOUT_MS = 3_000;
+const JOB_OBJECT_HELPER_NAME = "acm-job-runner.exe";
 
 const defaultFactory: RunnerProcessFactory = {
   spawn: (command, args, options) => nodeSpawn(command, args, options),
@@ -68,6 +70,22 @@ function systemExecutable(name: string): string {
   return path.join(root, "System32", name);
 }
 
+function defaultJobObjectExecutable(platform: NodeJS.Platform): string | null {
+  if (platform !== "win32") return null;
+  const processWithResources = process as NodeJS.Process & {
+    resourcesPath?: string;
+  };
+  const resourcesPath = processWithResources.resourcesPath?.trim();
+  if (!resourcesPath) return null;
+  const candidate = path.join(resourcesPath, JOB_OBJECT_HELPER_NAME);
+  try {
+    const stat = fs.lstatSync(candidate);
+    return stat.isFile() && !stat.isSymbolicLink() ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Owns process creation and process-tree termination for the ACM runner.
  * Keeping this boundary small lets the native Job Object helper replace the
@@ -78,6 +96,9 @@ export class AcmRunnerHelper {
     private readonly factory: RunnerProcessFactory = defaultFactory,
     private readonly platform: NodeJS.Platform = process.platform,
     private readonly terminationTimeoutMs = DEFAULT_TERMINATION_TIMEOUT_MS,
+    private readonly jobObjectExecutable:
+      | string
+      | null = defaultJobObjectExecutable(platform),
   ) {}
 
   spawn(
@@ -89,7 +110,10 @@ export class AcmRunnerHelper {
       | readonly ["pipe", "pipe", "pipe"],
     runtimePath?: string | null,
   ): ChildProcess {
-    return this.factory.spawn(command, args, {
+    const helper = this.platform === "win32" ? this.jobObjectExecutable : null;
+    const launchCommand = helper ?? command;
+    const launchArgs = helper ? [command, ...args] : args;
+    return this.factory.spawn(launchCommand, launchArgs, {
       cwd,
       windowsHide: true,
       shell: false,

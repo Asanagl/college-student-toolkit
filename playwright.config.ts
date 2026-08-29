@@ -2,8 +2,8 @@ import { defineConfig } from "@playwright/test";
 
 /**
  * Electron E2E is kept as a separate project because it needs a packaged
- * executable and a Windows runner.  The smoke placeholder is deliberately
- * skipped until a packaged RC path is supplied by the release pipeline.
+ * executable and a Windows runner. The packaged project uses the local RC by
+ * default and accepts PACKAGED_EXECUTABLE for release-pipeline validation.
  */
 export default defineConfig({
   testDir: "./tests/e2e",

@@ -43,6 +43,12 @@ function main() {
   };
   const outputDir = path.resolve(root, env.APPX_OUTPUT_DIR);
   clearPreviousArtifacts(outputDir);
+  const helperStatus = run(
+    process.execPath,
+    [path.join(root, "scripts", "build-acm-job-runner.cjs")],
+    env,
+  );
+  if (helperStatus !== 0) return helperStatus;
   const status = run(
     process.execPath,
     [cli, "--config", "electron-builder.acm.cjs", "--win", "appx", "--x64"],

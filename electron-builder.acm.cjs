@@ -13,6 +13,12 @@ const inProgressPath = path.join(
   "toolchain.staging-in-progress",
 );
 const packageVersion = require(path.join(root, "package.json")).version;
+const jobRunner = path.join(
+  root,
+  ".build",
+  "acm-job-runner",
+  "acm-job-runner.exe",
+);
 const requiredFiles = [
   "bin/g++.exe",
   "bin/gcc.exe",
@@ -151,6 +157,8 @@ if (!fs.existsSync(staging)) {
   );
 }
 validateStaging();
+if (!fs.existsSync(jobRunner))
+  fail("缺少 ACM Job Object helper，请先运行 npm run build:runner-helper");
 
 module.exports = {
   extends: "./electron-builder.appx.cjs",
@@ -159,6 +167,10 @@ module.exports = {
       from: ".build/toolchain",
       to: "toolchain",
       filter: ["**/*"],
+    },
+    {
+      from: ".build/acm-job-runner/acm-job-runner.exe",
+      to: "acm-job-runner.exe",
     },
   ],
 };

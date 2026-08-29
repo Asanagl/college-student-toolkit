@@ -9,6 +9,7 @@ const yauzl = require("yauzl");
 const root = path.resolve(__dirname, "..");
 const packageVersion = require(path.join(root, "package.json")).version;
 const TOOLCHAIN_PREFIX = "app/resources/toolchain/";
+const JOB_OBJECT_HELPER_PATH = "app/resources/acm-job-runner.exe";
 const REQUIRED_TOOLCHAIN_FILES = [
   "bin/g++.exe",
   "bin/gcc.exe",
@@ -426,6 +427,20 @@ async function verify() {
     await readEntry(artifact, toolchainManifestName),
   );
   await verifyToolchainArchive(artifact, toolchainManifest);
+  const jobObjectHelperName = names.find(
+    (name) => name.toLowerCase() === JOB_OBJECT_HELPER_PATH,
+  );
+  if (!jobObjectHelperName)
+    throw new Error(
+      `包内缺少 ACM Job Object helper：${JOB_OBJECT_HELPER_PATH}`,
+    );
+  const jobObjectHelperMachine = checkPeMachine(
+    await readEntry(artifact, jobObjectHelperName),
+  );
+  if (jobObjectHelperMachine !== "0x8664")
+    throw new Error(
+      `ACM Job Object helper 不是 x64 PE：${jobObjectHelperMachine}`,
+    );
   const staging = fs.mkdtempSync(
     path.join(os.tmpdir(), "college-toolkit-appx-"),
   );
@@ -467,6 +482,10 @@ async function verify() {
         entries: names.length,
         manifest,
         nativeBinding: { path: nativeName, machine },
+        jobObjectHelper: {
+          path: jobObjectHelperName,
+          machine: jobObjectHelperMachine,
+        },
         warnings,
       },
       null,

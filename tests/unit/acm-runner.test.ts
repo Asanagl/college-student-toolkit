@@ -367,6 +367,64 @@ describe("AcmRunnerService", () => {
 });
 
 describe("AcmRunnerHelper", () => {
+  it("uses the native Job Object wrapper when it is available", () => {
+    const helperPath = path.join(createTempRoot(), "acm-job-runner.exe");
+    fs.writeFileSync(helperPath, "test");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const factory: RunnerProcessFactory = {
+      spawn: (command, args) => {
+        calls.push({ command, args });
+        return child() as unknown as ChildProcess;
+      },
+      execFile: (_file, _args, _options, callback) => {
+        const process = new EventEmitter() as ChildProcess;
+        callback(null);
+        return process;
+      },
+    };
+    const helper = new AcmRunnerHelper(factory, "win32", 3_000, helperPath);
+    helper.spawn(
+      "C:\\temp\\g++.exe",
+      ["-std=c++17", "source.cpp"],
+      "C:\\temp",
+      ["ignore", "pipe", "pipe"],
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      command: helperPath,
+      args: ["C:\\temp\\g++.exe", "-std=c++17", "source.cpp"],
+    });
+  });
+
+  it("does not use a Windows helper on unsupported platforms", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const factory: RunnerProcessFactory = {
+      spawn: (command, args) => {
+        calls.push({ command, args });
+        return child() as unknown as ChildProcess;
+      },
+      execFile: (_file, _args, _options, callback) => {
+        const process = new EventEmitter() as ChildProcess;
+        callback(null);
+        return process;
+      },
+    };
+    const helper = new AcmRunnerHelper(
+      factory,
+      "linux",
+      3_000,
+      "/tmp/acm-job-runner.exe",
+    );
+    helper.spawn("/tmp/g++", ["source.cpp"], "/tmp", [
+      "ignore",
+      "pipe",
+      "pipe",
+    ]);
+    expect(calls).toEqual([
+      expect.objectContaining({ command: "/tmp/g++", args: ["source.cpp"] }),
+    ]);
+  });
+
   it("rejects termination when the child never confirms exit", async () => {
     const process = child();
     process.kill = () => false;
