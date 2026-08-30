@@ -139,7 +139,7 @@ ACM 开发入口的 native helper fallback smoke：
 npm run test:runner-dev
 ```
 
-该命令会先按 Electron ABI 重建 `better-sqlite3`，启动非 packaged Electron，确认缺少 `acm-job-runner.exe` 时仍可通过 Workbench 编译并在超时后清理运行进程，结束后恢复 Node ABI；仅在 Windows 11 x64 上执行。
+该命令会先按 Electron ABI 重建 `better-sqlite3`，启动非 packaged Electron，确认缺少 `acm-job-runner.exe` 时仍可通过 Workbench 编译并在超时后清理运行进程，并在成功或失败后通过 `try/finally` 恢复 Node ABI；仅在 Windows 11 x64 上执行。
 
 Windows 发布环境应在干净 checkout 上执行：
 
