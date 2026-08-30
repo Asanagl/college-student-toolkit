@@ -75,8 +75,9 @@ async function patchAcmDialogs(
 }
 
 async function launchPackaged(profile: string) {
+  const executable = packagedExecutable();
   const app = await electron.launch({
-    executablePath: packagedExecutable(),
+    executablePath: executable,
     args: [`--user-data-dir=${profile}`],
     env: { ...process.env, COLLEGE_TOOLKIT_STORE_SMOKE: "1" },
   });
@@ -84,6 +85,14 @@ async function launchPackaged(profile: string) {
     const page = await app.firstWindow();
     await page.waitForLoadState("domcontentloaded");
     await expect(page).toHaveTitle("大学生工具组");
+    const runtime = await app.evaluate(({ app: electronApp }) => ({
+      packaged: electronApp.isPackaged,
+      resourcesPath: process.resourcesPath,
+    }));
+    expect(runtime.packaged).toBe(true);
+    expect(runtime.resourcesPath.toLowerCase()).toBe(
+      path.join(path.dirname(executable), "resources").toLowerCase(),
+    );
     return { app, page: page as PageWithRunnerEvents };
   } catch (error) {
     await app.close();
