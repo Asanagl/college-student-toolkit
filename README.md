@@ -133,6 +133,14 @@ npm run test:e2e:packaged
 
 当前工作树已生成隔离的 packaged RC 可执行文件，E2E 会自动使用临时 `userData`；本轮源码入口和 packaged 入口均通过。它验证的是本地打包 RC，不代表 Microsoft Store 实际安装、更新或卸载保留数据通过。
 
+ACM 开发入口的 native helper fallback smoke：
+
+```powershell
+npm run test:runner-dev
+```
+
+该命令会先按 Electron ABI 重建 `better-sqlite3`，启动非 packaged Electron，确认缺少 `acm-job-runner.exe` 时仍可通过 Workbench 编译并在超时后清理运行进程，结束后恢复 Node ABI；仅在 Windows 11 x64 上执行。
+
 Windows 发布环境应在干净 checkout 上执行：
 
 ```powershell
