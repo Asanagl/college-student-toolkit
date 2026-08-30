@@ -1,0 +1,332 @@
+{
+  "schemaVersion": 1,
+  "status": "completed_non_release",
+  "startedAt": "2026-08-30T08:29:49.515Z",
+  "executable": "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
+  "host": {
+    "platform": "win32",
+    "release": "10.0.26200",
+    "arch": "x64",
+    "cpu": "Intel(R) Core(TM) Ultra 5 225H",
+    "memoryMiB": 32189,
+    "node": "v20.16.0"
+  },
+  "dataset": {
+    "schedules": 1000,
+    "courses": 500,
+    "exams": 1000,
+    "labs": 1000,
+    "grades": 10000
+  },
+  "sampling": {
+    "iterations": 3,
+    "warmups": 1,
+    "idleMinutes": 0,
+    "soakMinutes": 0,
+    "soakIntervalMs": 10000,
+    "enforce": false,
+    "mode": "non-release"
+  },
+  "metricPolicy": {
+    "required": {
+      "latency": [
+        "sqlite.query",
+        "sqlite.crud",
+        "ipc.lists.schedules",
+        "ipc.lists.courses",
+        "ipc.lists.exams",
+        "ipc.lists.labs",
+        "ipc.lists.grades",
+        "ipc.lists.gradeDashboard",
+        "ipc.crud",
+        "pageSwitch.overall",
+        "reminder",
+        "backup.export",
+        "backup.import",
+        "coldStart"
+      ],
+      "health": ["idleRss", "soak", "shutdown"],
+      "ocrEvidence": ["ocr"]
+    },
+    "optional": [
+      "pageSwitch.byRoute./schedule",
+      "pageSwitch.byRoute./timetable",
+      "pageSwitch.byRoute./exam",
+      "pageSwitch.byRoute./lab",
+      "pageSwitch.byRoute./grade"
+    ]
+  },
+  "releaseAcceptance": {
+    "required": false,
+    "status": "not_release_acceptance"
+  },
+  "thresholds": {
+    "sqliteQueryMs": 100,
+    "sqliteCrudMs": 100,
+    "ipcListMs": 1000,
+    "ipcCrudMs": 150,
+    "pageSwitchMs": 300,
+    "coldStartMs": 3000,
+    "reminderP95Ms": 1000,
+    "reminderMaxMs": 1500,
+    "backupMs": 5000,
+    "idleRssMiB": 300,
+    "soakGrowthRatio": 0.1
+  },
+  "metrics": {
+    "sqlite": {
+      "query": {
+        "sampleCount": 3,
+        "p50Ms": 2.79,
+        "p95Ms": 3.49,
+        "maxMs": 3.49,
+        "thresholds": {
+          "p95Ms": 100
+        },
+        "pass": true
+      },
+      "crud": {
+        "sampleCount": 3,
+        "p50Ms": 0.07,
+        "p95Ms": 0.11,
+        "maxMs": 0.11,
+        "thresholds": {
+          "p95Ms": 100
+        },
+        "pass": true
+      }
+    },
+    "ipc": {
+      "lists": {
+        "schedules": {
+          "sampleCount": 3,
+          "p50Ms": 46.43,
+          "p95Ms": 55.93,
+          "maxMs": 55.93,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "courses": {
+          "sampleCount": 3,
+          "p50Ms": 30.85,
+          "p95Ms": 31.78,
+          "maxMs": 31.78,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "exams": {
+          "sampleCount": 3,
+          "p50Ms": 63.81,
+          "p95Ms": 69.88,
+          "maxMs": 69.88,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "labs": {
+          "sampleCount": 3,
+          "p50Ms": 62.56,
+          "p95Ms": 62.77,
+          "maxMs": 62.77,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "grades": {
+          "sampleCount": 3,
+          "p50Ms": 15.94,
+          "p95Ms": 15.97,
+          "maxMs": 15.97,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        },
+        "gradeDashboard": {
+          "sampleCount": 3,
+          "p50Ms": 15.95,
+          "p95Ms": 15.97,
+          "maxMs": 15.97,
+          "thresholds": {
+            "p95Ms": 1000
+          },
+          "pass": true
+        }
+      },
+      "crud": {
+        "sampleCount": 3,
+        "p50Ms": 30.61,
+        "p95Ms": 47.87,
+        "maxMs": 47.87,
+        "thresholds": {
+          "p95Ms": 150
+        },
+        "pass": true
+      }
+    },
+    "pageSwitch": {
+      "overall": {
+        "sampleCount": 3,
+        "p50Ms": 289.52,
+        "p95Ms": 291.84,
+        "maxMs": 291.84,
+        "thresholds": {
+          "p95Ms": 300
+        },
+        "pass": true
+      },
+      "byRoute": {
+        "/schedule": {
+          "sampleCount": 0,
+          "p50Ms": null,
+          "p95Ms": null,
+          "maxMs": null,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "skipped": true,
+          "reason": "该路由在短配置采样轮次中未命中；完整 30 次运行会覆盖所有路由"
+        },
+        "/timetable": {
+          "sampleCount": 1,
+          "p50Ms": 289.52,
+          "p95Ms": 289.52,
+          "maxMs": 289.52,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "pass": true
+        },
+        "/exam": {
+          "sampleCount": 1,
+          "p50Ms": 291.84,
+          "p95Ms": 291.84,
+          "maxMs": 291.84,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "pass": true
+        },
+        "/lab": {
+          "sampleCount": 1,
+          "p50Ms": 251.24,
+          "p95Ms": 251.24,
+          "maxMs": 251.24,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "pass": true
+        },
+        "/grade": {
+          "sampleCount": 0,
+          "p50Ms": null,
+          "p95Ms": null,
+          "maxMs": null,
+          "thresholds": {
+            "p95Ms": 300
+          },
+          "skipped": true,
+          "reason": "该路由在短配置采样轮次中未命中；完整 30 次运行会覆盖所有路由"
+        }
+      }
+    },
+    "reminder": {
+      "sampleCount": 3,
+      "p50Ms": 15.86,
+      "p95Ms": 16.12,
+      "maxMs": 16.12,
+      "thresholds": {
+        "p95Ms": 1000,
+        "maxMs": 1500
+      },
+      "pass": true
+    },
+    "backup": {
+      "archiveBytes": 11428341,
+      "export": {
+        "sampleCount": 3,
+        "p50Ms": 455.09,
+        "p95Ms": 657.2,
+        "maxMs": 657.2,
+        "thresholds": {
+          "p95Ms": 5000,
+          "maxMs": 5000
+        },
+        "pass": true
+      },
+      "import": {
+        "sampleCount": 3,
+        "p50Ms": 298.65,
+        "p95Ms": 300.54,
+        "maxMs": 300.54,
+        "thresholds": {
+          "p95Ms": 5000,
+          "maxMs": 5000
+        },
+        "pass": true
+      }
+    },
+    "coldStart": {
+      "sampleCount": 3,
+      "p50Ms": 1199.94,
+      "p95Ms": 1213.26,
+      "maxMs": 1213.26,
+      "thresholds": {
+        "p95Ms": 3000
+      },
+      "pass": true
+    },
+    "ocr": {
+      "id": "ocr-chi-sim",
+      "version": "1.0.0",
+      "state": "not-installed",
+      "currentBytes": 0,
+      "totalBytes": 2471033,
+      "progress": 0,
+      "skipped": true,
+      "reason": "未提供真实 OCR Release 资产和识别图片；不伪造线上 OCR 性能证据",
+      "evidence": {
+        "kind": "real-ocr-performance",
+        "real": false,
+        "reason": "本次运行未执行真实 OCR 识别"
+      }
+    },
+    "idleRss": {
+      "skipped": true,
+      "reason": "PERF_IDLE_MINUTES=0"
+    },
+    "soak": {
+      "skipped": true,
+      "reason": "PERF_SOAK_MINUTES=0"
+    },
+    "shutdown": {
+      "backupAppClosed": true,
+      "soakAppClosed": true,
+      "pass": true
+    }
+  },
+  "observedFailures": [],
+  "failures": [
+    "metrics.idleRss: skipped",
+    "metrics.soak: skipped",
+    "metrics.ocr: skipped",
+    "metrics.ocr: missing sampleCount",
+    "metrics.ocr: missing p95Ms",
+    "metrics.ocr: missing real OCR evidence"
+  ],
+  "warnings": [
+    "metrics.pageSwitch.byRoute./schedule: skipped",
+    "metrics.pageSwitch.byRoute./schedule: missing sampleCount",
+    "metrics.pageSwitch.byRoute./schedule: missing p95Ms",
+    "metrics.pageSwitch.byRoute./grade: skipped",
+    "metrics.pageSwitch.byRoute./grade: missing sampleCount",
+    "metrics.pageSwitch.byRoute./grade: missing p95Ms"
+  ],
+  "finishedAt": "2026-08-30T08:30:03.719Z"
+}
