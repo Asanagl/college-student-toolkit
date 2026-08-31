@@ -96,6 +96,10 @@ function errorText(result: { error?: string; errorCode?: string }): string {
   return result.error ?? result.errorCode ?? "操作失败";
 }
 
+function showWarnings(warnings: string[] | undefined): void {
+  for (const warning of warnings ?? []) message.warning(warning);
+}
+
 async function releaseAcmDocument(documentId: string): Promise<void> {
   try {
     await window.api.acm.releaseDocument(documentId);
@@ -797,6 +801,7 @@ export default function AcmWorkbenchPage() {
         applySavedDocument(result.data);
         setExternalChanges((current) => ({ ...current, [document.id]: false }));
         message.success(`已保存 ${result.data.name}`);
+        showWarnings(result.warnings);
       } else if (!result.ok) {
         message.error(errorText(result));
       }
@@ -831,6 +836,7 @@ export default function AcmWorkbenchPage() {
             [document.id]: false,
           }));
           message.success(`已保存 ${result.data.name}`);
+          showWarnings(result.warnings);
         } else if (result.errorCode === "ACM_FILE_CHANGED" && !force) {
           Modal.confirm({
             title: "文件已被外部修改",

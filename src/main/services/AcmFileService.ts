@@ -30,6 +30,8 @@ export const ACM_MAX_PENDING_WRITES = 4;
 export const ACM_MAX_PENDING_OPEN_OPERATIONS = 64;
 export const ACM_MAX_PENDING_SAVE_DIALOGS = 4;
 const FILE_READ_CHUNK_BYTES = 64 * 1024;
+const BACKUP_CLEANUP_RETRIES = 3;
+const BACKUP_CLEANUP_DELAY_MS = 250;
 
 const TEMPLATES: Record<AcmTemplateId, string> = {
   blank: "",
@@ -65,6 +67,7 @@ interface OpenDocumentState {
 interface PersistedFileState {
   stat: fs.Stats;
   fingerprint: DocumentFingerprint;
+  warnings: string[];
 }
 
 class RecoveryRequiredError extends Error {
@@ -90,6 +93,10 @@ function errorResult<T>(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function withWarnings<T>(result: IpcResult<T>, warnings: string[]): IpcResult<T> {
+  return warnings.length ? { ...result, warnings } : result;
 }
 
 function fileErrorCode(
@@ -289,6 +296,7 @@ export class AcmFileService {
     string,
     Promise<IpcResult<AcmDocumentExternalState>>
   >();
+  private readonly pendingCleanupRetries = new Set<Promise<void>>();
   private disposing = false;
 
   constructor(private readonly dialogs: DialogAccess = dialog) {}
@@ -437,6 +445,7 @@ export class AcmFileService {
   async dispose(): Promise<void> {
     this.disposing = true;
     await Promise.all([this.openGate, this.writeGate, this.saveDialogGate]);
+    await Promise.allSettled([...this.pendingCleanupRetries]);
     this.pendingExternalChecks.clear();
     this.openDocuments.clear();
   }
@@ -574,7 +583,7 @@ export class AcmFileService {
       return errorResult("ACM_FILE_BUSY", "文档已关闭，保存结果未重新登记");
     const document = await this.savedDocument(request, filePath, persisted);
     this.trackDocument(document, tracked.scope);
-    return { ok: true, data: document };
+    return withWarnings({ ok: true, data: document }, persisted.warnings);
   }
 
   private async saveDocumentAsUnlocked(
@@ -593,7 +602,7 @@ export class AcmFileService {
       return errorResult("ACM_FILE_BUSY", "文档已关闭，保存结果未重新登记");
     const document = await this.savedDocument(request, filePath, persisted);
     this.trackDocument(document, tracked.scope);
-    return { ok: true, data: document };
+    return withWarnings({ ok: true, data: document }, persisted.warnings);
   }
 
   private async checkExternalUnlocked(
@@ -753,7 +762,7 @@ export class AcmFileService {
     assertDocumentBytes(bytes, scope);
     assertRegularPath(filePath, true);
     await this.assertWritableTarget(filePath, request, scope);
-    await this.replaceFile(filePath, normalizedContent, () =>
+    const warnings = await this.replaceFile(filePath, normalizedContent, () =>
       this.revalidateWritableTarget(filePath, request, scope),
     );
     const stat = await fs.promises.stat(filePath);
@@ -765,6 +774,7 @@ export class AcmFileService {
         request.lineEnding,
         scope,
       ),
+      warnings,
     };
   }
 
@@ -806,7 +816,7 @@ export class AcmFileService {
     filePath: string,
     content: string,
     beforeReplace?: () => Promise<void>,
-  ): Promise<void> {
+  ): Promise<string[]> {
     const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
     const backupPath = `${filePath}.${process.pid}.${randomUUID()}.bak`;
     let backupRetained = false;
@@ -826,14 +836,52 @@ export class AcmFileService {
           }
           throw error;
         }
-        await fs.promises.rm(backupPath, { force: true });
+        const warning = await this.cleanupBackupAfterReplace(backupPath);
+        return warning ? [warning] : [];
       } else {
         await fs.promises.rename(tempPath, filePath);
+        return [];
       }
     } catch (error) {
       await this.removeQuietly(tempPath);
       if (!backupRetained) await this.removeQuietly(backupPath);
       throw error;
+    }
+  }
+
+  private async cleanupBackupAfterReplace(
+    backupPath: string,
+  ): Promise<string | null> {
+    if (await this.removeBackupFile(backupPath)) return null;
+    this.scheduleBackupCleanup(backupPath);
+    return `保存成功，但清理恢复副本失败：${backupPath}`;
+  }
+
+  private async removeBackupFile(backupPath: string): Promise<boolean> {
+    try {
+      assertRegularPath(backupPath, true);
+      await fs.promises.rm(backupPath, { force: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private scheduleBackupCleanup(backupPath: string): void {
+    const retry = this.retryBackupCleanup(backupPath);
+    this.pendingCleanupRetries.add(retry);
+    void retry.then(
+      () => this.pendingCleanupRetries.delete(retry),
+      () => this.pendingCleanupRetries.delete(retry),
+    );
+  }
+
+  private async retryBackupCleanup(backupPath: string): Promise<void> {
+    for (let attempt = 1; attempt <= BACKUP_CLEANUP_RETRIES; attempt += 1) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, attempt * BACKUP_CLEANUP_DELAY_MS),
+      );
+      if (await this.removeBackupFile(backupPath)) return;
     }
   }
 

@@ -17,6 +17,8 @@ export interface IpcResult<T = unknown> {
   data?: T;
   error?: string;
   errorCode?: IpcErrorCode;
+  /** 非阻断的清理或恢复提示；成功结果仍可携带这些警告。 */
+  warnings?: string[];
 }
 
 /** 由主进程返回的稳定错误码；具体文案可随语言包变化。 */

@@ -76,6 +76,10 @@ function errorText(result: { error?: string; errorCode?: string }): string {
   return result.error ?? result.errorCode ?? "操作失败";
 }
 
+function showWarnings(warnings: string[] | undefined): void {
+  for (const warning of warnings ?? []) message.warning(warning);
+}
+
 async function releaseDocument(documentId: string): Promise<void> {
   try {
     await window.api.acm.releaseDocument(documentId);
@@ -391,6 +395,7 @@ export default function AcmDiffPage() {
         if (side === "reference") setReference(next);
         else setCandidate(next);
         message.success(`${SIDE_LABELS[side]}已保存`);
+        showWarnings(saved.warnings);
       } catch (error) {
         message.error(error instanceof Error ? error.message : "保存文件失败");
       }

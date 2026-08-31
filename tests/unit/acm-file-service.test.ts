@@ -391,6 +391,47 @@ describe("AcmFileService", () => {
     expect(forced).toMatchObject({ ok: true, data: { dirty: false } });
   });
 
+  it("returns a cleanup warning and retries a locked backup after saving", async () => {
+    const directory = tempDirectory();
+    const filePath = path.join(directory, "main.cpp");
+    fs.writeFileSync(filePath, "old\n", "utf8");
+    const service = new AcmFileService({
+      showOpenDialog: vi.fn(async () => ({
+        canceled: false,
+        filePaths: [filePath],
+      })),
+      showSaveDialog: vi.fn(),
+      showMessageBox: vi.fn(),
+    });
+    const opened = await service.openDocument();
+    if (!opened.ok || !opened.data) throw new Error("文档未打开");
+    const originalRm = fs.promises.rm.bind(fs.promises);
+    let failed = false;
+    const rmSpy = vi
+      .spyOn(fs.promises, "rm")
+      .mockImplementation(async (target, options) => {
+        if (!failed && String(target).endsWith(".bak")) {
+          failed = true;
+          throw new Error("备份文件暂时被占用");
+        }
+        return originalRm(target, options);
+      });
+    const saved = await service.saveDocument(
+      request(opened.data.id, filePath, "new\n", opened.data.savedFingerprint),
+    );
+    expect(saved).toMatchObject({
+      ok: true,
+      data: { dirty: false },
+      warnings: [expect.stringContaining("清理恢复副本失败")],
+    });
+    expect(fs.readFileSync(filePath, "utf8")).toBe("new\r\n");
+    await service.dispose();
+    rmSpy.mockRestore();
+    expect(
+      fs.readdirSync(directory).filter((entry) => entry.endsWith(".bak")),
+    ).toEqual([]);
+  });
+
   it("adds cpp extension, asks before overwrite, and rejects invalid paths/content", async () => {
     const directory = tempDirectory();
     const target = path.join(directory, "existing.cpp");
