@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "status": "failed",
-  "startedAt": "2026-08-31T02:00:22.569Z",
+  "status": "passed",
+  "startedAt": "2026-08-31T13:08:10.235Z",
   "executable": "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
   "host": {
     "platform": "win32",
@@ -64,7 +64,7 @@
   },
   "releaseAcceptance": {
     "required": true,
-    "status": "failed"
+    "status": "passed"
   },
   "thresholds": {
     "sqliteQueryMs": 100,
@@ -83,9 +83,9 @@
     "sqlite": {
       "query": {
         "sampleCount": 30,
-        "p50Ms": 2.59,
-        "p95Ms": 3.05,
-        "maxMs": 3.66,
+        "p50Ms": 2.8,
+        "p95Ms": 3.68,
+        "maxMs": 4.05,
         "thresholds": {
           "p95Ms": 100
         },
@@ -94,7 +94,7 @@
       "crud": {
         "sampleCount": 30,
         "p50Ms": 0.02,
-        "p95Ms": 0.07,
+        "p95Ms": 0.05,
         "maxMs": 0.09,
         "thresholds": {
           "p95Ms": 100
@@ -106,9 +106,9 @@
       "lists": {
         "schedules": {
           "sampleCount": 30,
-          "p50Ms": 47.27,
-          "p95Ms": 51.29,
-          "maxMs": 60.81,
+          "p50Ms": 46.66,
+          "p95Ms": 59.24,
+          "maxMs": 62.14,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -116,9 +116,9 @@
         },
         "courses": {
           "sampleCount": 30,
-          "p50Ms": 45.89,
-          "p95Ms": 60.55,
-          "maxMs": 62.07,
+          "p50Ms": 33.5,
+          "p95Ms": 48.76,
+          "maxMs": 50.44,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -126,9 +126,9 @@
         },
         "exams": {
           "sampleCount": 30,
-          "p50Ms": 75.97,
-          "p95Ms": 99.09,
-          "maxMs": 99.67,
+          "p50Ms": 66.11,
+          "p95Ms": 79.07,
+          "maxMs": 81.24,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -136,9 +136,9 @@
         },
         "labs": {
           "sampleCount": 30,
-          "p50Ms": 74.82,
-          "p95Ms": 90.94,
-          "maxMs": 91.52,
+          "p50Ms": 64.28,
+          "p95Ms": 95.34,
+          "maxMs": 95.75,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -146,9 +146,9 @@
         },
         "grades": {
           "sampleCount": 30,
-          "p50Ms": 15.26,
-          "p95Ms": 18.88,
-          "maxMs": 19,
+          "p50Ms": 15.45,
+          "p95Ms": 16.5,
+          "maxMs": 16.58,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -156,9 +156,9 @@
         },
         "gradeDashboard": {
           "sampleCount": 30,
-          "p50Ms": 15.28,
-          "p95Ms": 16.55,
-          "maxMs": 18.01,
+          "p50Ms": 15.55,
+          "p95Ms": 16.17,
+          "maxMs": 16.19,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -167,9 +167,9 @@
       },
       "crud": {
         "sampleCount": 30,
-        "p50Ms": 46.16,
-        "p95Ms": 49.09,
-        "maxMs": 49.48,
+        "p50Ms": 46.93,
+        "p95Ms": 47.98,
+        "maxMs": 48.48,
         "thresholds": {
           "p95Ms": 150
         },
@@ -179,9 +179,9 @@
     "pageSwitch": {
       "overall": {
         "sampleCount": 30,
-        "p50Ms": 266.4,
-        "p95Ms": 283.84,
-        "maxMs": 284.26,
+        "p50Ms": 234,
+        "p95Ms": 266.55,
+        "maxMs": 267.22,
         "thresholds": {
           "p95Ms": 300
         },
@@ -190,9 +190,9 @@
       "byRoute": {
         "/schedule": {
           "sampleCount": 6,
-          "p50Ms": 250.14,
-          "p95Ms": 250.99,
-          "maxMs": 250.99,
+          "p50Ms": 218.94,
+          "p95Ms": 233.63,
+          "maxMs": 233.63,
           "thresholds": {
             "p95Ms": 300
           },
@@ -200,9 +200,9 @@
         },
         "/timetable": {
           "sampleCount": 6,
-          "p50Ms": 266.41,
-          "p95Ms": 283.5,
-          "maxMs": 283.5,
+          "p50Ms": 235.46,
+          "p95Ms": 267.22,
+          "maxMs": 267.22,
           "thresholds": {
             "p95Ms": 300
           },
@@ -210,9 +210,9 @@
         },
         "/exam": {
           "sampleCount": 6,
-          "p50Ms": 283.28,
-          "p95Ms": 284.26,
-          "maxMs": 284.26,
+          "p50Ms": 248.72,
+          "p95Ms": 265.93,
+          "maxMs": 265.93,
           "thresholds": {
             "p95Ms": 300
           },
@@ -220,9 +220,9 @@
         },
         "/lab": {
           "sampleCount": 6,
-          "p50Ms": 266.93,
-          "p95Ms": 283.64,
-          "maxMs": 283.64,
+          "p50Ms": 235.82,
+          "p95Ms": 266.55,
+          "maxMs": 266.55,
           "thresholds": {
             "p95Ms": 300
           },
@@ -230,9 +230,9 @@
         },
         "/grade": {
           "sampleCount": 6,
-          "p50Ms": 251.08,
-          "p95Ms": 266.51,
-          "maxMs": 266.51,
+          "p50Ms": 231.34,
+          "p95Ms": 249.95,
+          "maxMs": 249.95,
           "thresholds": {
             "p95Ms": 300
           },
@@ -242,9 +242,9 @@
     },
     "reminder": {
       "sampleCount": 30,
-      "p50Ms": 16.67,
-      "p95Ms": 17.75,
-      "maxMs": 17.81,
+      "p50Ms": 15.54,
+      "p95Ms": 31.13,
+      "maxMs": 31.57,
       "thresholds": {
         "p95Ms": 1000,
         "maxMs": 1500
@@ -252,12 +252,12 @@
       "pass": true
     },
     "backup": {
-      "archiveBytes": 11422628,
+      "archiveBytes": 11423488,
       "export": {
         "sampleCount": 30,
-        "p50Ms": 499.7,
-        "p95Ms": 517.36,
-        "maxMs": 533.7,
+        "p50Ms": 483.4,
+        "p95Ms": 534.61,
+        "maxMs": 562.92,
         "thresholds": {
           "p95Ms": 5000,
           "maxMs": 5000
@@ -266,9 +266,9 @@
       },
       "import": {
         "sampleCount": 30,
-        "p50Ms": 267.46,
-        "p95Ms": 303.39,
-        "maxMs": 306.93,
+        "p50Ms": 281.89,
+        "p95Ms": 309.49,
+        "maxMs": 329.16,
         "thresholds": {
           "p95Ms": 5000,
           "maxMs": 5000
@@ -278,93 +278,111 @@
     },
     "coldStart": {
       "sampleCount": 30,
-      "p50Ms": 1037.89,
-      "p95Ms": 1093.58,
-      "maxMs": 1138.44,
+      "p50Ms": 1067.7,
+      "p95Ms": 1121.05,
+      "maxMs": 1133.01,
       "thresholds": {
         "p95Ms": 3000
       },
       "pass": true
     },
-    "ocr": {
-      "id": "ocr-chi-sim",
-      "version": "1.0.0",
-      "state": "not-installed",
-      "currentBytes": 0,
-      "totalBytes": 2471033,
-      "progress": 0,
-      "skipped": true,
-      "reason": "未提供真实 OCR Release 资产和识别图片；不伪造线上 OCR 性能证据",
-      "evidence": {
-        "kind": "real-ocr-performance",
-        "real": false,
-        "reason": "本次运行未执行真实 OCR 识别"
-      }
-    },
     "idleRss": {
       "skipped": false,
       "rssBasis": "Browser+Tab+Utility（排除 GPU compositor）",
-      "baselineMiB": 313.05,
-      "finalMiB": 289.61,
-      "baselineTotalMiB": 556.19,
-      "finalTotalMiB": 488.53,
-      "baselineGpuMiB": 243.14,
-      "finalGpuMiB": 198.91,
+      "baselineMiB": 320.6,
+      "finalMiB": 290.69,
+      "baselineTotalMiB": 564.2,
+      "finalTotalMiB": 488.64,
+      "baselineGpuMiB": 243.6,
+      "finalGpuMiB": 197.95,
       "baselineProcesses": [
         {
           "type": "Browser",
-          "pid": 37816,
-          "workingSetSize": 164644
+          "pid": 19828,
+          "workingSetSize": 170932
         },
         {
           "type": "GPU",
-          "pid": 31536,
-          "workingSetSize": 248976
+          "pid": 34012,
+          "workingSetSize": 249444
         },
         {
           "type": "Utility",
-          "pid": 36136,
-          "workingSetSize": 46872
+          "pid": 37560,
+          "workingSetSize": 48184
         },
         {
           "type": "Tab",
-          "pid": 31376,
-          "workingSetSize": 109044
+          "pid": 19236,
+          "workingSetSize": 109176
         }
       ],
       "finalProcesses": [
         {
           "type": "Browser",
-          "pid": 37816,
-          "workingSetSize": 152512
+          "pid": 19828,
+          "workingSetSize": 152280
         },
         {
           "type": "GPU",
-          "pid": 31536,
-          "workingSetSize": 203688
+          "pid": 34012,
+          "workingSetSize": 202704
         },
         {
           "type": "Utility",
-          "pid": 36136,
-          "workingSetSize": 46908
+          "pid": 37560,
+          "workingSetSize": 48152
         },
         {
           "type": "Tab",
-          "pid": 31376,
-          "workingSetSize": 97144
+          "pid": 19236,
+          "workingSetSize": 97232
         }
       ],
       "pass": true,
       "thresholdMiB": 300
     },
+    "ocr": {
+      "id": "ocr-chi-sim",
+      "version": "1.0.0",
+      "state": "ready",
+      "currentBytes": 2471033,
+      "totalBytes": 2471033,
+      "progress": 100,
+      "sampleCount": 30,
+      "p50Ms": 110.72,
+      "p95Ms": 142.13,
+      "maxMs": 142.21,
+      "thresholds": {},
+      "pass": true,
+      "asset": {
+        "url": "https://github.com/Asanagl/college-student-toolkit/releases/download/v0.3.0/ocr-chi-sim-1.0.0.traineddata.gz",
+        "id": "ocr-chi-sim",
+        "version": "1.0.0",
+        "compressedBytes": 1710883,
+        "compressedSha256": "037B9E59AB3598EF6E892E1DC9AB7D34AE993B555C7296B9E08A2F0675648A9E",
+        "extractedBytes": 2471033,
+        "extractedSha256": "9784F7C917C546424B690FCDE708CE1F604A4393D08BB51DDAB146D7D7C794E6"
+      },
+      "image": {
+        "path": "tests/fixtures/ocr-course.png",
+        "bytes": 28008,
+        "sha256": "421942642F21BE9D06E66A27CC7E8D1BEBDB5BF2E86A92C4E60C37DA7054B801"
+      },
+      "evidence": {
+        "kind": "real-ocr-performance",
+        "real": true,
+        "recognition": "packaged OCR IPC with validated Release language data"
+      }
+    },
     "soak": {
       "skipped": false,
-      "cycles": 180,
+      "cycles": 179,
       "intervalMs": 10000,
-      "baselineMiB": 289.62,
-      "finalMiB": 300.45,
-      "peakMiB": 308.16,
-      "growthRatio": 0.0374,
+      "baselineMiB": 369.05,
+      "finalMiB": 374.91,
+      "peakMiB": 378,
+      "growthRatio": 0.0159,
       "pass": true,
       "thresholdGrowthRatio": 0.1
     },
@@ -375,12 +393,7 @@
     }
   },
   "observedFailures": [],
-  "failures": [
-    "metrics.ocr: skipped",
-    "metrics.ocr: missing sampleCount",
-    "metrics.ocr: missing p95Ms",
-    "metrics.ocr: missing real OCR evidence"
-  ],
+  "failures": [],
   "warnings": [],
-  "finishedAt": "2026-08-31T02:36:57.862Z"
+  "finishedAt": "2026-08-31T13:44:49.896Z"
 }
