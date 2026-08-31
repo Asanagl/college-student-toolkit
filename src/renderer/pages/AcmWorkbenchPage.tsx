@@ -718,6 +718,7 @@ export default function AcmWorkbenchPage() {
     if (!document?.filePath || !document.savedFingerprint) return;
     try {
       const result = await window.api.acm.checkDocumentExternal({
+        documentId: document.id,
         filePath: document.filePath,
         savedFingerprint: document.savedFingerprint,
       });

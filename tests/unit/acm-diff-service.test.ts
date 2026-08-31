@@ -12,7 +12,10 @@ import type {
   IpcResult,
   RunnerLimits,
 } from "../../src/shared/types";
-import { AcmDifferService } from "../../src/main/services/AcmDifferService";
+import {
+  AcmDifferService,
+  type AcmDifferServiceOptions,
+} from "../../src/main/services/AcmDifferService";
 import {
   AcmRunnerHelper,
   type RunnerProcessFactory,
@@ -32,6 +35,7 @@ interface Scenario {
   reference: string;
   candidate: string;
   referenceCompileExit?: number | null;
+  candidateCompileStderr?: string;
   referenceRunExit?: number | null;
   referenceRunStderr?: string;
   candidateExit?: number | null;
@@ -89,6 +93,11 @@ function factory(scenario: Scenario, commands: string[]): RunnerProcessFactory {
       queueMicrotask(() => {
         if (compile) {
           fs.writeFileSync(args[args.length - 1], "fake executable");
+          const compileStderr =
+            compileCount === 1
+              ? scenario.referenceRunStderr
+              : scenario.candidateCompileStderr;
+          if (compileStderr) process.stderr.write(compileStderr);
           const exit =
             compileCount === 1
               ? (scenario.referenceCompileExit ?? 0)
@@ -141,7 +150,13 @@ function request(
 async function run(
   scenario: Scenario,
   limits: Partial<RunnerLimits> = {},
-): Promise<{ events: AcmDiffEvent[]; commands: string[] }> {
+  requestOverrides: Partial<AcmDiffStartRequest> = {},
+  serviceOverrides: Pick<AcmDifferServiceOptions, "writeFile"> = {},
+): Promise<{
+  events: AcmDiffEvent[];
+  commands: string[];
+  root: string;
+}> {
   const root = fs.mkdtempSync(
     path.join(os.tmpdir(), "college-toolkit-diff-test-"),
   );
@@ -153,11 +168,12 @@ async function run(
     platform: "win32",
     tempRoot: root,
     limits,
+    ...serviceOverrides,
   });
   await service.init();
   const events: AcmDiffEvent[] = [];
   service.onEvent((event) => events.push(event));
-  const started = await service.start(request());
+  const started = await service.start(request(requestOverrides));
   expect(started.ok).toBe(true);
   const deadline = Date.now() + 2_000;
   while (!events.some((event) => event.stage === "compare")) {
@@ -165,7 +181,7 @@ async function run(
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
   await service.dispose();
-  return { events, commands };
+  return { events, commands, root };
 }
 
 afterEach(() => {
@@ -188,6 +204,53 @@ describe("AcmDifferService", () => {
       "candidate-run",
     ]);
     expect(result.events.at(-1)?.result).toMatchObject({ status: "match" });
+  });
+
+  it("accepts an oversized candidate source while retaining the reference cap", async () => {
+    const candidate = "x".repeat(2 * 1024 * 1024 + 1);
+    const result = await run(
+      { reference: "ok", candidate: "ok" },
+      {},
+      { candidate },
+    );
+    expect(result.commands).toEqual(["compile-1", "run", "compile-2", "run"]);
+    expect(result.events.at(-1)?.result).toMatchObject({ status: "match" });
+  });
+
+  it("rejects candidate staging over the temp budget before compiling it", async () => {
+    const result = await run(
+      { reference: "ok", candidate: "unused" },
+      { tempBytes: 1_024 },
+      { candidate: "x".repeat(4_096) },
+    );
+    expect(result.commands).toEqual(["compile-1", "run"]);
+    expect(result.events.at(-1)?.result).toMatchObject({
+      status: "candidate-output-limit",
+      errorCode: "ACM_RUNNER_OUTPUT_LIMIT",
+      referenceOutput: { stdout: "ok" },
+    });
+    expect(fs.readdirSync(result.root)).toEqual([]);
+  });
+
+  it("maps candidate staging disk exhaustion to output-limit and cleans up", async () => {
+    const result = await run(
+      { reference: "ok", candidate: "unused" },
+      { tempBytes: 64 * 1024 },
+      { candidate: "x".repeat(2_048) },
+      {
+        writeFile: (filePath, data, options) => {
+          if (path.basename(filePath) === "main.cpp" && data.length > 100)
+            throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+          fs.writeFileSync(filePath, data, options);
+        },
+      },
+    );
+    expect(result.commands).toEqual(["compile-1", "run"]);
+    expect(result.events.at(-1)?.result).toMatchObject({
+      status: "candidate-output-limit",
+      errorCode: "ACM_RUNNER_OUTPUT_LIMIT",
+    });
+    expect(fs.readdirSync(result.root)).toEqual([]);
   });
 
   it("reports only the first token mismatch context", async () => {
@@ -324,6 +387,18 @@ describe("AcmDifferService", () => {
       status: "candidate-output-limit",
       errorCode: "ACM_RUNNER_OUTPUT_LIMIT",
       candidateOutput: { stderr: "abc" },
+    });
+  });
+
+  it("classifies candidate compile diagnostics overflow separately", async () => {
+    const result = await run(
+      { reference: "ok", candidate: "bad", candidateCompileStderr: "abcdef" },
+      { stderrBytes: 3 },
+    );
+    expect(result.commands).toEqual(["compile-1", "run", "compile-2"]);
+    expect(result.events.at(-1)?.result).toMatchObject({
+      status: "candidate-output-limit",
+      errorCode: "ACM_RUNNER_OUTPUT_LIMIT",
     });
   });
 

@@ -76,6 +76,68 @@ describe("AcmFileService", () => {
     await service.dispose();
   });
 
+  it("opens and saves oversized candidate documents without widening workbench limits", async () => {
+    const directory = tempDirectory();
+    const sourcePath = path.join(directory, "candidate.cpp");
+    const savedPath = path.join(directory, "candidate-copy.cpp");
+    const oversized = "x".repeat(2 * 1024 * 1024 + 1);
+    fs.writeFileSync(sourcePath, oversized, "utf8");
+    const service = new AcmFileService({
+      showOpenDialog: vi.fn(async () => ({
+        canceled: false,
+        filePaths: [sourcePath],
+      })),
+      showSaveDialog: vi.fn(async () => ({
+        canceled: false,
+        filePath: savedPath,
+      })),
+      showMessageBox: vi.fn(),
+    });
+
+    const opened = await service.openDocument(null, "diff-candidate");
+    expect(opened).toMatchObject({
+      ok: true,
+      data: {
+        content: oversized,
+        savedFingerprint: { bytes: oversized.length },
+      },
+    });
+    if (!opened.ok || !opened.data) throw new Error("待测源码未打开");
+    const saved = await service.saveDocumentAs(
+      request(opened.data.id, sourcePath, oversized),
+    );
+    expect(saved).toMatchObject({
+      ok: true,
+      data: { savedFingerprint: { bytes: oversized.length } },
+    });
+    expect(fs.statSync(savedPath).size).toBe(oversized.length);
+    const external = service.checkExternal({
+      documentId: opened.data.id,
+      filePath: saved.data?.filePath ?? savedPath,
+      savedFingerprint: saved.data?.savedFingerprint ?? null,
+    });
+    expect(external).toMatchObject({ ok: true, data: { changed: false } });
+  });
+
+  it("keeps the 2 MiB cap for ordinary workbench file opens", async () => {
+    const directory = tempDirectory();
+    const sourcePath = path.join(directory, "workbench.cpp");
+    fs.writeFileSync(sourcePath, "x".repeat(2 * 1024 * 1024 + 1), "utf8");
+    const service = new AcmFileService({
+      showOpenDialog: vi.fn(async () => ({
+        canceled: false,
+        filePaths: [sourcePath],
+      })),
+      showSaveDialog: vi.fn(),
+      showMessageBox: vi.fn(),
+    });
+
+    await expect(service.openDocument()).resolves.toMatchObject({
+      ok: false,
+      errorCode: "ACM_FILE_INVALID",
+    });
+  });
+
   it("saves with the selected line ending and rejects an external change", async () => {
     const directory = tempDirectory();
     const filePath = path.join(directory, "main.cpp");

@@ -39,8 +39,27 @@ const OWNER_MARKER = ".college-toolkit-diff-owner.json";
 const CLEANUP_RETRIES = 3;
 const STALE_TEMP_TTL_MS = 24 * 60 * 60 * 1000;
 
+function isResourceWriteError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOSPC" || code === "EFBIG" || code === "EDQUOT";
+}
+
+class DiffResourceLimitError extends Error {
+  readonly errorCode = "ACM_RUNNER_OUTPUT_LIMIT" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "DiffResourceLimitError";
+  }
+}
+
 type Side = Exclude<AcmDiffSide, "comparison">;
 type Phase = "compile" | "run";
+type DiffTextWriter = (
+  filePath: string,
+  data: string,
+  options: { encoding: "utf8"; flag: "wx" },
+) => void | Promise<void>;
 type PhaseStatus =
   | "completed"
   | "failed"
@@ -95,6 +114,7 @@ export interface AcmDifferServiceOptions {
   cleanupRetries?: number;
   staleTempTtlMs?: number;
   removePath?: (target: string) => void;
+  writeFile?: DiffTextWriter;
 }
 
 function errorResult<T>(
@@ -123,9 +143,9 @@ function resultForPhase(
 ): AcmDiffResultStatus {
   if (outcome.status === "cancelled") return "cancelled";
   if (side === "reference") return "reference-failed";
+  if (outcome.status === "output-limit") return "candidate-output-limit";
   if (phase === "compile") return "candidate-compile-failed";
   if (outcome.status === "timeout") return "candidate-timeout";
-  if (outcome.status === "output-limit") return "candidate-output-limit";
   return outcome.status === "failed" ? "candidate-runtime-failed" : "cancelled";
 }
 
@@ -147,6 +167,7 @@ export class AcmDifferService {
   private readonly cleanupRetries: number;
   private readonly staleTempTtlMs: number;
   private readonly removePath: (target: string) => void;
+  private readonly writeFile: DiffTextWriter;
   private readonly listeners = new Set<(event: AcmDiffEvent) => void>();
   private active: DiffTask | null = null;
   private initialized = false;
@@ -174,6 +195,10 @@ export class AcmDifferService {
           maxRetries: 1,
           retryDelay: 50,
         }));
+    this.writeFile =
+      options.writeFile ??
+      ((target, data, writeOptions) =>
+        fs.promises.writeFile(target, data, writeOptions));
   }
 
   async init(): Promise<void> {
@@ -197,11 +222,8 @@ export class AcmDifferService {
     const parsed = requestSchema.safeParse(request);
     if (!parsed.success)
       return errorResult("VALIDATION_FAILED", "对拍请求无效");
-    if (
-      bytes(parsed.data.reference) > ACM_MAX_SOURCE_BYTES ||
-      bytes(parsed.data.candidate) > ACM_MAX_SOURCE_BYTES
-    )
-      return errorResult("ACM_FILE_TOO_LARGE", "源码超过 2 MiB 限制");
+    if (bytes(parsed.data.reference) > ACM_MAX_SOURCE_BYTES)
+      return errorResult("ACM_FILE_TOO_LARGE", "标准程序源码超过 2 MiB 限制");
     if (bytes(parsed.data.stdin) > this.limits.stdinBytes)
       return errorResult("VALIDATION_FAILED", "标准输入超过 256 KiB 限制");
     if (this.platform !== "win32")
@@ -279,11 +301,7 @@ export class AcmDifferService {
     };
     let currentSide: Side = "reference";
     try {
-      const referenceDir = this.prepareSide(
-        task,
-        "reference",
-        task.request.reference,
-      );
+      const referenceDir = await this.stageTaskSide(task, "reference");
       const referenceCompile = await this.runPhase(
         task,
         "reference",
@@ -314,11 +332,7 @@ export class AcmDifferService {
         return;
       }
       currentSide = "candidate";
-      const candidateDir = this.prepareSide(
-        task,
-        "candidate",
-        task.request.candidate,
-      );
+      const candidateDir = await this.stageTaskSide(task, "candidate");
       const candidateCompile = await this.runPhase(
         task,
         "candidate",
@@ -357,25 +371,57 @@ export class AcmDifferService {
           ? { status: "match" }
           : { status: "mismatch", difference: compared.difference };
       finalResult = result;
-    } catch {
-      finalResult = {
-        status: task.stopRequested
-          ? "cancelled"
+    } catch (error) {
+      const errorCode =
+        error instanceof DiffResourceLimitError
+          ? error.errorCode
+          : "ACM_RUNNER_FAILED";
+      const candidateResourceLimit =
+        currentSide === "candidate" && errorCode === "ACM_RUNNER_OUTPUT_LIMIT";
+      const status: AcmDiffResultStatus = task.stopRequested
+        ? "cancelled"
+        : candidateResourceLimit
+          ? "candidate-output-limit"
           : currentSide === "candidate"
             ? "candidate-compile-failed"
-            : "reference-failed",
-        errorCode: "ACM_RUNNER_FAILED",
+            : "reference-failed";
+      finalResult = {
+        status,
+        errorCode,
       };
     } finally {
+      task.request = { ...task.request, reference: "", candidate: "" };
       await this.cleanupTask(task);
       this.finishResult(task, finalResult);
       if (this.active === task) this.active = null;
     }
   }
 
-  private prepareSide(task: DiffTask, side: Side, source: string): SideTask {
+  private async stageTaskSide(task: DiffTask, side: Side): Promise<SideTask> {
+    const source =
+      side === "reference" ? task.request.reference : task.request.candidate;
+    const prepared = await this.prepareSide(task, side, source);
+    task.request =
+      side === "reference"
+        ? { ...task.request, reference: "" }
+        : { ...task.request, candidate: "" };
+    return prepared;
+  }
+
+  private async prepareSide(
+    task: DiffTask,
+    side: Side,
+    source: string,
+  ): Promise<SideTask> {
     task.side = side;
-    const dir = fs.mkdtempSync(path.join(this.tempRoot, TEMP_PREFIX));
+    let dir: string;
+    try {
+      dir = fs.mkdtempSync(path.join(this.tempRoot, TEMP_PREFIX));
+    } catch (error) {
+      if (isResourceWriteError(error))
+        throw new DiffResourceLimitError("无法创建对拍临时目录");
+      throw error;
+    }
     const executable = path.join(dir, "program.exe");
     task.sides[side] = {
       dir,
@@ -384,20 +430,37 @@ export class AcmDifferService {
       stdout: "",
       stderr: "",
     };
-    fs.writeFileSync(
-      path.join(dir, OWNER_MARKER),
-      JSON.stringify({
-        formatVersion: 1,
-        owner: "college-student-toolkit-acm-diff",
-        kind: "temp-directory",
-        createdAt: Date.now(),
-      }),
-      { encoding: "utf8", flag: "wx" },
-    );
-    fs.writeFileSync(path.join(dir, "main.cpp"), source, {
-      encoding: "utf8",
-      flag: "wx",
+    const marker = JSON.stringify({
+      formatVersion: 1,
+      owner: "college-student-toolkit-acm-diff",
+      kind: "temp-directory",
+      createdAt: Date.now(),
     });
+    try {
+      await this.writeFile(path.join(dir, OWNER_MARKER), marker, {
+        encoding: "utf8",
+        flag: "wx",
+      });
+    } catch (error) {
+      if (isResourceWriteError(error))
+        throw new DiffResourceLimitError("无法写入对拍临时目录标记");
+      throw error;
+    }
+    const sourceBytes = bytes(source);
+    if (this.directoryBytes(dir) + sourceBytes > this.limits.tempBytes)
+      throw new DiffResourceLimitError("源码超过对拍临时目录限制");
+    try {
+      await this.writeFile(path.join(dir, "main.cpp"), source, {
+        encoding: "utf8",
+        flag: "wx",
+      });
+    } catch (error) {
+      if (isResourceWriteError(error))
+        throw new DiffResourceLimitError("源码写入超过对拍临时目录限制");
+      throw error;
+    }
+    if (this.tempExceeded(dir))
+      throw new DiffResourceLimitError("源码超过对拍临时目录限制");
     return task.sides[side] as SideTask;
   }
 

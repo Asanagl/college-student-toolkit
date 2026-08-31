@@ -7,8 +7,9 @@ import {
   type AppearanceConfig,
   type CompilerSelection,
   type AcmDocumentSaveRequest,
+  type AcmDocumentExternalRequest,
+  type AcmDocumentScope,
   type AcmTemplateId,
-  type AcmDocument,
   type RunnerEvent,
   type RunnerStartRequest,
   type AcmDiffStartRequest,
@@ -205,18 +206,20 @@ const api: RendererApi = {
     setEnabled: (enabled: boolean) =>
       invoke(IPC_CHANNELS.ACM_SET_ENABLED, enabled),
     retry: () => invoke(IPC_CHANNELS.ACM_RETRY),
-    createDocument: (template: AcmTemplateId) =>
-      invoke(IPC_CHANNELS.ACM_DOCUMENT_CREATE, template),
-    openDocument: () => invoke(IPC_CHANNELS.ACM_DOCUMENT_OPEN),
+    createDocument: (
+      template: AcmTemplateId,
+      scope: AcmDocumentScope = "workbench",
+    ) => invoke(IPC_CHANNELS.ACM_DOCUMENT_CREATE, template, scope),
+    openDocument: (scope: AcmDocumentScope = "workbench") =>
+      invoke(IPC_CHANNELS.ACM_DOCUMENT_OPEN, scope),
     saveDocument: (request: AcmDocumentSaveRequest) =>
       invoke(IPC_CHANNELS.ACM_DOCUMENT_SAVE, request),
     saveDocumentAs: (request: AcmDocumentSaveRequest) =>
       invoke(IPC_CHANNELS.ACM_DOCUMENT_SAVE_AS, request),
     releaseDocument: (documentId: string) =>
       invoke(IPC_CHANNELS.ACM_DOCUMENT_RELEASE, documentId),
-    checkDocumentExternal: (
-      document: Pick<AcmDocument, "filePath" | "savedFingerprint">,
-    ) => invoke(IPC_CHANNELS.ACM_DOCUMENT_CHECK_EXTERNAL, document),
+    checkDocumentExternal: (document: AcmDocumentExternalRequest) =>
+      invoke(IPC_CHANNELS.ACM_DOCUMENT_CHECK_EXTERNAL, document),
     getCompilerSelection: () => invoke(IPC_CHANNELS.ACM_COMPILER_GET_SELECTION),
     setCompilerSelection: (selection: CompilerSelection) =>
       invoke(IPC_CHANNELS.ACM_COMPILER_SET_SELECTION, selection),

@@ -39,6 +39,7 @@ const defaultFactory: RunnerProcessFactory = {
 export function createAcmProcessEnvironment(
   command: string,
   runtimePath?: string | null,
+  tempDirectory?: string,
 ): NodeJS.ProcessEnv {
   const systemRoot = process.env.SystemRoot?.trim() || "C:\\Windows";
   const system32 = path.join(systemRoot, "System32");
@@ -56,8 +57,8 @@ export function createAcmProcessEnvironment(
     SystemRoot: systemRoot,
     WINDIR: systemRoot,
     ComSpec: process.env.ComSpec?.trim() || path.join(system32, "cmd.exe"),
-    TEMP: process.env.TEMP?.trim() || os.tmpdir(),
-    TMP: process.env.TMP?.trim() || os.tmpdir(),
+    TEMP: tempDirectory?.trim() || process.env.TEMP?.trim() || os.tmpdir(),
+    TMP: tempDirectory?.trim() || process.env.TMP?.trim() || os.tmpdir(),
     // Keep the user's existing search path intact; controlled directories are appended.
     PATH: [inheritedPath, controlledPath].filter(Boolean).join(path.delimiter),
     LANG: "C",
@@ -118,7 +119,7 @@ export class AcmRunnerHelper {
       windowsHide: true,
       shell: false,
       stdio: [...stdio],
-      env: createAcmProcessEnvironment(command, runtimePath),
+      env: createAcmProcessEnvironment(command, runtimePath, cwd),
     });
   }
 

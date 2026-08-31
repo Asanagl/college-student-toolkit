@@ -54,9 +54,15 @@ export interface AcmRunnerServiceOptions {
   tempRoot?: string;
   staleTempTtlMs?: number;
   limits?: Partial<RunnerLimits>;
+  writeFile?: RunnerTextWriter;
 }
 
 type RunnerConstructor = AcmRunnerServiceOptions | AcmRunnerCompiler;
+type RunnerTextWriter = (
+  filePath: string,
+  data: string,
+  options: { encoding: "utf8"; flag: "wx" },
+) => void;
 
 type Phase = "compile" | "run";
 type StopReason = "cancelled" | "timeout" | "output-limit";
@@ -104,6 +110,11 @@ function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
 
+function isResourceWriteError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOSPC" || code === "EFBIG" || code === "EDQUOT";
+}
+
 function stageFor(phase: Phase, finished: boolean): RunnerStage {
   if (phase === "compile")
     return finished ? "compile-finished" : "compile-started";
@@ -147,6 +158,7 @@ export class AcmRunnerService {
   private readonly staleTempTtlMs: number;
   private readonly instanceId = randomUUID();
   private readonly limits: RunnerLimits;
+  private readonly writeFile: RunnerTextWriter;
   private readonly listeners = new Set<(event: RunnerEvent) => void>();
   private active: RunnerTask | null = null;
   private initialized = false;
@@ -167,6 +179,10 @@ export class AcmRunnerService {
       options.staleTempTtlMs ?? ACM_RUNNER_TEMP_TTL_MS,
     );
     this.limits = { ...DEFAULT_RUNNER_LIMITS, ...options.limits };
+    this.writeFile =
+      options.writeFile ??
+      ((target, data, writeOptions) =>
+        fs.writeFileSync(target, data, writeOptions));
   }
 
   async init(): Promise<void> {
@@ -298,11 +314,24 @@ export class AcmRunnerService {
     if (!task.tempDir)
       throw new RunnerFailure("ACM_RUNNER_FAILED", "临时目录未创建");
     const sourcePath = path.join(task.tempDir, "main.cpp");
-    fs.writeFileSync(sourcePath, task.request.source, {
-      encoding: "utf8",
-      flag: "wx",
-    });
-    this.assertTempSize(task.tempDir);
+    try {
+      this.writeFile(sourcePath, task.request.source, {
+        encoding: "utf8",
+        flag: "wx",
+      });
+      this.assertTempSize(task.tempDir);
+    } catch (error) {
+      if (isResourceWriteError(error))
+        throw new RunnerFailure(
+          "ACM_RUNNER_OUTPUT_LIMIT",
+          "源码写入超过临时构建目录限制",
+        );
+      throw error;
+    } finally {
+      // The source is needed only until staging completes; releasing it also
+      // bounds how long a failed write retains a second V8 string copy.
+      task.request = { ...task.request, source: "" };
+    }
   }
 
   private async execute(task: RunnerTask, compilerPath: string): Promise<void> {
@@ -740,9 +769,20 @@ export class AcmRunnerService {
   }
 
   private createTaskTempDirectory(task: RunnerTask): string {
-    const directory = fs.mkdtempSync(
-      path.join(this.tempRoot, RUNNER_TEMP_PREFIX),
-    );
+    let directory: string;
+    try {
+      directory = fs.mkdtempSync(path.join(this.tempRoot, RUNNER_TEMP_PREFIX));
+    } catch (error) {
+      if (isResourceWriteError(error))
+        throw new RunnerFailure(
+          "ACM_RUNNER_OUTPUT_LIMIT",
+          "无法创建临时构建目录",
+        );
+      throw error;
+    }
+    // Register immediately so marker-write failures can use the normal
+    // cleanup path instead of leaking an unowned directory.
+    task.tempDir = directory;
     const metadata = {
       formatVersion: 1,
       owner: RUNNER_OWNER,
@@ -751,11 +791,20 @@ export class AcmRunnerService {
       createdAt: Date.now(),
       taskId: task.id,
     };
-    fs.writeFileSync(
-      path.join(directory, RUNNER_OWNER_FILE),
-      `${JSON.stringify(metadata)}\n`,
-      { encoding: "utf8", flag: "wx" },
-    );
+    try {
+      this.writeFile(
+        path.join(directory, RUNNER_OWNER_FILE),
+        `${JSON.stringify(metadata)}\n`,
+        { encoding: "utf8", flag: "wx" },
+      );
+    } catch (error) {
+      if (isResourceWriteError(error))
+        throw new RunnerFailure(
+          "ACM_RUNNER_OUTPUT_LIMIT",
+          "无法写入临时构建目录标记",
+        );
+      throw error;
+    }
     return directory;
   }
 

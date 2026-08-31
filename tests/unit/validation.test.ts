@@ -15,6 +15,7 @@ import {
   labPatchSchema,
   notificationPayloadSchema,
   acmCompilerSelectionSchema,
+  acmDocumentScopeSchema,
   acmDocumentSaveSchema,
   acmDiffStartSchema,
   acmRunnerStartSchema,
@@ -25,8 +26,34 @@ import {
   schedulePatchSchema,
   semesterStartSchema,
 } from "../../src/main/validation";
+import { canUseAcmDocumentScope } from "../../src/main/services/AcmDocumentPolicy";
 
 describe("IPC runtime validation", () => {
+  it("keeps the unbounded document scope on the dedicated diff route", () => {
+    expect(
+      canUseAcmDocumentScope(
+        "diff-candidate",
+        "file:///app/index.html#/acm-diff",
+      ),
+    ).toBe(true);
+    expect(
+      canUseAcmDocumentScope(
+        "diff-reference",
+        "http://localhost:5173/#/acm-diff?tab=candidate",
+      ),
+    ).toBe(true);
+    expect(
+      canUseAcmDocumentScope("diff-candidate", "file:///app/index.html#/acm"),
+    ).toBe(false);
+    expect(
+      canUseAcmDocumentScope(
+        "diff-candidate",
+        "file:///app/index.html#/acm-diff-extra",
+      ),
+    ).toBe(false);
+    expect(canUseAcmDocumentScope("workbench", "not a url")).toBe(true);
+  });
+
   it("rejects an impossible calendar date instead of allowing Date to normalize it", () => {
     expect(() => parseIpc(semesterStartSchema, "2025-02-30")).toThrow(
       IpcValidationError,
@@ -222,6 +249,10 @@ describe("IPC runtime validation", () => {
 
   it("validates ACM document, compiler, and runner boundaries", () => {
     expect(parseIpc(acmTemplateSchema, "basic-io")).toBe("basic-io");
+    expect(parseIpc(acmDocumentScopeSchema, undefined)).toBe("workbench");
+    expect(parseIpc(acmDocumentScopeSchema, "diff-candidate")).toBe(
+      "diff-candidate",
+    );
     const documentId = "11111111-1111-4111-8111-111111111111";
     const document = {
       documentId,
@@ -272,9 +303,28 @@ describe("IPC runtime validation", () => {
         mode: "compile",
       }),
     ).toThrow();
+    const oversizedCandidate = "x".repeat(2 * 1024 * 1024 + 1);
+    expect(
+      parseIpc(acmDocumentSaveSchema, {
+        ...document,
+        content: oversizedCandidate,
+        expectedFingerprint: {
+          bytes: Buffer.byteLength(oversizedCandidate, "utf8"),
+          mtimeMs: 0,
+          sha256: "0".repeat(64),
+        },
+      }),
+    ).toMatchObject({ content: oversizedCandidate });
+    expect(
+      parseIpc(acmDiffStartSchema, {
+        reference: "",
+        candidate: oversizedCandidate,
+        stdin: "",
+      }),
+    ).toMatchObject({ candidate: oversizedCandidate });
     expect(() =>
       parseIpc(acmDiffStartSchema, {
-        reference: "x".repeat(2 * 1024 * 1024 + 1),
+        reference: oversizedCandidate,
         candidate: "",
         stdin: "",
       }),

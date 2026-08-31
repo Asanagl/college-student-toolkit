@@ -50,7 +50,7 @@ const RESULT_LABELS: Record<string, string> = {
   "candidate-compile-failed": "待测程序编译失败",
   "candidate-runtime-failed": "待测程序运行失败",
   "candidate-timeout": "待测程序运行超时",
-  "candidate-output-limit": "待测程序输出超限",
+  "candidate-output-limit": "待测程序输出或临时目录超限",
   cancelled: "对拍已停止",
   unsupported: "当前系统不支持 ACM 对拍",
 };
@@ -332,7 +332,8 @@ export default function AcmDiffPage() {
     async (side: DiffSide): Promise<SideState> => {
       const current = sides[side];
       if (current.managed) return current;
-      const created = await window.api.acm.createDocument("blank");
+      const scope = side === "candidate" ? "diff-candidate" : "diff-reference";
+      const created = await window.api.acm.createDocument("blank", scope);
       if (!created.ok || !created.data) throw new Error(errorText(created));
       const next = {
         document: {
@@ -355,7 +356,9 @@ export default function AcmDiffPage() {
       try {
         if (sides[side].document.dirty && !(await confirmReplaceUnsaved(side)))
           return;
-        const opened = await window.api.acm.openDocument();
+        const scope =
+          side === "candidate" ? "diff-candidate" : "diff-reference";
+        const opened = await window.api.acm.openDocument(scope);
         if (!opened.ok || !opened.data) {
           if (!opened.ok) message.error(errorText(opened));
           return;

@@ -312,25 +312,25 @@ export const claritySchema = z.number().int().min(0).max(100);
 
 const acmDocumentIdSchema = z.string().uuid();
 const acmFingerprintSchema = z.object({
-  bytes: z
-    .number()
-    .int()
-    .nonnegative()
-    .max(2 * 1024 * 1024),
+  bytes: z.number().int().nonnegative().safe(),
   mtimeMs: z.number().finite().nonnegative(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
 export const acmTemplateSchema = z.enum(["blank", "basic-io", "stl"]);
+export const acmDocumentScopeSchema = z
+  .enum(["workbench", "diff-reference", "diff-candidate"])
+  .default("workbench");
 export const acmDocumentSaveSchema = z.object({
   documentId: acmDocumentIdSchema,
   filePath: z.string().trim().max(1024).nullable(),
-  content: z.string().max(2 * 1024 * 1024),
+  content: z.string(),
   lineEnding: z.enum(["crlf", "lf", "cr"]),
   expectedFingerprint: acmFingerprintSchema.nullable(),
   force: z.boolean(),
 });
 export const acmDocumentReleaseSchema = acmDocumentIdSchema;
 export const acmExternalDocumentSchema = z.object({
+  documentId: acmDocumentIdSchema,
   filePath: z.string().trim().max(1024).nullable(),
   savedFingerprint: acmFingerprintSchema.nullable(),
 });
@@ -344,10 +344,12 @@ export const acmRunnerStartSchema = z.object({
   stdin: z.string().max(256 * 1024),
   mode: z.enum(["compile", "run"]),
 });
-/** 对拍两侧均沿用单文件 Runner 的安全边界；页面不暴露可调限制。 */
+/** 对拍输入边界；标准程序有限长，待测程序源码不设输入上限。 */
 export const acmDiffStartSchema = z.object({
   reference: z.string().max(2 * 1024 * 1024),
-  candidate: z.string().max(2 * 1024 * 1024),
+  // 对拍面板的待测源码按用户要求不设置输入长度上限；运行时仍受
+  // 编译/运行超时、输出和临时目录限制保护。
+  candidate: z.string(),
   stdin: z.string().max(256 * 1024),
 });
 

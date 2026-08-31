@@ -7,6 +7,7 @@ import {
   net,
   powerMonitor,
   protocol,
+  type WebContents,
 } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -14,6 +15,7 @@ import { pathToFileURL } from "node:url";
 import {
   IPC_CHANNELS,
   type AcmDocument,
+  type AcmDocumentScope,
   type AcmPluginStatus,
   type AcmDiffEvent,
   type AcmDiffStartRequest,
@@ -51,6 +53,8 @@ import { ocrService } from "./services/OcrService";
 import { acmPluginService } from "./services/AcmPluginService";
 import { acmCompilerService } from "./services/AcmCompilerService";
 import { acmFileService } from "./services/AcmFileService";
+import { canUseAcmDocumentScope } from "./services/AcmDocumentPolicy";
+import { acmLifecycleQueue } from "./services/AcmLifecycleQueue";
 import { acmRunnerService } from "./services/AcmRunnerService";
 import { acmDifferService } from "./services/AcmDifferService";
 import { parseDomWithAllParsers } from "./services/parsers";
@@ -91,6 +95,7 @@ import {
   formulaIdSchema,
   notificationPayloadSchema,
   acmTemplateSchema,
+  acmDocumentScopeSchema,
   acmDocumentSaveSchema,
   acmDocumentReleaseSchema,
   acmExternalDocumentSchema,
@@ -723,47 +728,59 @@ function setAcmNoticeVersion(version: string | null): AcmNoticeState {
   return acmNoticeState();
 }
 
+function parseDocumentScope(
+  sender: WebContents,
+  value: unknown,
+): AcmDocumentScope {
+  const scope = parseIpc(acmDocumentScopeSchema, value) ?? "workbench";
+  if (!canUseAcmDocumentScope(scope, sender.getURL()))
+    throw new IpcValidationError("对拍源码只能在 ACM 对拍页面中打开");
+  return scope;
+}
+
 function registerAcmPluginHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ACM_GET_STATUS, () =>
     wrapIpc(() => acmPluginService.getStatus()),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_SET_ENABLED, (_event, enabled: unknown) =>
-    wrapWriteIpcAsync<AcmPluginStatus>(async () => {
-      if (typeof enabled !== "boolean")
-        return {
-          ok: false,
-          error: "ACM 插件开关必须是布尔值",
-          errorCode: "VALIDATION_FAILED" as const,
-        };
-      const current = acmPluginService.getStatus();
-      if (!current.ok || !current.data) return current;
-      if (current.data.state === "initializing")
-        return {
-          ok: false,
-          error: "ACM 插件仍在初始化，请稍后重试",
-          errorCode: "ACM_PLUGIN_INVALID",
-        };
-      if (!enabled) {
-        const stopped = await acmRunnerService.stop();
-        if (!stopped.ok)
+    wrapWriteIpcAsync<AcmPluginStatus>(() =>
+      acmLifecycleQueue.run(async () => {
+        if (typeof enabled !== "boolean")
           return {
             ok: false,
-            error: stopped.error,
-            errorCode: stopped.errorCode,
+            error: "ACM 插件开关必须是布尔值",
+            errorCode: "VALIDATION_FAILED" as const,
           };
-        const stoppedDiff = await acmDifferService.stop();
-        if (!stoppedDiff.ok)
+        const current = acmPluginService.getStatus();
+        if (!current.ok || !current.data) return current;
+        if (current.data.state === "initializing")
           return {
             ok: false,
-            error: stoppedDiff.error,
-            errorCode: stoppedDiff.errorCode,
+            error: "ACM 插件仍在初始化，请稍后重试",
+            errorCode: "ACM_PLUGIN_INVALID" as const,
           };
-      }
-      return acmPluginService.setEnabled(enabled);
-    }),
+        if (!enabled) {
+          const stopped = await acmRunnerService.stop();
+          if (!stopped.ok)
+            return {
+              ok: false,
+              error: stopped.error,
+              errorCode: stopped.errorCode,
+            };
+          const stoppedDiff = await acmDifferService.stop();
+          if (!stoppedDiff.ok)
+            return {
+              ok: false,
+              error: stoppedDiff.error,
+              errorCode: stoppedDiff.errorCode,
+            };
+        }
+        return acmPluginService.setEnabled(enabled);
+      }),
+    ),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_RETRY, () =>
-    wrapIpc(() => acmPluginService.retry()),
+    wrapIpcAsync(() => acmLifecycleQueue.run(() => acmPluginService.retry())),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_NOTICE_GET_STATE, () =>
     wrap(() => acmNoticeState()),
@@ -777,19 +794,23 @@ function registerAcmPluginHandlers(): void {
 
   ipcMain.handle(
     IPC_CHANNELS.ACM_DOCUMENT_CREATE,
-    (_event, template: unknown) =>
+    (event, template: unknown, scope: unknown) =>
       wrapIpc(() =>
         withAcm(() =>
-          acmFileService.createDocument(parseIpc(acmTemplateSchema, template)),
+          acmFileService.createDocument(
+            parseIpc(acmTemplateSchema, template),
+            parseDocumentScope(event.sender, scope),
+          ),
         ),
       ),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_OPEN, (event) =>
+  ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_OPEN, (event, scope: unknown) =>
     wrapIpcAsync(async () => {
       const unavailable = acmUnavailable<AcmDocument | null>();
       if (unavailable) return unavailable;
       return acmFileService.openDocument(
         BrowserWindow.fromWebContents(event.sender),
+        parseDocumentScope(event.sender, scope),
       );
     }),
   );
@@ -867,72 +888,80 @@ function registerAcmPluginHandlers(): void {
     }),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_RUNNER_START, (_event, request: unknown) =>
-    wrapIpcAsync(async () => {
-      if (!acmPluginService.isEnabled()) {
-        return (
-          acmUnavailable<{ taskId: string }>() ?? {
-            ok: false,
-            error: "ACM 插件已禁用",
-            errorCode: "ACM_DISABLED" as const,
-          }
-        );
-      }
-      const unavailable = acmUnavailable<{ taskId: string }>();
-      if (unavailable) return unavailable;
-      return acmRunnerService.start(parseIpc(acmRunnerStartSchema, request));
-    }),
+    wrapIpcAsync(() =>
+      acmLifecycleQueue.run(async () => {
+        if (!acmPluginService.isEnabled()) {
+          return (
+            acmUnavailable<{ taskId: string }>() ?? {
+              ok: false,
+              error: "ACM 插件已禁用",
+              errorCode: "ACM_DISABLED" as const,
+            }
+          );
+        }
+        const unavailable = acmUnavailable<{ taskId: string }>();
+        if (unavailable) return unavailable;
+        return acmRunnerService.start(parseIpc(acmRunnerStartSchema, request));
+      }),
+    ),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_RUNNER_STOP, () =>
-    wrapIpcAsync(async () => {
-      if (!acmPluginService.isEnabled()) {
-        return (
-          acmUnavailable<boolean>() ?? {
-            ok: false,
-            error: "ACM 插件已禁用",
-            errorCode: "ACM_DISABLED" as const,
-          }
-        );
-      }
-      const unavailable = acmUnavailable<boolean>();
-      if (unavailable) return unavailable;
-      return acmRunnerService.stop();
-    }),
+    wrapIpcAsync(() =>
+      acmLifecycleQueue.run(async () => {
+        if (!acmPluginService.isEnabled()) {
+          return (
+            acmUnavailable<boolean>() ?? {
+              ok: false,
+              error: "ACM 插件已禁用",
+              errorCode: "ACM_DISABLED" as const,
+            }
+          );
+        }
+        const unavailable = acmUnavailable<boolean>();
+        if (unavailable) return unavailable;
+        return acmRunnerService.stop();
+      }),
+    ),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_DIFF_START, (_event, request: unknown) =>
-    wrapIpcAsync(async () => {
-      if (!acmPluginService.isEnabled()) {
-        return (
-          acmUnavailable<{ taskId: string }>() ?? {
-            ok: false,
-            error: "ACM 插件已禁用",
-            errorCode: "ACM_DISABLED" as const,
-          }
-        );
-      }
-      const unavailable = acmUnavailable<{ taskId: string }>();
-      if (unavailable) return unavailable;
-      const parsed = parseIpc(
-        acmDiffStartSchema,
-        request,
-      ) as AcmDiffStartRequest;
-      return acmDifferService.start(parsed);
-    }),
+    wrapIpcAsync(() =>
+      acmLifecycleQueue.run(async () => {
+        if (!acmPluginService.isEnabled()) {
+          return (
+            acmUnavailable<{ taskId: string }>() ?? {
+              ok: false,
+              error: "ACM 插件已禁用",
+              errorCode: "ACM_DISABLED" as const,
+            }
+          );
+        }
+        const unavailable = acmUnavailable<{ taskId: string }>();
+        if (unavailable) return unavailable;
+        const parsed = parseIpc(
+          acmDiffStartSchema,
+          request,
+        ) as AcmDiffStartRequest;
+        return acmDifferService.start(parsed);
+      }),
+    ),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_DIFF_STOP, () =>
-    wrapIpcAsync(async () => {
-      if (!acmPluginService.isEnabled()) {
-        return (
-          acmUnavailable<boolean>() ?? {
-            ok: false,
-            error: "ACM 插件已禁用",
-            errorCode: "ACM_DISABLED" as const,
-          }
-        );
-      }
-      const unavailable = acmUnavailable<boolean>();
-      if (unavailable) return unavailable;
-      return acmDifferService.stop();
-    }),
+    wrapIpcAsync(() =>
+      acmLifecycleQueue.run(async () => {
+        if (!acmPluginService.isEnabled()) {
+          return (
+            acmUnavailable<boolean>() ?? {
+              ok: false,
+              error: "ACM 插件已禁用",
+              errorCode: "ACM_DISABLED" as const,
+            }
+          );
+        }
+        const unavailable = acmUnavailable<boolean>();
+        if (unavailable) return unavailable;
+        return acmDifferService.stop();
+      }),
+    ),
   );
   acmRunnerService.onEvent((event: RunnerEvent) => {
     const win = windowService.getMainWindow();

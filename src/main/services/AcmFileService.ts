@@ -13,8 +13,10 @@ import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   AcmDocument,
+  AcmDocumentExternalRequest,
   AcmDocumentExternalState,
   AcmDocumentSaveRequest,
+  AcmDocumentScope,
   AcmLineEnding,
   AcmTemplateId,
   DocumentFingerprint,
@@ -52,6 +54,7 @@ interface DialogAccess {
 interface OpenDocumentState {
   bytes: number;
   filePath: string | null;
+  scope: AcmDocumentScope;
 }
 
 class RecoveryRequiredError extends Error {
@@ -168,11 +171,22 @@ function readUtf8(buffer: Buffer): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(value);
 }
 
-function fingerprint(filePath: string): DocumentFingerprint {
+function documentLimit(scope: AcmDocumentScope): number | null {
+  return scope === "diff-candidate" ? null : ACM_MAX_DOCUMENT_BYTES;
+}
+
+function assertDocumentBytes(bytes: number, scope: AcmDocumentScope): void {
+  const limit = documentLimit(scope);
+  if (limit !== null && bytes > limit) throw new Error("源文件超过 2 MiB 限制");
+}
+
+function fingerprint(
+  filePath: string,
+  scope: AcmDocumentScope = "workbench",
+): DocumentFingerprint {
   const stat = fs.statSync(filePath);
   if (!stat.isFile()) throw new Error("源文件不是普通文件");
-  if (stat.size > ACM_MAX_DOCUMENT_BYTES)
-    throw new Error("源文件超过 2 MiB 限制");
+  assertDocumentBytes(stat.size, scope);
   return {
     bytes: stat.size,
     mtimeMs: stat.mtimeMs,
@@ -180,6 +194,33 @@ function fingerprint(filePath: string): DocumentFingerprint {
       .update(fs.readFileSync(filePath))
       .digest("hex"),
   };
+}
+
+function fingerprintFromBuffer(
+  stat: fs.Stats,
+  buffer: Buffer,
+  scope: AcmDocumentScope,
+): DocumentFingerprint {
+  assertDocumentBytes(buffer.byteLength, scope);
+  return {
+    bytes: buffer.byteLength,
+    mtimeMs: stat.mtimeMs,
+    sha256: createHash("sha256").update(buffer).digest("hex"),
+  };
+}
+
+function fingerprintFromContent(
+  filePath: string,
+  content: string,
+  lineEnding: AcmLineEnding,
+  scope: AcmDocumentScope,
+): DocumentFingerprint {
+  const buffer = Buffer.from(normalizeLineEnding(content, lineEnding), "utf8");
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile() || stat.size !== buffer.byteLength)
+    throw new Error("保存后的文件大小不一致");
+  assertDocumentBytes(stat.size, scope);
+  return fingerprintFromBuffer(stat, buffer, scope);
 }
 
 function isReadOnly(filePath: string, stat: fs.Stats): boolean {
@@ -218,7 +259,10 @@ export class AcmFileService {
 
   async init(): Promise<void> {}
 
-  createDocument(template: AcmTemplateId): IpcResult<AcmDocument> {
+  createDocument(
+    template: AcmTemplateId,
+    scope: AcmDocumentScope = "workbench",
+  ): IpcResult<AcmDocument> {
     if (!Object.prototype.hasOwnProperty.call(TEMPLATES, template))
       return errorResult("ACM_FILE_INVALID", "模板不存在");
     const content = TEMPLATES[template];
@@ -226,6 +270,7 @@ export class AcmFileService {
     this.openDocuments.set(id, {
       bytes: Buffer.byteLength(content, "utf8"),
       filePath: null,
+      scope,
     });
     return {
       ok: true,
@@ -244,6 +289,7 @@ export class AcmFileService {
 
   async openDocument(
     parent: BrowserWindow | null = null,
+    scope: AcmDocumentScope = "workbench",
   ): Promise<IpcResult<AcmDocument | null>> {
     try {
       const result = parent
@@ -251,7 +297,10 @@ export class AcmFileService {
         : await this.dialogs.showOpenDialog(this.openOptions());
       if (result.canceled || !result.filePaths[0])
         return { ok: true, data: null };
-      return { ok: true, data: this.readDocument(result.filePaths[0]) };
+      return {
+        ok: true,
+        data: this.readDocument(result.filePaths[0], scope),
+      };
     } catch (error) {
       return errorResult(
         "ACM_FILE_INVALID",
@@ -272,9 +321,9 @@ export class AcmFileService {
         !samePath(tracked.filePath, filePath)
       )
         return errorResult("ACM_FILE_INVALID", "保存路径与已打开文档不匹配");
-      this.writeDocument(filePath, request);
-      const document = this.savedDocument(request, filePath);
-      this.trackDocument(document);
+      this.writeDocument(filePath, request, tracked.scope);
+      const document = this.savedDocument(request, filePath, tracked.scope);
+      this.trackDocument(document, tracked.scope);
       return { ok: true, data: document };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -287,8 +336,8 @@ export class AcmFileService {
     parent: BrowserWindow | null = null,
   ): Promise<IpcResult<AcmDocument | null>> {
     try {
-      if (!this.openDocuments.has(request.documentId))
-        return errorResult("ACM_FILE_INVALID", "文档未打开");
+      const tracked = this.openDocuments.get(request.documentId);
+      if (!tracked) return errorResult("ACM_FILE_INVALID", "文档未打开");
       const result = parent
         ? await this.dialogs.showSaveDialog(
             parent,
@@ -311,9 +360,13 @@ export class AcmFileService {
           : await this.dialogs.showMessageBox(options);
         if (confirmation.response !== 0) return { ok: true, data: null };
       }
-      this.writeDocument(filePath, { ...request, filePath, force: true });
-      const document = this.savedDocument(request, filePath);
-      this.trackDocument(document);
+      this.writeDocument(
+        filePath,
+        { ...request, filePath, force: true },
+        tracked.scope,
+      );
+      const document = this.savedDocument(request, filePath, tracked.scope);
+      this.trackDocument(document, tracked.scope);
       return { ok: true, data: document };
     } catch (error) {
       return errorResult(
@@ -324,20 +377,21 @@ export class AcmFileService {
   }
 
   checkExternal(
-    document: Pick<AcmDocument, "filePath" | "savedFingerprint">,
+    document: AcmDocumentExternalRequest,
   ): IpcResult<AcmDocumentExternalState> {
     try {
       if (!document.filePath || !document.savedFingerprint)
         return { ok: true, data: { changed: false, fingerprint: null } };
       const filePath = ensureCppPath(document.filePath);
+      const tracked = this.openDocuments.get(document.documentId);
       if (
-        ![...this.openDocuments.values()].some(
-          (state) => state.filePath && samePath(state.filePath, filePath),
-        )
+        !tracked ||
+        !tracked.filePath ||
+        !samePath(tracked.filePath, filePath)
       )
         return errorResult("ACM_FILE_INVALID", "文档未打开");
       assertRegularPath(filePath, false);
-      const current = fingerprint(filePath);
+      const current = fingerprint(filePath, tracked.scope);
       return {
         ok: true,
         data: {
@@ -364,18 +418,24 @@ export class AcmFileService {
     this.openDocuments.clear();
   }
 
-  private readDocument(filePath: string): AcmDocument {
+  private readDocument(filePath: string, scope: AcmDocumentScope): AcmDocument {
     const resolved = ensureCppPath(filePath);
     assertRegularPath(resolved, false);
     const stat = fs.statSync(resolved);
-    if (stat.size > ACM_MAX_DOCUMENT_BYTES)
-      throw new Error("源文件超过 2 MiB 限制");
+    assertDocumentBytes(stat.size, scope);
     const buffer = fs.readFileSync(resolved);
+    const afterRead = fs.statSync(resolved);
+    if (afterRead.size !== stat.size || afterRead.mtimeMs !== stat.mtimeMs)
+      throw new Error("文件在读取时发生变化，请重新打开");
+    const savedFingerprint = fingerprintFromBuffer(afterRead, buffer, scope);
     const openBytes = [...this.openDocuments.values()].reduce(
       (total, state) => total + state.bytes,
       0,
     );
-    if (openBytes + buffer.byteLength > ACM_MAX_OPEN_BYTES)
+    if (
+      scope !== "diff-candidate" &&
+      openBytes + buffer.byteLength > ACM_MAX_OPEN_BYTES
+    )
       throw new Error("打开源码总量超过 64 MiB，请先关闭标签");
     let rawContent: string;
     try {
@@ -392,11 +452,12 @@ export class AcmFileService {
       lineEnding: detectLineEnding(rawContent),
       readOnly: isReadOnly(resolved, stat),
       dirty: false,
-      savedFingerprint: fingerprint(resolved),
+      savedFingerprint,
     };
     this.openDocuments.set(document.id, {
       bytes: buffer.byteLength,
       filePath: resolved,
+      scope,
     });
     return document;
   }
@@ -404,9 +465,10 @@ export class AcmFileService {
   private writeDocument(
     filePath: string,
     request: AcmDocumentSaveRequest,
+    scope: AcmDocumentScope,
   ): void {
     const bytes = Buffer.byteLength(request.content, "utf8");
-    if (bytes > ACM_MAX_DOCUMENT_BYTES) throw new Error("源码超过 2 MiB 限制");
+    assertDocumentBytes(bytes, scope);
     assertRegularPath(filePath, true);
     if (fs.existsSync(filePath)) {
       const stat = fs.statSync(filePath);
@@ -418,7 +480,10 @@ export class AcmFileService {
             "缺少文件指纹，文件可能已被外部修改，请重新加载后再保存",
           );
         if (
-          !sameFingerprint(fingerprint(filePath), request.expectedFingerprint)
+          !sameFingerprint(
+            fingerprint(filePath, scope),
+            request.expectedFingerprint,
+          )
         )
           throw new Error("文件已被外部修改，请重新加载、另存为或确认覆盖");
       }
@@ -459,6 +524,7 @@ export class AcmFileService {
   private savedDocument(
     request: AcmDocumentSaveRequest,
     filePath: string,
+    scope: AcmDocumentScope,
   ): AcmDocument {
     const stat = fs.statSync(filePath);
     return {
@@ -469,16 +535,22 @@ export class AcmFileService {
       lineEnding: request.lineEnding,
       readOnly: isReadOnly(filePath, stat),
       dirty: false,
-      savedFingerprint: fingerprint(filePath),
+      savedFingerprint: fingerprintFromContent(
+        filePath,
+        request.content,
+        request.lineEnding,
+        scope,
+      ),
     };
   }
 
-  private trackDocument(document: AcmDocument): void {
+  private trackDocument(document: AcmDocument, scope: AcmDocumentScope): void {
     this.openDocuments.set(document.id, {
       bytes:
         document.savedFingerprint?.bytes ??
         Buffer.byteLength(document.content, "utf8"),
       filePath: document.filePath,
+      scope,
     });
   }
 

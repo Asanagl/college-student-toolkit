@@ -501,6 +501,12 @@ export interface AcmDocument {
 
 export type AcmTemplateId = "blank" | "basic-io" | "stl";
 
+/** 文档用途决定文件大小策略；待测对拍源码不设产品输入上限。 */
+export type AcmDocumentScope =
+  | "workbench"
+  | "diff-reference"
+  | "diff-candidate";
+
 export interface AcmDocumentSaveRequest {
   documentId: string;
   filePath: string | null;
@@ -513,6 +519,12 @@ export interface AcmDocumentSaveRequest {
 export interface AcmDocumentExternalState {
   changed: boolean;
   fingerprint: DocumentFingerprint | null;
+}
+
+export interface AcmDocumentExternalRequest {
+  documentId: string;
+  filePath: string | null;
+  savedFingerprint: DocumentFingerprint | null;
 }
 
 export interface DocumentFingerprint {
@@ -925,8 +937,11 @@ export interface RendererApi {
     retry: () => Promise<IpcResult<AcmPluginStatus>>;
     createDocument: (
       template: AcmTemplateId,
+      scope?: AcmDocumentScope,
     ) => Promise<IpcResult<AcmDocument>>;
-    openDocument: () => Promise<IpcResult<AcmDocument | null>>;
+    openDocument: (
+      scope?: AcmDocumentScope,
+    ) => Promise<IpcResult<AcmDocument | null>>;
     saveDocument: (
       request: AcmDocumentSaveRequest,
     ) => Promise<IpcResult<AcmDocument>>;
@@ -935,7 +950,7 @@ export interface RendererApi {
     ) => Promise<IpcResult<AcmDocument | null>>;
     releaseDocument: (documentId: string) => Promise<IpcResult<boolean>>;
     checkDocumentExternal: (
-      document: Pick<AcmDocument, "filePath" | "savedFingerprint">,
+      document: AcmDocumentExternalRequest,
     ) => Promise<IpcResult<AcmDocumentExternalState>>;
     getCompilerSelection: () => Promise<IpcResult<CompilerSelection>>;
     setCompilerSelection: (

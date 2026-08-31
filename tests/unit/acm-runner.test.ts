@@ -593,9 +593,12 @@ describe("AcmRunnerHelper", () => {
     const environment = createAcmProcessEnvironment(
       "C:\\task\\program.exe",
       "C:\\toolchain\\bin",
+      "C:\\task",
     );
     expect(environment.PATH).toContain("C:\\toolchain\\bin");
     expect(environment.PATH).toContain("System32");
+    expect(environment.TEMP).toBe("C:\\task");
+    expect(environment.TMP).toBe("C:\\task");
   });
 
   it("force-kills the child when taskkill exits with an error", async () => {
@@ -666,5 +669,37 @@ describe("AcmRunnerHelper", () => {
       ok: false,
       errorCode: "ACM_PLUGIN_INVALID",
     });
+  });
+
+  it("cleans the task directory when its owner marker cannot be written", async () => {
+    const tempRoot = createTempRoot();
+    const service = new AcmRunnerService({
+      compiler: compiler(),
+      helper: new AcmRunnerHelper(
+        factoryFor({
+          compileExitCode: 0,
+          compileStderr: "",
+          runOutput: "",
+          runStderr: "",
+          holdRun: false,
+        }),
+        "win32",
+      ),
+      platform: "win32",
+      tempRoot,
+      writeFile: (filePath, data, options) => {
+        if (path.basename(filePath) === ".college-toolkit-runner-owner.json")
+          throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+        fs.writeFileSync(filePath, data, options);
+      },
+    });
+    await service.init();
+
+    await expect(service.start(request())).resolves.toMatchObject({
+      ok: false,
+      errorCode: "ACM_RUNNER_OUTPUT_LIMIT",
+    });
+    expect(fs.readdirSync(tempRoot)).toEqual([]);
+    await service.dispose();
   });
 });
