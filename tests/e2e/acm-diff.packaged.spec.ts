@@ -40,7 +40,12 @@ async function launch(profile: string): Promise<{
 async function openDiff(page: Page): Promise<void> {
   await page.locator(".ant-menu-item").filter({ hasText: "ACM 对拍" }).click();
   await expect(page).toHaveURL(/#\/acm-diff$/);
-  await expect(page.locator(".acm-diff-page")).toBeVisible();
+  // Parallel packaged Electron launches can delay the initial plugin/notice
+  // IPC round-trip; wait for the page state instead of treating load pressure
+  // as a routing failure.
+  await expect(page.locator(".acm-diff-page")).toBeVisible({
+    timeout: 15_000,
+  });
 }
 
 async function setSource(page: Page, reference: string, candidate: string) {

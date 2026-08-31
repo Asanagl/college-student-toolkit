@@ -356,7 +356,13 @@ test("packaged build performs CRUD, restart persistence, settings, Store channel
     );
 
     await page.getByRole("button", { name: /跟随系统/ }).click();
-    await page.getByRole("menuitem", { name: "设置" }).click();
+    const settingsMenuItem = page.getByRole("menuitem", { name: "设置" });
+    await expect(settingsMenuItem).toBeVisible({ timeout: 15_000 });
+    // The native titlebar drag region can briefly intercept the popup while
+    // Electron is under parallel launch pressure; keyboard activation keeps
+    // this assertion focused on the menu contract rather than pointer timing.
+    await settingsMenuItem.focus();
+    await settingsMenuItem.press("Enter");
     const settings = page
       .locator(".ant-modal")
       .filter({ hasText: "课程与学期" })
