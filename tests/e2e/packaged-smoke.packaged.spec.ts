@@ -355,12 +355,35 @@ test("packaged build performs CRUD, restart persistence, settings, Store channel
       `${marker} 日程（已更新）`,
     );
 
-    await page.getByRole("button", { name: /跟随系统/ }).click();
-    const settingsMenuItem = page.getByRole("menuitem", { name: "设置" });
+    const themeButton = page.getByRole("button", { name: /跟随系统/ });
+    const openThemeMenu = page.locator(
+      ".ant-dropdown:not(.ant-dropdown-hidden)",
+    );
+    await expect(themeButton).toBeVisible({ timeout: 15_000 });
+    let menuOpened = false;
+    try {
+      await themeButton.click({ timeout: 1_000 });
+    } catch {
+      // The native titlebar drag region may briefly intercept a pointer under
+      // parallel Electron launch pressure. The click may still have reached
+      // the page before Playwright timed out, so visibility is checked below.
+    }
+    try {
+      await expect(openThemeMenu).toBeVisible({ timeout: 1_000 });
+      menuOpened = true;
+    } catch {
+      // Only use the keyboard path after the post-click visibility check
+      // confirms that the menu did not open.
+    }
+    if (!menuOpened) {
+      await themeButton.focus();
+      await themeButton.press("Enter");
+    }
+    await expect(openThemeMenu).toBeVisible({ timeout: 15_000 });
+    const settingsMenuItem = openThemeMenu.getByRole("menuitem", {
+      name: "设置",
+    });
     await expect(settingsMenuItem).toBeVisible({ timeout: 15_000 });
-    // The native titlebar drag region can briefly intercept the popup while
-    // Electron is under parallel launch pressure; keyboard activation keeps
-    // this assertion focused on the menu contract rather than pointer timing.
     await settingsMenuItem.focus();
     await settingsMenuItem.press("Enter");
     const settings = page
