@@ -111,7 +111,7 @@ describe("AcmFileService", () => {
       data: { savedFingerprint: { bytes: oversized.length } },
     });
     expect(fs.statSync(savedPath).size).toBe(oversized.length);
-    const external = service.checkExternal({
+    const external = await service.checkExternal({
       documentId: opened.data.id,
       filePath: saved.data?.filePath ?? savedPath,
       savedFingerprint: saved.data?.savedFingerprint ?? null,
@@ -135,6 +135,26 @@ describe("AcmFileService", () => {
     await expect(service.openDocument()).resolves.toMatchObject({
       ok: false,
       errorCode: "ACM_FILE_INVALID",
+    });
+  });
+
+  it("rejects malformed UTF-8 without retaining a document", async () => {
+    const directory = tempDirectory();
+    const sourcePath = path.join(directory, "invalid.cpp");
+    fs.writeFileSync(sourcePath, Buffer.from([0xc3, 0x28]));
+    const service = new AcmFileService({
+      showOpenDialog: vi.fn(async () => ({
+        canceled: false,
+        filePaths: [sourcePath],
+      })),
+      showSaveDialog: vi.fn(),
+      showMessageBox: vi.fn(),
+    });
+
+    await expect(service.openDocument()).resolves.toMatchObject({
+      ok: false,
+      errorCode: "ACM_FILE_INVALID",
+      error: "文件不是 UTF-8 编码，请先转换后再打开",
     });
   });
 

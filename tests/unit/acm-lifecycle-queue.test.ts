@@ -67,4 +67,37 @@ describe("AcmLifecycleQueue", () => {
       "reject-start",
     ]);
   });
+
+  it("releases the queue while a cancellable operation is still pending", async () => {
+    const queue = new AcmLifecycleQueue();
+    const events: string[] = [];
+    let release!: (value: string) => void;
+    const pending = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const detached = queue.runDetached(async () => {
+      events.push("start");
+      return pending;
+    });
+
+    await Promise.resolve();
+    const stop = queue.run(() => {
+      events.push("stop");
+      return "stopped";
+    });
+    await expect(stop).resolves.toBe("stopped");
+    expect(events).toEqual(["start", "stop"]);
+
+    release("finished");
+    await expect(detached).resolves.toBe("finished");
+  });
+
+  it("releases the queue when a detached operation throws synchronously", async () => {
+    const queue = new AcmLifecycleQueue();
+    const detached = queue.runDetached(() => {
+      throw new Error("start failed");
+    });
+    await expect(detached).rejects.toThrow("start failed");
+    await expect(queue.run(() => "next")).resolves.toBe("next");
+  });
 });

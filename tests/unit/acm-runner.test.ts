@@ -388,6 +388,60 @@ describe("AcmRunnerService", () => {
     await service.dispose();
   });
 
+  it("allows stop to cancel while compiler probing is pending", async () => {
+    const root = createTempRoot();
+    let resolveProbe!: (result: IpcResult<CompilerProbeResult>) => void;
+    const probe = new Promise<IpcResult<CompilerProbeResult>>((resolve) => {
+      resolveProbe = resolve;
+    });
+    const service = new AcmRunnerService({
+      compiler: {
+        probe: () => probe,
+        getCompilerFlags: () => ["-std=c++17"],
+        getCached: () => null,
+      },
+      helper: new AcmRunnerHelper(
+        factoryFor({
+          compileExitCode: 0,
+          compileStderr: "",
+          runOutput: "",
+          runStderr: "",
+          holdRun: false,
+        }),
+        "win32",
+      ),
+      platform: "win32",
+      tempRoot: root,
+    });
+    const events: RunnerEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.init();
+
+    const starting = service.start(request());
+    await Promise.resolve();
+    await expect(service.stop()).resolves.toEqual({ ok: true, data: true });
+    resolveProbe({
+      ok: true,
+      data: {
+        available: true,
+        path: "fake-g++.exe",
+        version: "fake",
+        target: "x86_64-w64-mingw32",
+      },
+    });
+
+    await expect(starting).resolves.toMatchObject({
+      ok: true,
+      data: { taskId: expect.any(String) },
+    });
+    expect(events.at(-1)).toMatchObject({
+      stage: "compile-finished",
+      status: "cancelled",
+      errorCode: "ACM_RUNNER_CANCELLED",
+    });
+    await service.dispose();
+  });
+
   it("terminates a timed-out run and limits output", async () => {
     const timeoutService = createService(
       { holdRun: true },

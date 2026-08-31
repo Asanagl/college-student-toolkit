@@ -190,6 +190,60 @@ afterEach(() => {
 });
 
 describe("AcmDifferService", () => {
+  it("allows stop to cancel while compiler probing is pending", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-probe-test-"),
+    );
+    roots.push(root);
+    let resolveProbe!: (result: IpcResult<CompilerProbeResult>) => void;
+    const probe = new Promise<IpcResult<CompilerProbeResult>>((resolve) => {
+      resolveProbe = resolve;
+    });
+    const service = new AcmDifferService({
+      compiler: {
+        probe: () => probe,
+        getCompilerFlags: () => ["-std=c++17"],
+      },
+      helper: new AcmRunnerHelper(
+        factory({ reference: "ok", candidate: "ok" }, []),
+        "win32",
+        50,
+      ),
+      platform: "win32",
+      tempRoot: root,
+    });
+    const events: AcmDiffEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.init();
+
+    const starting = service.start(request());
+    await Promise.resolve();
+    await expect(service.stop()).resolves.toEqual({ ok: true, data: true });
+    resolveProbe({
+      ok: true,
+      data: {
+        available: true,
+        path: "g++.exe",
+        version: "fake",
+        target: "x86_64-w64-mingw32",
+      },
+    });
+
+    await expect(starting).resolves.toMatchObject({
+      ok: true,
+      data: { taskId: expect.any(String) },
+    });
+    expect(events.at(-1)).toMatchObject({
+      stage: "compare",
+      status: "cancelled",
+      result: {
+        status: "cancelled",
+        errorCode: "ACM_RUNNER_CANCELLED",
+      },
+    });
+    await service.dispose();
+  });
+
   it("compiles both sides before running reference then candidate and reports match", async () => {
     const result = await run({ reference: "1 2\n", candidate: "1 2\n" });
     expect(result.commands).toEqual(["compile-1", "run", "compile-2", "run"]);

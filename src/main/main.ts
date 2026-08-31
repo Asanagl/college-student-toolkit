@@ -15,6 +15,7 @@ import { pathToFileURL } from "node:url";
 import {
   IPC_CHANNELS,
   type AcmDocument,
+  type AcmDocumentExternalState,
   type AcmDocumentScope,
   type AcmPluginStatus,
   type AcmDiffEvent,
@@ -708,6 +709,17 @@ function withAcm<T>(fn: () => IpcResult<T>): IpcResult<T> {
   return acmUnavailable<T>() ?? fn();
 }
 
+function acmExecutionUnavailable<T>(): IpcResult<T> | null {
+  if (acmPluginService.isEnabled()) return acmUnavailable<T>();
+  return (
+    acmUnavailable<T>() ?? {
+      ok: false,
+      error: "ACM 插件当前不可用",
+      errorCode: "ACM_DISABLED",
+    }
+  );
+}
+
 function acmNoticeState(): AcmNoticeState {
   const dismissedVersion =
     portableSettingsService.getAcmNoticeDismissedVersion();
@@ -843,13 +855,13 @@ function registerAcmPluginHandlers(): void {
   ipcMain.handle(
     IPC_CHANNELS.ACM_DOCUMENT_CHECK_EXTERNAL,
     (_event, document: unknown) =>
-      wrapIpc(() =>
-        withAcm(() =>
-          acmFileService.checkExternal(
-            parseIpc(acmExternalDocumentSchema, document),
-          ),
-        ),
-      ),
+      wrapIpcAsync(async () => {
+        const unavailable = acmUnavailable<AcmDocumentExternalState>();
+        if (unavailable) return unavailable;
+        return acmFileService.checkExternal(
+          parseIpc(acmExternalDocumentSchema, document),
+        );
+      }),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_COMPILER_GET_SELECTION, () =>
     wrapIpc(() => withAcm(() => acmCompilerService.getSelection())),
@@ -889,17 +901,8 @@ function registerAcmPluginHandlers(): void {
   );
   ipcMain.handle(IPC_CHANNELS.ACM_RUNNER_START, (_event, request: unknown) =>
     wrapIpcAsync(() =>
-      acmLifecycleQueue.run(async () => {
-        if (!acmPluginService.isEnabled()) {
-          return (
-            acmUnavailable<{ taskId: string }>() ?? {
-              ok: false,
-              error: "ACM 插件已禁用",
-              errorCode: "ACM_DISABLED" as const,
-            }
-          );
-        }
-        const unavailable = acmUnavailable<{ taskId: string }>();
+      acmLifecycleQueue.runDetached(() => {
+        const unavailable = acmExecutionUnavailable<{ taskId: string }>();
         if (unavailable) return unavailable;
         return acmRunnerService.start(parseIpc(acmRunnerStartSchema, request));
       }),
@@ -908,16 +911,7 @@ function registerAcmPluginHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ACM_RUNNER_STOP, () =>
     wrapIpcAsync(() =>
       acmLifecycleQueue.run(async () => {
-        if (!acmPluginService.isEnabled()) {
-          return (
-            acmUnavailable<boolean>() ?? {
-              ok: false,
-              error: "ACM 插件已禁用",
-              errorCode: "ACM_DISABLED" as const,
-            }
-          );
-        }
-        const unavailable = acmUnavailable<boolean>();
+        const unavailable = acmExecutionUnavailable<boolean>();
         if (unavailable) return unavailable;
         return acmRunnerService.stop();
       }),
@@ -925,17 +919,8 @@ function registerAcmPluginHandlers(): void {
   );
   ipcMain.handle(IPC_CHANNELS.ACM_DIFF_START, (_event, request: unknown) =>
     wrapIpcAsync(() =>
-      acmLifecycleQueue.run(async () => {
-        if (!acmPluginService.isEnabled()) {
-          return (
-            acmUnavailable<{ taskId: string }>() ?? {
-              ok: false,
-              error: "ACM 插件已禁用",
-              errorCode: "ACM_DISABLED" as const,
-            }
-          );
-        }
-        const unavailable = acmUnavailable<{ taskId: string }>();
+      acmLifecycleQueue.runDetached(() => {
+        const unavailable = acmExecutionUnavailable<{ taskId: string }>();
         if (unavailable) return unavailable;
         const parsed = parseIpc(
           acmDiffStartSchema,
@@ -948,16 +933,7 @@ function registerAcmPluginHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ACM_DIFF_STOP, () =>
     wrapIpcAsync(() =>
       acmLifecycleQueue.run(async () => {
-        if (!acmPluginService.isEnabled()) {
-          return (
-            acmUnavailable<boolean>() ?? {
-              ok: false,
-              error: "ACM 插件已禁用",
-              errorCode: "ACM_DISABLED" as const,
-            }
-          );
-        }
-        const unavailable = acmUnavailable<boolean>();
+        const unavailable = acmExecutionUnavailable<boolean>();
         if (unavailable) return unavailable;
         return acmDifferService.stop();
       }),

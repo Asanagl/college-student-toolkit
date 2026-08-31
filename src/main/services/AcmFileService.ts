@@ -11,6 +11,7 @@ import {
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import type { FileHandle } from "node:fs/promises";
 import type {
   AcmDocument,
   AcmDocumentExternalRequest,
@@ -25,6 +26,7 @@ import type {
 
 export const ACM_MAX_DOCUMENT_BYTES = 2 * 1024 * 1024;
 export const ACM_MAX_OPEN_BYTES = 64 * 1024 * 1024;
+const FILE_READ_CHUNK_BYTES = 64 * 1024;
 
 const TEMPLATES: Record<AcmTemplateId, string> = {
   blank: "",
@@ -163,14 +165,6 @@ function normalizeLineEnding(
   return normalized;
 }
 
-function readUtf8(buffer: Buffer): string {
-  const value =
-    buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf
-      ? buffer.subarray(3)
-      : buffer;
-  return new TextDecoder("utf-8", { fatal: true }).decode(value);
-}
-
 function documentLimit(scope: AcmDocumentScope): number | null {
   return scope === "diff-candidate" ? null : ACM_MAX_DOCUMENT_BYTES;
 }
@@ -299,7 +293,7 @@ export class AcmFileService {
         return { ok: true, data: null };
       return {
         ok: true,
-        data: this.readDocument(result.filePaths[0], scope),
+        data: await this.readDocument(result.filePaths[0], scope),
       };
     } catch (error) {
       return errorResult(
@@ -376,9 +370,9 @@ export class AcmFileService {
     }
   }
 
-  checkExternal(
+  async checkExternal(
     document: AcmDocumentExternalRequest,
-  ): IpcResult<AcmDocumentExternalState> {
+  ): Promise<IpcResult<AcmDocumentExternalState>> {
     try {
       if (!document.filePath || !document.savedFingerprint)
         return { ok: true, data: { changed: false, fingerprint: null } };
@@ -391,7 +385,7 @@ export class AcmFileService {
       )
         return errorResult("ACM_FILE_INVALID", "文档未打开");
       assertRegularPath(filePath, false);
-      const current = fingerprint(filePath, tracked.scope);
+      const current = await this.readFingerprint(filePath, tracked.scope);
       return {
         ok: true,
         data: {
@@ -418,31 +412,24 @@ export class AcmFileService {
     this.openDocuments.clear();
   }
 
-  private readDocument(filePath: string, scope: AcmDocumentScope): AcmDocument {
+  private async readDocument(
+    filePath: string,
+    scope: AcmDocumentScope,
+  ): Promise<AcmDocument> {
     const resolved = ensureCppPath(filePath);
     assertRegularPath(resolved, false);
-    const stat = fs.statSync(resolved);
-    assertDocumentBytes(stat.size, scope);
-    const buffer = fs.readFileSync(resolved);
-    const afterRead = fs.statSync(resolved);
-    if (afterRead.size !== stat.size || afterRead.mtimeMs !== stat.mtimeMs)
-      throw new Error("文件在读取时发生变化，请重新打开");
-    const savedFingerprint = fingerprintFromBuffer(afterRead, buffer, scope);
+    const streamed = await this.streamFile(resolved, scope, true);
     const openBytes = [...this.openDocuments.values()].reduce(
       (total, state) => total + state.bytes,
       0,
     );
     if (
       scope !== "diff-candidate" &&
-      openBytes + buffer.byteLength > ACM_MAX_OPEN_BYTES
+      openBytes + streamed.fingerprint.bytes > ACM_MAX_OPEN_BYTES
     )
       throw new Error("打开源码总量超过 64 MiB，请先关闭标签");
-    let rawContent: string;
-    try {
-      rawContent = readUtf8(buffer);
-    } catch {
-      throw new Error("文件不是 UTF-8 编码，请先转换后再打开");
-    }
+    const rawContent = streamed.content;
+    if (rawContent === undefined) throw new Error("文件读取失败，请重试");
     const content = normalizeLineEnding(rawContent, "lf");
     const document: AcmDocument = {
       id: randomUUID(),
@@ -450,16 +437,102 @@ export class AcmFileService {
       filePath: resolved,
       content,
       lineEnding: detectLineEnding(rawContent),
-      readOnly: isReadOnly(resolved, stat),
+      readOnly: isReadOnly(resolved, streamed.stat),
       dirty: false,
-      savedFingerprint,
+      savedFingerprint: streamed.fingerprint,
     };
     this.openDocuments.set(document.id, {
-      bytes: buffer.byteLength,
+      bytes: streamed.fingerprint.bytes,
       filePath: resolved,
       scope,
     });
     return document;
+  }
+
+  private async readFingerprint(
+    filePath: string,
+    scope: AcmDocumentScope,
+  ): Promise<DocumentFingerprint> {
+    const streamed = await this.streamFile(filePath, scope, false);
+    return streamed.fingerprint;
+  }
+
+  private async streamFile(
+    filePath: string,
+    scope: AcmDocumentScope,
+    includeContent: boolean,
+  ): Promise<{
+    content?: string;
+    fingerprint: DocumentFingerprint;
+    stat: fs.Stats;
+  }> {
+    const handle = await fs.promises.open(filePath, "r");
+    try {
+      const initial = await handle.stat();
+      if (!initial.isFile()) throw new Error("源文件不是普通文件");
+      assertDocumentBytes(initial.size, scope);
+      const read = await this.readFileChunks(
+        handle,
+        initial.size,
+        includeContent,
+      );
+      const afterRead = await fs.promises.stat(filePath);
+      if (
+        afterRead.size !== initial.size ||
+        afterRead.mtimeMs !== initial.mtimeMs
+      )
+        throw new Error("文件在读取时发生变化，请重新打开");
+      return {
+        content: read.content,
+        fingerprint: {
+          bytes: afterRead.size,
+          mtimeMs: afterRead.mtimeMs,
+          sha256: read.sha256,
+        },
+        stat: afterRead,
+      };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async readFileChunks(
+    handle: FileHandle,
+    size: number,
+    includeContent: boolean,
+  ): Promise<{ content?: string; sha256: string }> {
+    const hash = createHash("sha256");
+    const decoder = includeContent
+      ? new TextDecoder("utf-8", { fatal: true })
+      : null;
+    const chunks: string[] = [];
+    const buffer = Buffer.allocUnsafe(FILE_READ_CHUNK_BYTES);
+    let position = 0;
+    try {
+      while (position < size) {
+        const { bytesRead } = await handle.read(
+          buffer,
+          0,
+          Math.min(buffer.byteLength, size - position),
+          position,
+        );
+        if (bytesRead === 0) break;
+        const chunk = buffer.subarray(0, bytesRead);
+        hash.update(chunk);
+        if (decoder) chunks.push(decoder.decode(chunk, { stream: true }));
+        position += bytesRead;
+      }
+      if (position !== size) throw new Error("文件读取不完整，请重试");
+      if (decoder) chunks.push(decoder.decode());
+    } catch (error) {
+      if (decoder && error instanceof TypeError)
+        throw new Error("文件不是 UTF-8 编码，请先转换后再打开");
+      throw error;
+    }
+    return {
+      content: decoder ? chunks.join("") : undefined,
+      sha256: hash.digest("hex"),
+    };
   }
 
   private writeDocument(
