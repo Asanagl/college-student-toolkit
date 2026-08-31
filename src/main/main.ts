@@ -827,11 +827,13 @@ function registerAcmPluginHandlers(): void {
     }),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_SAVE, (_event, request: unknown) =>
-    wrapIpc(() =>
-      withAcm(() =>
-        acmFileService.saveDocument(parseIpc(acmDocumentSaveSchema, request)),
-      ),
-    ),
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<AcmDocument>();
+      if (unavailable) return unavailable;
+      return acmFileService.saveDocument(
+        parseIpc(acmDocumentSaveSchema, request),
+      );
+    }),
   );
   ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_SAVE_AS, (event, request: unknown) =>
     wrapIpcAsync(async () => {

@@ -26,6 +26,9 @@ import type {
 
 export const ACM_MAX_DOCUMENT_BYTES = 2 * 1024 * 1024;
 export const ACM_MAX_OPEN_BYTES = 64 * 1024 * 1024;
+export const ACM_MAX_PENDING_WRITES = 4;
+export const ACM_MAX_PENDING_OPEN_OPERATIONS = 64;
+export const ACM_MAX_PENDING_SAVE_DIALOGS = 4;
 const FILE_READ_CHUNK_BYTES = 64 * 1024;
 
 const TEMPLATES: Record<AcmTemplateId, string> = {
@@ -59,10 +62,22 @@ interface OpenDocumentState {
   scope: AcmDocumentScope;
 }
 
+interface PersistedFileState {
+  stat: fs.Stats;
+  fingerprint: DocumentFingerprint;
+}
+
 class RecoveryRequiredError extends Error {
   constructor(readonly backupPath: string) {
     super(`保存失败，原文件已保留在恢复副本：${backupPath}`);
     this.name = "RecoveryRequiredError";
+  }
+}
+
+class AcmFileBusyError extends Error {
+  constructor() {
+    super("文件操作正在关闭或繁忙，请稍后重试");
+    this.name = "AcmFileBusyError";
   }
 }
 
@@ -73,13 +88,21 @@ function errorResult<T>(
   return { ok: false, errorCode, error };
 }
 
-function fileErrorCode(error: unknown): IpcResult<unknown>["errorCode"] {
-  const message = error instanceof Error ? error.message : String(error);
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function fileErrorCode(
+  error: unknown,
+  fallback: IpcResult<unknown>["errorCode"] = "ACM_FILE_INVALID",
+): IpcResult<unknown>["errorCode"] {
+  const message = errorMessage(error);
+  if (error instanceof AcmFileBusyError) return "ACM_FILE_BUSY";
   if (error instanceof RecoveryRequiredError)
     return "ACM_FILE_RECOVERY_REQUIRED";
   if (message.includes("只读")) return "ACM_FILE_READONLY";
   if (message.includes("外部")) return "ACM_FILE_CHANGED";
-  return "ACM_FILE_INVALID";
+  return fallback;
 }
 
 function isDevicePath(filePath: string): boolean {
@@ -112,6 +135,15 @@ function isReparsePoint(filePath: string): boolean {
   }
 }
 
+function lstatOrNull(filePath: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 function ensureCppPath(filePath: string): string {
   if (typeof filePath !== "string" || filePath.trim().length === 0)
     throw new Error("源文件路径不能为空");
@@ -138,15 +170,15 @@ function assertRegularPath(filePath: string, allowMissing: boolean): void {
   let current = parsed.root;
   for (const segment of [...segments, parsed.base]) {
     current = path.join(current, segment);
-    if (!fs.existsSync(current)) continue;
-    const stat = fs.lstatSync(current);
+    const stat = lstatOrNull(current);
+    if (!stat) continue;
     if (isReparsePoint(current)) throw new Error("不允许符号链接或联接点");
     if (current === resolved && !stat.isFile())
       throw new Error("目标不是普通文件");
     if (current !== resolved && !stat.isDirectory())
       throw new Error("源文件父路径不是普通目录");
   }
-  if (!allowMissing && !fs.existsSync(resolved)) throw new Error("文件不存在");
+  if (!allowMissing && !lstatOrNull(resolved)) throw new Error("文件不存在");
 }
 
 function detectLineEnding(content: string): AcmLineEnding {
@@ -174,53 +206,28 @@ function assertDocumentBytes(bytes: number, scope: AcmDocumentScope): void {
   if (limit !== null && bytes > limit) throw new Error("源文件超过 2 MiB 限制");
 }
 
-function fingerprint(
-  filePath: string,
-  scope: AcmDocumentScope = "workbench",
-): DocumentFingerprint {
-  const stat = fs.statSync(filePath);
-  if (!stat.isFile()) throw new Error("源文件不是普通文件");
-  assertDocumentBytes(stat.size, scope);
-  return {
-    bytes: stat.size,
-    mtimeMs: stat.mtimeMs,
-    sha256: createHash("sha256")
-      .update(fs.readFileSync(filePath))
-      .digest("hex"),
-  };
-}
-
-function fingerprintFromBuffer(
-  stat: fs.Stats,
-  buffer: Buffer,
-  scope: AcmDocumentScope,
-): DocumentFingerprint {
-  assertDocumentBytes(buffer.byteLength, scope);
-  return {
-    bytes: buffer.byteLength,
-    mtimeMs: stat.mtimeMs,
-    sha256: createHash("sha256").update(buffer).digest("hex"),
-  };
-}
-
 function fingerprintFromContent(
-  filePath: string,
+  stat: fs.Stats,
   content: string,
   lineEnding: AcmLineEnding,
   scope: AcmDocumentScope,
 ): DocumentFingerprint {
-  const buffer = Buffer.from(normalizeLineEnding(content, lineEnding), "utf8");
-  const stat = fs.statSync(filePath);
-  if (!stat.isFile() || stat.size !== buffer.byteLength)
+  const normalized = normalizeLineEnding(content, lineEnding);
+  const bytes = Buffer.byteLength(normalized, "utf8");
+  if (!stat.isFile() || stat.size !== bytes)
     throw new Error("保存后的文件大小不一致");
-  assertDocumentBytes(stat.size, scope);
-  return fingerprintFromBuffer(stat, buffer, scope);
+  assertDocumentBytes(bytes, scope);
+  return {
+    bytes,
+    mtimeMs: stat.mtimeMs,
+    sha256: createHash("sha256").update(normalized, "utf8").digest("hex"),
+  };
 }
 
-function isReadOnly(filePath: string, stat: fs.Stats): boolean {
+async function isReadOnly(filePath: string, stat: fs.Stats): Promise<boolean> {
   if ((stat.mode & 0o200) === 0) return true;
   try {
-    fs.accessSync(filePath, fs.constants.W_OK);
+    await fs.promises.access(filePath, fs.constants.W_OK);
     return false;
   } catch {
     return true;
@@ -238,6 +245,29 @@ function sameFingerprint(
   );
 }
 
+function externalCheckKey(document: AcmDocumentExternalRequest): string {
+  const fingerprint = document.savedFingerprint;
+  return JSON.stringify([
+    document.documentId,
+    document.filePath,
+    fingerprint?.bytes ?? null,
+    fingerprint?.mtimeMs ?? null,
+    fingerprint?.sha256 ?? null,
+  ]);
+}
+
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  if (left.dev === 0 && left.ino === 0)
+    return (
+      right.dev === 0 &&
+      right.ino === 0 &&
+      left.size === right.size &&
+      left.mtimeMs === right.mtimeMs &&
+      left.ctimeMs === right.ctimeMs
+    );
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
 function samePath(left: string, right: string): boolean {
   const normalizedLeft = path.normalize(left);
   const normalizedRight = path.normalize(right);
@@ -248,6 +278,18 @@ function samePath(left: string, right: string): boolean {
 
 export class AcmFileService {
   private readonly openDocuments = new Map<string, OpenDocumentState>();
+  private openGate: Promise<void> = Promise.resolve();
+  private writeGate: Promise<void> = Promise.resolve();
+  private saveDialogGate: Promise<void> = Promise.resolve();
+  private pendingWrites = 0;
+  private readonly pendingWriteDocuments = new Set<string>();
+  private pendingOpenOperations = 0;
+  private pendingSaveDialogs = 0;
+  private readonly pendingExternalChecks = new Map<
+    string,
+    Promise<IpcResult<AcmDocumentExternalState>>
+  >();
+  private disposing = false;
 
   constructor(private readonly dialogs: DialogAccess = dialog) {}
 
@@ -257,6 +299,7 @@ export class AcmFileService {
     template: AcmTemplateId,
     scope: AcmDocumentScope = "workbench",
   ): IpcResult<AcmDocument> {
+    if (this.disposing) return errorResult("ACM_FILE_BUSY", "文件服务正在关闭");
     if (!Object.prototype.hasOwnProperty.call(TEMPLATES, template))
       return errorResult("ACM_FILE_INVALID", "模板不存在");
     const content = TEMPLATES[template];
@@ -286,39 +329,38 @@ export class AcmFileService {
     scope: AcmDocumentScope = "workbench",
   ): Promise<IpcResult<AcmDocument | null>> {
     try {
-      const result = parent
-        ? await this.dialogs.showOpenDialog(parent, this.openOptions())
-        : await this.dialogs.showOpenDialog(this.openOptions());
-      if (result.canceled || !result.filePaths[0])
-        return { ok: true, data: null };
-      return {
-        ok: true,
-        data: await this.readDocument(result.filePaths[0], scope),
-      };
+      return await this.withOpenGate(async () => {
+        const result = parent
+          ? await this.dialogs.showOpenDialog(parent, this.openOptions())
+          : await this.dialogs.showOpenDialog(this.openOptions());
+        if (result.canceled || !result.filePaths[0])
+          return { ok: true, data: null };
+        return {
+          ok: true,
+          data: await this.readDocumentUnlocked(result.filePaths[0], scope),
+        };
+      });
     } catch (error) {
       return errorResult(
-        "ACM_FILE_INVALID",
+        fileErrorCode(error),
         error instanceof Error ? error.message : String(error),
       );
     }
   }
 
-  saveDocument(request: AcmDocumentSaveRequest): IpcResult<AcmDocument> {
+  async saveDocument(
+    request: AcmDocumentSaveRequest,
+  ): Promise<IpcResult<AcmDocument>> {
     try {
-      if (!request.filePath)
-        return errorResult("ACM_FILE_INVALID", "没有保存路径，请使用另存为");
-      const filePath = ensureCppPath(request.filePath);
+      if (this.disposing)
+        return errorResult("ACM_FILE_BUSY", "文件服务正在关闭");
       const tracked = this.openDocuments.get(request.documentId);
-      if (
-        !tracked ||
-        !tracked.filePath ||
-        !samePath(tracked.filePath, filePath)
-      )
+      if (!tracked || !tracked.filePath)
         return errorResult("ACM_FILE_INVALID", "保存路径与已打开文档不匹配");
-      this.writeDocument(filePath, request, tracked.scope);
-      const document = this.savedDocument(request, filePath, tracked.scope);
-      this.trackDocument(document, tracked.scope);
-      return { ok: true, data: document };
+      const filePath = ensureCppPath(request.filePath ?? "");
+      return await this.enqueueWrite(request.documentId, () =>
+        this.saveDocumentUnlocked(request, filePath, tracked),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return errorResult(fileErrorCode(error), message);
@@ -330,38 +372,29 @@ export class AcmFileService {
     parent: BrowserWindow | null = null,
   ): Promise<IpcResult<AcmDocument | null>> {
     try {
+      if (this.disposing)
+        return errorResult("ACM_FILE_BUSY", "文件服务正在关闭");
       const tracked = this.openDocuments.get(request.documentId);
       if (!tracked) return errorResult("ACM_FILE_INVALID", "文档未打开");
       const result = parent
-        ? await this.dialogs.showSaveDialog(
-            parent,
-            this.saveOptions(request.filePath),
+        ? await this.withSaveDialog(() =>
+            this.dialogs.showSaveDialog(
+              parent,
+              this.saveOptions(request.filePath),
+            ),
           )
-        : await this.dialogs.showSaveDialog(this.saveOptions(request.filePath));
+        : await this.withSaveDialog(() =>
+            this.dialogs.showSaveDialog(this.saveOptions(request.filePath)),
+          );
       if (result.canceled || !result.filePath) return { ok: true, data: null };
       const filePath = ensureCppPath(this.withCppExtension(result.filePath));
-      if (fs.existsSync(filePath)) {
-        const options: MessageBoxOptions = {
-          type: "warning",
-          buttons: ["覆盖", "取消"],
-          defaultId: 1,
-          cancelId: 1,
-          title: "确认覆盖",
-          message: "目标文件已存在，是否覆盖？",
-        };
-        const confirmation = parent
-          ? await this.dialogs.showMessageBox(parent, options)
-          : await this.dialogs.showMessageBox(options);
-        if (confirmation.response !== 0) return { ok: true, data: null };
-      }
-      this.writeDocument(
-        filePath,
-        { ...request, filePath, force: true },
-        tracked.scope,
-      );
-      const document = this.savedDocument(request, filePath, tracked.scope);
-      this.trackDocument(document, tracked.scope);
-      return { ok: true, data: document };
+      return await this.enqueueWrite(request.documentId, async () => {
+        if (this.openDocuments.get(request.documentId) !== tracked)
+          return errorResult("ACM_FILE_BUSY", "文档已关闭，无法继续保存");
+        if (!(await this.confirmOverwrite(filePath, parent)))
+          return { ok: true, data: null };
+        return this.saveDocumentAsUnlocked(request, filePath, tracked);
+      });
     } catch (error) {
       return errorResult(
         fileErrorCode(error),
@@ -373,31 +406,24 @@ export class AcmFileService {
   async checkExternal(
     document: AcmDocumentExternalRequest,
   ): Promise<IpcResult<AcmDocumentExternalState>> {
+    if (this.disposing) return errorResult("ACM_FILE_BUSY", "文件服务正在关闭");
+    if (!document.filePath || !document.savedFingerprint)
+      return { ok: true, data: { changed: false, fingerprint: null } };
+    const key = externalCheckKey(document);
+    const inFlight = this.pendingExternalChecks.get(key);
+    if (inFlight) return inFlight;
+    const operation = this.checkExternalOnce(document);
+    this.pendingExternalChecks.set(key, operation);
     try {
-      if (!document.filePath || !document.savedFingerprint)
-        return { ok: true, data: { changed: false, fingerprint: null } };
-      const filePath = ensureCppPath(document.filePath);
-      const tracked = this.openDocuments.get(document.documentId);
-      if (
-        !tracked ||
-        !tracked.filePath ||
-        !samePath(tracked.filePath, filePath)
-      )
-        return errorResult("ACM_FILE_INVALID", "文档未打开");
-      assertRegularPath(filePath, false);
-      const current = await this.readFingerprint(filePath, tracked.scope);
-      return {
-        ok: true,
-        data: {
-          changed: !sameFingerprint(current, document.savedFingerprint),
-          fingerprint: current,
-        },
-      };
+      return await operation;
     } catch (error) {
       return errorResult(
-        "ACM_FILE_CHANGED",
-        error instanceof Error ? error.message : String(error),
+        fileErrorCode(error, "ACM_FILE_CHANGED"),
+        errorMessage(error),
       );
+    } finally {
+      if (this.pendingExternalChecks.get(key) === operation)
+        this.pendingExternalChecks.delete(key);
     }
   }
 
@@ -409,10 +435,13 @@ export class AcmFileService {
   }
 
   async dispose(): Promise<void> {
+    this.disposing = true;
+    await Promise.all([this.openGate, this.writeGate, this.saveDialogGate]);
+    this.pendingExternalChecks.clear();
     this.openDocuments.clear();
   }
 
-  private async readDocument(
+  private async readDocumentUnlocked(
     filePath: string,
     scope: AcmDocumentScope,
   ): Promise<AcmDocument> {
@@ -420,7 +449,8 @@ export class AcmFileService {
     assertRegularPath(resolved, false);
     const streamed = await this.streamFile(resolved, scope, true);
     const openBytes = [...this.openDocuments.values()].reduce(
-      (total, state) => total + state.bytes,
+      (total, state) =>
+        state.scope === "diff-candidate" ? total : total + state.bytes,
       0,
     );
     if (
@@ -437,7 +467,7 @@ export class AcmFileService {
       filePath: resolved,
       content,
       lineEnding: detectLineEnding(rawContent),
-      readOnly: isReadOnly(resolved, streamed.stat),
+      readOnly: await isReadOnly(resolved, streamed.stat),
       dirty: false,
       savedFingerprint: streamed.fingerprint,
     };
@@ -447,6 +477,177 @@ export class AcmFileService {
       scope,
     });
     return document;
+  }
+
+  private async withOpenGate<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.disposing) throw new AcmFileBusyError();
+    if (this.pendingOpenOperations >= ACM_MAX_PENDING_OPEN_OPERATIONS)
+      throw new AcmFileBusyError();
+    this.pendingOpenOperations += 1;
+    const previous = this.openGate;
+    let release!: () => void;
+    this.openGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      this.pendingOpenOperations -= 1;
+      release();
+    }
+  }
+
+  private async withSaveDialog<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.disposing) throw new AcmFileBusyError();
+    if (this.pendingSaveDialogs >= ACM_MAX_PENDING_SAVE_DIALOGS)
+      throw new AcmFileBusyError();
+    this.pendingSaveDialogs += 1;
+    const previous = this.saveDialogGate;
+    let release!: () => void;
+    this.saveDialogGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      this.pendingSaveDialogs -= 1;
+      release();
+    }
+  }
+
+  private async withWriteGate<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.writeGate;
+    let release!: () => void;
+    this.writeGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  private async enqueueWrite<T>(
+    documentId: string,
+    operation: () => Promise<IpcResult<T>>,
+  ): Promise<IpcResult<T>> {
+    const admission = this.admitWrite(documentId);
+    if (admission) return errorResult("ACM_FILE_BUSY", admission);
+    try {
+      return await this.withWriteGate(operation);
+    } finally {
+      this.pendingWrites -= 1;
+      this.pendingWriteDocuments.delete(documentId);
+    }
+  }
+
+  private admitWrite(documentId: string): string | null {
+    if (this.disposing) return "文件服务正在关闭，请稍后重试";
+    if (this.pendingWriteDocuments.has(documentId))
+      return "同一文档已有保存操作，请等待完成";
+    if (this.pendingWrites >= ACM_MAX_PENDING_WRITES)
+      return "待处理保存操作过多，请稍后重试";
+    this.pendingWrites += 1;
+    this.pendingWriteDocuments.add(documentId);
+    return null;
+  }
+
+  private async saveDocumentUnlocked(
+    request: AcmDocumentSaveRequest,
+    filePath: string,
+    tracked: OpenDocumentState,
+  ): Promise<IpcResult<AcmDocument>> {
+    if (this.openDocuments.get(request.documentId) !== tracked)
+      return errorResult("ACM_FILE_BUSY", "文档已关闭，无法继续保存");
+    if (!tracked.filePath || !samePath(tracked.filePath, filePath))
+      return errorResult("ACM_FILE_INVALID", "保存路径与已打开文档不匹配");
+    const persisted = await this.writeDocument(
+      filePath,
+      request,
+      tracked.scope,
+    );
+    if (this.openDocuments.get(request.documentId) !== tracked)
+      return errorResult("ACM_FILE_BUSY", "文档已关闭，保存结果未重新登记");
+    const document = await this.savedDocument(request, filePath, persisted);
+    this.trackDocument(document, tracked.scope);
+    return { ok: true, data: document };
+  }
+
+  private async saveDocumentAsUnlocked(
+    request: AcmDocumentSaveRequest,
+    filePath: string,
+    tracked: OpenDocumentState,
+  ): Promise<IpcResult<AcmDocument>> {
+    if (this.openDocuments.get(request.documentId) !== tracked)
+      return errorResult("ACM_FILE_BUSY", "文档已关闭，无法继续保存");
+    const persisted = await this.writeDocument(
+      filePath,
+      { ...request, filePath, force: true },
+      tracked.scope,
+    );
+    if (this.openDocuments.get(request.documentId) !== tracked)
+      return errorResult("ACM_FILE_BUSY", "文档已关闭，保存结果未重新登记");
+    const document = await this.savedDocument(request, filePath, persisted);
+    this.trackDocument(document, tracked.scope);
+    return { ok: true, data: document };
+  }
+
+  private async checkExternalUnlocked(
+    document: AcmDocumentExternalRequest,
+  ): Promise<IpcResult<AcmDocumentExternalState>> {
+    if (!document.filePath || !document.savedFingerprint)
+      return { ok: true, data: { changed: false, fingerprint: null } };
+    const filePath = ensureCppPath(document.filePath);
+    const tracked = this.openDocuments.get(document.documentId);
+    if (!tracked || !tracked.filePath || !samePath(tracked.filePath, filePath))
+      return errorResult("ACM_FILE_INVALID", "文档未打开");
+    assertRegularPath(filePath, false);
+    const current = await this.readFingerprint(filePath, tracked.scope);
+    return {
+      ok: true,
+      data: {
+        changed: !sameFingerprint(current, document.savedFingerprint),
+        fingerprint: current,
+      },
+    };
+  }
+
+  private async checkExternalOnce(
+    document: AcmDocumentExternalRequest,
+  ): Promise<IpcResult<AcmDocumentExternalState>> {
+    try {
+      return await this.withOpenGate(() =>
+        this.checkExternalUnlocked(document),
+      );
+    } catch (error) {
+      return errorResult(
+        fileErrorCode(error, "ACM_FILE_CHANGED"),
+        errorMessage(error),
+      );
+    }
+  }
+
+  private async confirmOverwrite(
+    filePath: string,
+    parent: BrowserWindow | null,
+  ): Promise<boolean> {
+    if (!(await this.pathExists(filePath))) return true;
+    const options: MessageBoxOptions = {
+      type: "warning",
+      buttons: ["覆盖", "取消"],
+      defaultId: 1,
+      cancelId: 1,
+      title: "确认覆盖",
+      message: "目标文件已存在，是否覆盖？",
+    };
+    const confirmation = parent
+      ? await this.dialogs.showMessageBox(parent, options)
+      : await this.dialogs.showMessageBox(options);
+    return confirmation.response === 0;
   }
 
   private async readFingerprint(
@@ -466,10 +667,13 @@ export class AcmFileService {
     fingerprint: DocumentFingerprint;
     stat: fs.Stats;
   }> {
+    const pathBeforeOpen = await fs.promises.stat(filePath);
     const handle = await fs.promises.open(filePath, "r");
     try {
       const initial = await handle.stat();
       if (!initial.isFile()) throw new Error("源文件不是普通文件");
+      if (!sameFileIdentity(pathBeforeOpen, initial))
+        throw new Error("文件在打开时发生变化，请重新打开");
       assertDocumentBytes(initial.size, scope);
       const read = await this.readFileChunks(
         handle,
@@ -478,6 +682,7 @@ export class AcmFileService {
       );
       const afterRead = await fs.promises.stat(filePath);
       if (
+        !sameFileIdentity(initial, afterRead) ||
         afterRead.size !== initial.size ||
         afterRead.mtimeMs !== initial.mtimeMs
       )
@@ -535,85 +740,136 @@ export class AcmFileService {
     };
   }
 
-  private writeDocument(
+  private async writeDocument(
     filePath: string,
     request: AcmDocumentSaveRequest,
     scope: AcmDocumentScope,
-  ): void {
-    const bytes = Buffer.byteLength(request.content, "utf8");
+  ): Promise<PersistedFileState> {
+    const normalizedContent = normalizeLineEnding(
+      request.content,
+      request.lineEnding,
+    );
+    const bytes = Buffer.byteLength(normalizedContent, "utf8");
     assertDocumentBytes(bytes, scope);
     assertRegularPath(filePath, true);
-    if (fs.existsSync(filePath)) {
-      const stat = fs.statSync(filePath);
-      if (isReadOnly(filePath, stat))
-        throw new Error("目标文件是只读文件，请使用另存为");
-      if (!request.force) {
-        if (!request.expectedFingerprint)
-          throw new Error(
-            "缺少文件指纹，文件可能已被外部修改，请重新加载后再保存",
-          );
-        if (
-          !sameFingerprint(
-            fingerprint(filePath, scope),
-            request.expectedFingerprint,
-          )
-        )
-          throw new Error("文件已被外部修改，请重新加载、另存为或确认覆盖");
+    await this.assertWritableTarget(filePath, request, scope);
+    await this.replaceFile(filePath, normalizedContent, () =>
+      this.revalidateWritableTarget(filePath, request, scope),
+    );
+    const stat = await fs.promises.stat(filePath);
+    return {
+      stat,
+      fingerprint: fingerprintFromContent(
+        stat,
+        request.content,
+        request.lineEnding,
+        scope,
+      ),
+    };
+  }
+
+  private async assertWritableTarget(
+    filePath: string,
+    request: AcmDocumentSaveRequest,
+    scope: AcmDocumentScope,
+  ): Promise<void> {
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        if (request.force) return;
+        throw new Error("文件已被外部删除，请重新加载、另存为或确认覆盖");
       }
+      throw error;
     }
+    if (await isReadOnly(filePath, stat))
+      throw new Error("目标文件是只读文件，请使用另存为");
+    if (request.force) return;
+    if (!request.expectedFingerprint)
+      throw new Error("缺少文件指纹，文件可能已被外部修改，请重新加载后再保存");
+    const current = await this.readFingerprint(filePath, scope);
+    if (!sameFingerprint(current, request.expectedFingerprint))
+      throw new Error("文件已被外部修改，请重新加载、另存为或确认覆盖");
+  }
+
+  private async revalidateWritableTarget(
+    filePath: string,
+    request: AcmDocumentSaveRequest,
+    scope: AcmDocumentScope,
+  ): Promise<void> {
+    assertRegularPath(filePath, true);
+    await this.assertWritableTarget(filePath, request, scope);
+  }
+
+  private async replaceFile(
+    filePath: string,
+    content: string,
+    beforeReplace?: () => Promise<void>,
+  ): Promise<void> {
     const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
     const backupPath = `${filePath}.${process.pid}.${randomUUID()}.bak`;
-    fs.writeFileSync(
-      tempPath,
-      normalizeLineEnding(request.content, request.lineEnding),
-      "utf8",
-    );
     let backupRetained = false;
     try {
-      if (fs.existsSync(filePath)) {
-        fs.renameSync(filePath, backupPath);
+      await fs.promises.writeFile(tempPath, content, "utf8");
+      if (beforeReplace) await beforeReplace();
+      if (await this.pathExists(filePath)) {
+        await fs.promises.rename(filePath, backupPath);
         try {
-          fs.renameSync(tempPath, filePath);
+          await fs.promises.rename(tempPath, filePath);
         } catch (error) {
           try {
-            fs.renameSync(backupPath, filePath);
+            await fs.promises.rename(backupPath, filePath);
           } catch {
             backupRetained = true;
             throw new RecoveryRequiredError(backupPath);
           }
           throw error;
         }
-        fs.rmSync(backupPath, { force: true });
+        await fs.promises.rm(backupPath, { force: true });
       } else {
-        fs.renameSync(tempPath, filePath);
+        await fs.promises.rename(tempPath, filePath);
       }
     } catch (error) {
-      fs.rmSync(tempPath, { force: true });
-      if (!backupRetained) fs.rmSync(backupPath, { force: true });
+      await this.removeQuietly(tempPath);
+      if (!backupRetained) await this.removeQuietly(backupPath);
       throw error;
     }
   }
 
-  private savedDocument(
+  private async pathExists(filePath: string): Promise<boolean> {
+    try {
+      await fs.promises.access(filePath, fs.constants.F_OK);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  private async removeQuietly(filePath: string): Promise<void> {
+    try {
+      await fs.promises.rm(filePath, { force: true });
+    } catch {
+      // Preserve the primary write error; the recovery path reports its backup.
+    }
+  }
+
+  private async savedDocument(
     request: AcmDocumentSaveRequest,
     filePath: string,
-    scope: AcmDocumentScope,
-  ): AcmDocument {
-    const stat = fs.statSync(filePath);
+    persisted: PersistedFileState,
+  ): Promise<AcmDocument> {
+    const { stat, fingerprint } = persisted;
     return {
       id: request.documentId,
       name: path.basename(filePath),
       filePath,
       content: normalizeLineEnding(request.content, "lf"),
       lineEnding: request.lineEnding,
-      readOnly: isReadOnly(filePath, stat),
+      readOnly: await isReadOnly(filePath, stat),
       dirty: false,
-      savedFingerprint: fingerprintFromContent(
-        filePath,
-        request.content,
-        request.lineEnding,
-        scope,
-      ),
+      savedFingerprint: fingerprint,
     };
   }
 
