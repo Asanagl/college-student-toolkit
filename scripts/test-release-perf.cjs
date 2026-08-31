@@ -4,11 +4,25 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const zlib = require("node:zlib");
 const { performance } = require("node:perf_hooks");
-const { randomBytes, randomUUID } = require("node:crypto");
+const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
+const OCR_COMPONENT = {
+  id: "ocr-chi-sim",
+  version: "1.0.0",
+  assetUrl:
+    "https://github.com/Asanagl/college-student-toolkit/releases/download/v0.3.0/ocr-chi-sim-1.0.0.traineddata.gz",
+  compressedBytes: 1_710_883,
+  extractedBytes: 2_471_033,
+  compressedSha256:
+    "037B9E59AB3598EF6E892E1DC9AB7D34AE993B555C7296B9E08A2F0675648A9E",
+  extractedSha256:
+    "9784F7C917C546424B690FCDE708CE1F604A4393D08BB51DDAB146D7D7C794E6",
+};
+const OCR_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 
 function restartWithElectronRuntime() {
   if (process.versions.electron) return;
@@ -343,6 +357,88 @@ function unwrap(result, label) {
   return result.data;
 }
 
+function sha256(data) {
+  return createHash("sha256").update(data).digest("hex").toUpperCase();
+}
+
+function resolveBenchmarkFile(configured, label) {
+  const lexicalPath = path.resolve(root, configured);
+  let filePath;
+  try {
+    filePath = fs.realpathSync(lexicalPath);
+  } catch (error) {
+    throw new Error(
+      `${label} 无法解析：${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const relativePath = path.relative(root, filePath);
+  if (
+    !relativePath ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativePath)
+  )
+    throw new Error(`${label} 必须位于项目目录内：${configured}`);
+  if (!fs.statSync(filePath).isFile()) throw new Error(`${label} 不是普通文件`);
+  return { filePath, relativePath: relativePath.replaceAll(path.sep, "/") };
+}
+
+function resolveOcrBenchmarkInput() {
+  const archive = process.env.PERF_OCR_ARCHIVE_PATH?.trim();
+  const image = process.env.PERF_OCR_IMAGE_PATH?.trim();
+  if (!archive && !image) return null;
+  if (!archive || !image)
+    throw new Error(
+      "真实 OCR 性能需要同时设置 PERF_OCR_ARCHIVE_PATH 和 PERF_OCR_IMAGE_PATH",
+    );
+  const archiveFile = resolveBenchmarkFile(archive, "OCR 压缩资产");
+  const archiveData = fs.readFileSync(archiveFile.filePath);
+  if (
+    archiveData.length !== OCR_COMPONENT.compressedBytes ||
+    sha256(archiveData) !== OCR_COMPONENT.compressedSha256
+  )
+    throw new Error("OCR 压缩资产大小或 SHA-256 与 manifest 不匹配");
+  const extractedData = zlib.gunzipSync(archiveData);
+  if (
+    extractedData.length !== OCR_COMPONENT.extractedBytes ||
+    sha256(extractedData) !== OCR_COMPONENT.extractedSha256
+  )
+    throw new Error("OCR 解压资产大小或 SHA-256 与 manifest 不匹配");
+  const imageFile = resolveBenchmarkFile(image, "OCR 识别图片");
+  const imageData = fs.readFileSync(imageFile.filePath);
+  if (imageData.length === 0 || imageData.length > OCR_IMAGE_MAX_BYTES)
+    throw new Error("OCR 识别图片大小不在允许范围内");
+  return {
+    archive: {
+      path: archiveFile.relativePath,
+      bytes: archiveData.length,
+      sha256: sha256(archiveData),
+    },
+    extracted: {
+      bytes: extractedData.length,
+      sha256: sha256(extractedData),
+      data: extractedData,
+    },
+    image: {
+      path: imageFile.relativePath,
+      bytes: imageData.length,
+      sha256: sha256(imageData),
+      data: imageData,
+    },
+  };
+}
+
+function seedOcrComponent(profile, input) {
+  const target = path.join(
+    profile,
+    "components",
+    OCR_COMPONENT.id,
+    OCR_COMPONENT.version,
+    "chi_sim.traineddata",
+  );
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, input.extracted.data);
+}
+
 async function launchPackaged(profile, backupPath, importPath) {
   const childEnvironment = { ...process.env };
   delete childEnvironment.ELECTRON_RUN_AS_NODE;
@@ -660,6 +756,52 @@ async function createBackupMetrics(page, backupPath, iterations, warmups) {
   };
 }
 
+async function createOcrMetrics(page, input, iterations, warmups) {
+  const status = unwrap(
+    await page.evaluate(() => window.api.ocrComponent.getStatus()),
+    "OCR status",
+  );
+  if (status.state !== "ready")
+    throw new Error(`OCR 组件未就绪：${status.state}`);
+  const imageBase64 = input.image.data.toString("base64");
+  const values = await collectAsync(
+    async () => {
+      unwrap(
+        await page.evaluate(
+          (encoded) => window.api.importBrowser.runOcr(encoded),
+          imageBase64,
+        ),
+        "OCR recognize",
+      );
+    },
+    iterations,
+    warmups,
+  );
+  return {
+    ...status,
+    ...summarize(values),
+    asset: {
+      url: OCR_COMPONENT.assetUrl,
+      id: OCR_COMPONENT.id,
+      version: OCR_COMPONENT.version,
+      compressedBytes: input.archive.bytes,
+      compressedSha256: input.archive.sha256,
+      extractedBytes: input.extracted.bytes,
+      extractedSha256: input.extracted.sha256,
+    },
+    image: {
+      path: input.image.path,
+      bytes: input.image.bytes,
+      sha256: input.image.sha256,
+    },
+    evidence: {
+      kind: "real-ocr-performance",
+      real: true,
+      recognition: "packaged OCR IPC with validated Release language data",
+    },
+  };
+}
+
 function isTransientAppMetricsError(error) {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("Execution context was destroyed");
@@ -913,6 +1055,7 @@ async function main() {
   const soakMinutes = envNumber("PERF_SOAK_MINUTES", 30, 0);
   const soakIntervalMs = envNumber("PERF_SOAK_INTERVAL_MS", 10_000, 100);
   const enforce = envFlag("PERF_ENFORCE", true);
+  const ocrBenchmarkInput = resolveOcrBenchmarkInput();
   const mode = enforce ? "release" : "non-release";
   const report = {
     schemaVersion: 1,
@@ -984,24 +1127,35 @@ async function main() {
     await closeSession(session);
     session = undefined;
     soakProfile = prepareProfile(false);
+    if (ocrBenchmarkInput) seedOcrComponent(soakProfile, ocrBenchmarkInput);
     soakSession = await launchPackaged(soakProfile, null, null);
-    report.metrics.ocr = unwrap(
-      await soakSession.page.evaluate(() =>
-        window.api.ocrComponent.getStatus(),
-      ),
-      "OCR status",
-    );
-    report.metrics.ocr = {
-      ...report.metrics.ocr,
-      skipped: true,
-      reason: "未提供真实 OCR Release 资产和识别图片；不伪造线上 OCR 性能证据",
-      evidence: {
-        kind: "real-ocr-performance",
-        real: false,
-        reason: "本次运行未执行真实 OCR 识别",
-      },
-    };
+    // Measure the application's idle footprint before OCR initializes its WASM worker. The
+    // optional OCR worker is sampled separately below so its one-time activation does not
+    // turn the normal idle-RSS gate into an implicit OCR-memory gate.
     report.metrics.idleRss = await measureIdleRss(soakSession.app, idleMinutes);
+    report.metrics.ocr = ocrBenchmarkInput
+      ? await createOcrMetrics(
+          soakSession.page,
+          ocrBenchmarkInput,
+          iterations,
+          warmups,
+        )
+      : {
+          ...unwrap(
+            await soakSession.page.evaluate(() =>
+              window.api.ocrComponent.getStatus(),
+            ),
+            "OCR status",
+          ),
+          skipped: true,
+          reason:
+            "未提供真实 OCR Release 资产和识别图片；不伪造线上 OCR 性能证据",
+          evidence: {
+            kind: "real-ocr-performance",
+            real: false,
+            reason: "本次运行未执行真实 OCR 识别",
+          },
+        };
     report.metrics.soak = await measureSoak(
       soakSession,
       soakMinutes,
