@@ -344,6 +344,12 @@ export const acmRunnerStartSchema = z.object({
   stdin: z.string().max(256 * 1024),
   mode: z.enum(["compile", "run"]),
 });
+/** 对拍两侧均沿用单文件 Runner 的安全边界；页面不暴露可调限制。 */
+export const acmDiffStartSchema = z.object({
+  reference: z.string().max(2 * 1024 * 1024),
+  candidate: z.string().max(2 * 1024 * 1024),
+  stdin: z.string().max(256 * 1024),
+});
 
 export class IpcValidationError extends Error {
   readonly code = "VALIDATION_FAILED" as const;

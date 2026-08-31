@@ -11,6 +11,8 @@ import {
   type AcmDocument,
   type RunnerEvent,
   type RunnerStartRequest,
+  type AcmDiffStartRequest,
+  type AcmDiffEvent,
   type OcrComponentStatus,
   type RendererApi,
   type UpdateStatusPayload,
@@ -229,6 +231,18 @@ const api: RendererApi = {
       return () =>
         ipcRenderer.removeListener(IPC_CHANNELS.ACM_RUNNER_EVENT, handler);
     },
+    startDiff: (request: AcmDiffStartRequest) =>
+      invoke(IPC_CHANNELS.ACM_DIFF_START, request),
+    stopDiff: () => invoke(IPC_CHANNELS.ACM_DIFF_STOP),
+    onDiffEvent: (callback: (event: AcmDiffEvent) => void) => {
+      const handler = (_event: unknown, event: AcmDiffEvent) => callback(event);
+      ipcRenderer.on(IPC_CHANNELS.ACM_DIFF_EVENT, handler);
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.ACM_DIFF_EVENT, handler);
+    },
+    getNoticeState: () => invoke(IPC_CHANNELS.ACM_NOTICE_GET_STATE),
+    dismissNotice: () => invoke(IPC_CHANNELS.ACM_NOTICE_DISMISS),
+    clearNotice: () => invoke(IPC_CHANNELS.ACM_NOTICE_CLEAR),
   },
 };
 

@@ -123,7 +123,7 @@ test("packaged build performs CRUD, restart persistence, settings, Store channel
     session = await launchPackaged(profile, backupPath);
     const { page } = session;
 
-    await expect(page.locator(".ant-menu-item")).toHaveCount(6);
+    await expect(page.locator(".ant-menu-item")).toHaveCount(7);
     const schedulePayload: Omit<Schedule, "id" | "createdAt" | "updatedAt"> = {
       title: `${marker} 日程`,
       startTime: localIso(9, 0),
@@ -367,6 +367,7 @@ test("packaged build performs CRUD, restart persistence, settings, Store channel
       "通知",
       "外观",
       "OCR 识别组件",
+      "ACM 工具",
       "数据与备份",
       "关于与更新",
     ]) {

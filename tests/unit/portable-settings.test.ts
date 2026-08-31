@@ -192,4 +192,19 @@ describe("PortableSettingsService", () => {
 
     expect(() => service.replace(invalid)).toThrow("便携设置格式无效");
   });
+
+  it("persists a versioned ACM notice dismissal without changing plugin state", async () => {
+    await service.init();
+    expect(service.getAcmNoticeDismissedVersion()).toBeNull();
+    service.setAcmNoticeDismissedVersion("0.4.0");
+    expect(service.get().acm).toEqual({
+      enabled: true,
+      noticeDismissedVersion: "0.4.0",
+    });
+
+    await service.dispose();
+    await service.init();
+    expect(service.getAcmNoticeDismissedVersion()).toBe("0.4.0");
+    expect(service.get().acm.enabled).toBe(true);
+  });
 });

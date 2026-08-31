@@ -46,6 +46,7 @@ const MENU_ITEMS = [
   { key: "/exam", icon: <FileProtectOutlined />, label: "考试安排" },
   { key: "/lab", icon: <ExperimentOutlined />, label: "实验提醒" },
   { key: "/grade", icon: <TrophyOutlined />, label: "成绩显示" },
+  { key: "/acm-diff", icon: <CodeOutlined />, label: "ACM 对拍" },
   { key: "/acm", icon: <CodeOutlined />, label: "ACM 临时 IDE" },
 ];
 

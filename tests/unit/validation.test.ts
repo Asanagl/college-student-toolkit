@@ -16,6 +16,7 @@ import {
   notificationPayloadSchema,
   acmCompilerSelectionSchema,
   acmDocumentSaveSchema,
+  acmDiffStartSchema,
   acmRunnerStartSchema,
   acmTemplateSchema,
   parseIpc,
@@ -245,6 +246,17 @@ describe("IPC runtime validation", () => {
         mode: "run",
       }),
     ).toMatchObject({ mode: "run" });
+    expect(
+      parseIpc(acmDiffStartSchema, {
+        reference: "int main() {}",
+        candidate: "int main() {}",
+        stdin: "",
+      }),
+    ).toEqual({
+      reference: "int main() {}",
+      candidate: "int main() {}",
+      stdin: "",
+    });
     expect(() => parseIpc(acmTemplateSchema, "shell")).toThrow();
     expect(() =>
       parseIpc(acmCompilerSelectionSchema, {
@@ -258,6 +270,13 @@ describe("IPC runtime validation", () => {
         source: "x".repeat(2 * 1024 * 1024 + 1),
         stdin: "",
         mode: "compile",
+      }),
+    ).toThrow();
+    expect(() =>
+      parseIpc(acmDiffStartSchema, {
+        reference: "x".repeat(2 * 1024 * 1024 + 1),
+        candidate: "",
+        stdin: "",
       }),
     ).toThrow();
   });

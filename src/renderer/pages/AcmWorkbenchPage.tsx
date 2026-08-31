@@ -232,15 +232,24 @@ function PluginBanner({
   busy,
   onRetry,
   onToggle,
+  visible,
+  onDismiss,
 }: {
   status: AcmPluginStatus | null;
   busy: boolean;
   onRetry: () => void;
   onToggle: () => void;
+  visible: boolean;
+  onDismiss: () => void;
 }) {
   if (!status) {
     return <Alert type="info" showIcon message="正在检查 ACM 工具状态…" />;
   }
+
+  const forceVisible = ["disabled", "unsupported", "error"].includes(
+    status.state,
+  );
+  if (!visible && !forceVisible) return null;
 
   const canToggle = status.state !== "unsupported" && status.state !== "error";
   const description = status.error
@@ -273,6 +282,8 @@ function PluginBanner({
         </Space>
       }
       description={description}
+      closable={!forceVisible}
+      onClose={onDismiss}
       action={
         <Space>
           {status.state === "error" && (
@@ -475,6 +486,7 @@ export default function AcmWorkbenchPage() {
   const [pluginStatus, setPluginStatus] = useState<AcmPluginStatus | null>(
     null,
   );
+  const [noticeVisible, setNoticeVisible] = useState(true);
   const [pluginBusy, setPluginBusy] = useState(false);
   const [opening, setOpening] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -597,12 +609,13 @@ export default function AcmWorkbenchPage() {
 
   const loadStatus = useCallback(async () => {
     try {
-      const result = await window.api.acm.getStatus();
-      if (result.ok && result.data) {
-        setPluginStatus(result.data);
-      } else {
-        message.error(errorText(result));
-      }
+      const [result, notice] = await Promise.all([
+        window.api.acm.getStatus(),
+        window.api.acm.getNoticeState(),
+      ]);
+      if (result.ok && result.data) setPluginStatus(result.data);
+      else message.error(errorText(result));
+      if (notice.ok && notice.data) setNoticeVisible(notice.data.visible);
     } catch (error) {
       message.error(
         error instanceof Error ? error.message : "无法读取 ACM 工具状态",
@@ -644,6 +657,8 @@ export default function AcmWorkbenchPage() {
   }, []);
 
   useEffect(() => {
+    const showNotice = () => setNoticeVisible(true);
+    window.addEventListener("acm-notice-cleared", showNotice);
     void loadStatus();
     let unsubscribe: (() => void) | null = null;
     try {
@@ -686,7 +701,10 @@ export default function AcmWorkbenchPage() {
         error instanceof Error ? error.message : "Runner 事件订阅失败",
       );
     }
-    return () => unsubscribe?.();
+    return () => {
+      window.removeEventListener("acm-notice-cleared", showNotice);
+      unsubscribe?.();
+    };
   }, [finishRunner, loadStatus]);
 
   const docsAvailable = isPluginUsable(pluginStatus);
@@ -1216,6 +1234,20 @@ export default function AcmWorkbenchPage() {
         busy={pluginBusy}
         onRetry={() => void retryPlugin()}
         onToggle={() => void togglePlugin()}
+        visible={noticeVisible}
+        onDismiss={() => {
+          void window.api.acm
+            .dismissNotice()
+            .then((result) => {
+              if (result.ok) setNoticeVisible(false);
+              else message.error(errorText(result));
+            })
+            .catch((error: unknown) => {
+              message.error(
+                error instanceof Error ? error.message : "关闭提示失败",
+              );
+            });
+        }}
       />
 
       <div className="acm-command-bar">

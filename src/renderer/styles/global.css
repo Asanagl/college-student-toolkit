@@ -103,6 +103,105 @@ body.acrylic-mode #root {
   color: var(--acm-editor-foreground);
 }
 
+.acm-diff-editors {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-height: 360px;
+}
+
+.acm-diff-page {
+  overflow: auto;
+  padding-bottom: 8px;
+}
+
+.acm-diff-editor-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.acm-diff-editor-card .ant-card-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.acm-diff-editor-frame {
+  flex: 1 1 auto;
+  min-height: 300px;
+}
+
+.acm-diff-stdin-card {
+  flex: 0 0 auto;
+}
+
+.acm-diff-difference {
+  display: grid;
+  gap: 6px;
+}
+
+.acm-diff-difference code {
+  display: block;
+  margin-top: 2px;
+  padding: 4px 6px;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--acm-editor-border) 20%, transparent);
+  font-family: Consolas, "Cascadia Code", monospace;
+}
+
+.acm-diff-outputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.acm-diff-output-panel {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--acm-editor-border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--acm-editor-background) 92%, transparent);
+}
+
+.acm-diff-output-stream {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.acm-diff-output-stream pre {
+  max-height: 240px;
+  min-height: 36px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--acm-editor-border) 20%, transparent);
+  font-family: Consolas, "Cascadia Code", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .acm-diff-editors {
+    grid-template-columns: 1fr;
+  }
+
+  .acm-diff-outputs {
+    grid-template-columns: 1fr;
+  }
+}
+
 .acm-workbench-header,
 .acm-command-bar,
 .acm-editor-meta,

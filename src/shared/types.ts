@@ -338,6 +338,8 @@ export interface PortableSettings {
   appearance: PortableAppearanceSettings;
   acm: {
     enabled: boolean;
+    /** 关闭提示时记录的产品版本；版本升级后自动重新显示。 */
+    noticeDismissedVersion?: string | null;
   };
 }
 
@@ -575,6 +577,83 @@ export interface RunnerEvent {
   durationMs?: number;
 }
 
+/** ACM 对拍请求；源码和标准输入只在当前页面会话内保存。 */
+export interface AcmDiffStartRequest {
+  reference: string;
+  candidate: string;
+  stdin: string;
+}
+
+export type AcmDiffResultStatus =
+  | "reference-failed"
+  | "candidate-compile-failed"
+  | "candidate-runtime-failed"
+  | "candidate-timeout"
+  | "candidate-output-limit"
+  | "match"
+  | "mismatch"
+  | "cancelled"
+  | "unsupported";
+
+/** 对拍首个 token 差异的受限上下文。 */
+export interface AcmDiffDifference {
+  referenceTokens: string[];
+  candidateTokens: string[];
+  referenceStart: number;
+  candidateStart: number;
+  /** 标准程序在差异点缺失的 token 数；正常差异时不设置。 */
+  referenceMissing?: number;
+  /** 待测程序在差异点缺失的 token 数；正常差异时不设置。 */
+  candidateMissing?: number;
+}
+
+/** 两侧运行阶段捕获的受限输出；stdout 用于 token 比较。 */
+export interface AcmDiffProgramOutput {
+  stdout: string;
+  stderr: string;
+}
+
+export interface AcmDiffResult {
+  status: AcmDiffResultStatus;
+  difference?: AcmDiffDifference;
+  referenceOutput?: AcmDiffProgramOutput;
+  candidateOutput?: AcmDiffProgramOutput;
+  /** 临时可执行文件或目录清理失败的非阻断警告。 */
+  cleanupWarnings?: string[];
+  errorCode?: IpcErrorCode;
+}
+
+export type AcmDiffSide = "reference" | "candidate" | "comparison";
+export type AcmDiffStage =
+  | "reference-compile"
+  | "reference-run"
+  | "candidate-compile"
+  | "candidate-run"
+  | "compare";
+
+/** 对拍阶段事件；终结事件携带受限制的两侧运行输出和差异结果。 */
+export interface AcmDiffEvent {
+  taskId: string;
+  side: AcmDiffSide;
+  stage: AcmDiffStage;
+  status:
+    | "started"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "timeout"
+    | "output-limit";
+  result?: AcmDiffResult;
+  cleanupWarning?: string;
+  errorCode?: IpcErrorCode;
+}
+
+export interface AcmNoticeState {
+  visible: boolean;
+  currentVersion: string;
+  dismissedVersion: string | null;
+}
+
 // ==================== IPC 通道常量 ====================
 // 命名规范：<域>:<资源>:<动作>
 // 注意：timetable 通道对应 courses 表，period 通道对应 period_config 表
@@ -691,6 +770,12 @@ export const IPC_CHANNELS = {
   ACM_RUNNER_START: "acm:runner:start",
   ACM_RUNNER_STOP: "acm:runner:stop",
   ACM_RUNNER_EVENT: "acm:runner:event",
+  ACM_DIFF_START: "acm:diff:start",
+  ACM_DIFF_STOP: "acm:diff:stop",
+  ACM_DIFF_EVENT: "acm:diff:event",
+  ACM_NOTICE_GET_STATE: "acm:notice:getState",
+  ACM_NOTICE_DISMISS: "acm:notice:dismiss",
+  ACM_NOTICE_CLEAR: "acm:notice:clear",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
@@ -863,6 +948,14 @@ export interface RendererApi {
     ) => Promise<IpcResult<{ taskId: string }>>;
     stopRunner: () => Promise<IpcResult<boolean>>;
     onRunnerEvent: (callback: (event: RunnerEvent) => void) => () => void;
+    startDiff: (
+      request: AcmDiffStartRequest,
+    ) => Promise<IpcResult<{ taskId: string }>>;
+    stopDiff: () => Promise<IpcResult<boolean>>;
+    onDiffEvent: (callback: (event: AcmDiffEvent) => void) => () => void;
+    getNoticeState: () => Promise<IpcResult<AcmNoticeState>>;
+    dismissNotice: () => Promise<IpcResult<AcmNoticeState>>;
+    clearNotice: () => Promise<IpcResult<AcmNoticeState>>;
   };
 }
 

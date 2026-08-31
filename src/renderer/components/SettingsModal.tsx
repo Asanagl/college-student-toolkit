@@ -1,5 +1,5 @@
 // 0.3.0 统一设置：把课程、通知、外观、OCR、备份和更新放入同一入口。
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Button,
   Card,
@@ -25,6 +25,7 @@ import {
 } from "@ant-design/icons";
 import type {
   AppearanceConfig,
+  AcmPluginStatus,
   BackupInspection,
   DndConfig,
   NotificationRecord,
@@ -75,7 +76,27 @@ export default function SettingsModal({ open, onClose }: Props) {
   const [version, setVersion] = useState("");
   const [updateChannel, setUpdateChannel] =
     useState<UpdateChannel>("development");
+  const [acmStatus, setAcmStatus] = useState<AcmPluginStatus | null>(null);
+  const [activeTab, setActiveTab] = useState("timetable");
   const [savingSemester, setSavingSemester] = useState(false);
+
+  const clearAcmNotice = useCallback(async (): Promise<void> => {
+    try {
+      const result = await window.api.acm.clearNotice();
+      if (result.ok) window.dispatchEvent(new Event("acm-notice-cleared"));
+      else message.error(result.error ?? "恢复 ACM 提示失败");
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : "恢复 ACM 提示失败",
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open && activeTab === "acm")
+      // 只有用户确实回到 ACM 面板时才恢复提示；打开其他设置不应打断其选择。
+      void clearAcmNotice();
+  }, [activeTab, clearAcmNotice, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -89,6 +110,7 @@ export default function SettingsModal({ open, onClose }: Props) {
         window.api.ocrComponent.getStatus(),
         window.api.update.getCurrentVersion(),
         window.api.update.getChannel(),
+        window.api.acm.getStatus(),
       ]);
       if (!alive) return;
       if (results[0].ok && results[0].data) setPreferences(results[0].data);
@@ -98,6 +120,7 @@ export default function SettingsModal({ open, onClose }: Props) {
       if (results[4].ok && results[4].data) setOcr(results[4].data);
       if (results[5].ok && results[5].data) setVersion(results[5].data);
       if (results[6].ok && results[6].data) setUpdateChannel(results[6].data);
+      if (results[7].ok && results[7].data) setAcmStatus(results[7].data);
     };
     void load();
     const offAppearance = window.api.appearance.onChange(setAppearance);
@@ -197,6 +220,39 @@ export default function SettingsModal({ open, onClose }: Props) {
     if (result.ok) setOcr(null);
     else message.error(result.error ?? "删除 OCR 组件失败");
   };
+
+  const acmPanel = acmStatus ? (
+    <Space direction="vertical" style={{ width: "100%" }}>
+      <Space>
+        <Text>ACM 工具集</Text>
+        <Switch
+          checked={acmStatus.enabled}
+          disabled={
+            acmStatus.state === "unsupported" || acmStatus.state === "error"
+          }
+          onChange={async (enabled) => {
+            try {
+              const result = await window.api.acm.setEnabled(enabled);
+              if (result.ok && result.data) setAcmStatus(result.data);
+              else if (!result.ok)
+                message.error(result.error ?? "更新 ACM 状态失败");
+            } catch (error) {
+              message.error(
+                error instanceof Error ? error.message : "更新 ACM 状态失败",
+              );
+            }
+          }}
+        />
+        <Tag>{acmStatus.state}</Tag>
+      </Space>
+      <Text type="secondary">
+        对拍和 C++ 临时 IDE 仅在 Windows 11 x64
+        上执行；关闭页面提示不会改变此开关。
+      </Text>
+    </Space>
+  ) : (
+    <Text type="secondary">正在加载 ACM 工具状态…</Text>
+  );
 
   const appearancePanel = appearance ? (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -408,6 +464,7 @@ export default function SettingsModal({ open, onClose }: Props) {
     { key: "notification", label: "通知", children: notificationPanel },
     { key: "appearance", label: "外观", children: appearancePanel },
     { key: "ocr", label: "OCR 识别组件", children: ocrPanel },
+    { key: "acm", label: "ACM 工具", children: acmPanel },
     {
       key: "data",
       label: "数据与备份",
@@ -466,7 +523,13 @@ export default function SettingsModal({ open, onClose }: Props) {
       width={720}
       destroyOnClose={false}
     >
-      <Tabs items={tabs} />
+      <Tabs
+        activeKey={activeTab}
+        items={tabs}
+        onChange={(key) => {
+          setActiveTab(key);
+        }}
+      />
     </Modal>
   );
 }

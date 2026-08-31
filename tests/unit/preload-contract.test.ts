@@ -152,6 +152,11 @@ describe("preload RendererApi contract", () => {
     await call("acm", "probeCompiler");
     await call("acm", "startRunner", {});
     await call("acm", "stopRunner");
+    await call("acm", "startDiff", {});
+    await call("acm", "stopDiff");
+    await call("acm", "getNoticeState");
+    await call("acm", "dismissNotice");
+    await call("acm", "clearNotice");
     await call("acm", "releaseDocument", "document-id");
     expect(electronState.invoke.mock.calls.length).toBeGreaterThan(60);
   });
@@ -166,9 +171,10 @@ describe("preload RendererApi contract", () => {
       api().appearance.onChange(callback),
       api().ocrComponent.onStatusChange(callback),
       api().acm.onRunnerEvent(callback),
+      api().acm.onDiffEvent(callback),
     ];
-    expect(electronState.on).toHaveBeenCalledTimes(7);
+    expect(electronState.on).toHaveBeenCalledTimes(8);
     for (const unsubscribe of unsubscribers) unsubscribe();
-    expect(electronState.removeListener).toHaveBeenCalledTimes(7);
+    expect(electronState.removeListener).toHaveBeenCalledTimes(8);
   });
 });

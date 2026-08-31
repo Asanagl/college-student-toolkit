@@ -8,6 +8,7 @@ import ExamPage from "./pages/ExamPage";
 import LabPage from "./pages/LabPage";
 import GradePage from "./pages/GradePage";
 import AcmWorkbenchPage from "./pages/AcmWorkbenchPage";
+import AcmDiffPage from "./pages/AcmDiffPage";
 // Phase 7：更新通知组件，常驻根节点，监听主进程更新状态并提示用户
 import UpdateNotifier from "./components/update/UpdateNotifier";
 
@@ -28,6 +29,7 @@ const router = createHashRouter([
       { path: "/lab", element: <LabPage /> },
       { path: "/grade", element: <GradePage /> },
       { path: "/acm", element: <AcmWorkbenchPage /> },
+      { path: "/acm-diff", element: <AcmDiffPage /> },
       { path: "*", element: <Navigate to="/schedule" replace /> },
     ],
   },

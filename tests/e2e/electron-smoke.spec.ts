@@ -27,7 +27,7 @@ test("packaged Electron entrypoint starts with an isolated profile and secure re
     const page = await app.firstWindow();
     await page.waitForLoadState("domcontentloaded");
     await expect(page).toHaveTitle("大学生工具组");
-    await expect(page.locator(".ant-menu-item")).toHaveCount(6);
+    await expect(page.locator(".ant-menu-item")).toHaveCount(7);
     const security = await page.evaluate(() => ({
       hasApi: typeof window.api === "object",
       hasRequire:

@@ -127,7 +127,10 @@ const settingsV1Schema = z.object({
 const settingsV2Schema = z.object({
   portableSettingsVersion: z.literal(2),
   ...settingsFields,
-  acm: z.object({ enabled: z.boolean() }),
+  acm: z.object({
+    enabled: z.boolean(),
+    noticeDismissedVersion: z.string().trim().max(32).nullable().optional(),
+  }),
 });
 
 interface ZipEntryInfo {
@@ -976,7 +979,7 @@ export class DataTransferService {
           ...item,
         })),
         appearance: { ...legacy.appearance },
-        acm: { enabled: true },
+        acm: { enabled: true, noticeDismissedVersion: null },
       };
     }
     return {

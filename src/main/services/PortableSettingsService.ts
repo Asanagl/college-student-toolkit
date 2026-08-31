@@ -22,7 +22,7 @@ const DEFAULT_SETTINGS: PortableSettings = {
     blurRadius: 0,
     clarity: 100,
   },
-  acm: { enabled: true },
+  acm: { enabled: true, noticeDismissedVersion: null },
 };
 
 const calendarDate = z
@@ -70,7 +70,10 @@ const settingsV1Schema = z.object({
 const settingsV2Schema = z.object({
   portableSettingsVersion: z.literal(2),
   ...settingsFields,
-  acm: z.object({ enabled: z.boolean() }),
+  acm: z.object({
+    enabled: z.boolean(),
+    noticeDismissedVersion: z.string().trim().max(32).nullable().optional(),
+  }),
 });
 
 function cloneSettings(settings: PortableSettings): PortableSettings {
@@ -88,7 +91,7 @@ function migrateLegacySettings(value: unknown): PortableSettings | null {
   return {
     ...legacy,
     portableSettingsVersion: 2,
-    acm: { enabled: true },
+    acm: { enabled: true, noticeDismissedVersion: null },
   };
 }
 
@@ -136,6 +139,7 @@ export class PortableSettingsService {
       timetable: { ...current.timetable, ...patch.timetable },
       dnd: { ...current.dnd, ...patch.dnd },
       appearance: { ...current.appearance, ...patch.appearance },
+      acm: { ...current.acm, ...patch.acm },
       notificationHistory: patch.notificationHistory
         ? patch.notificationHistory.slice(0, 100)
         : current.notificationHistory,
@@ -144,6 +148,16 @@ export class PortableSettingsService {
     // 先完成原子替换，避免磁盘写入失败时内存状态先于持久化数据漂移。
     this.settings = next;
     return this.get();
+  }
+
+  getAcmNoticeDismissedVersion(): string | null {
+    return this.settings.acm.noticeDismissedVersion ?? null;
+  }
+
+  setAcmNoticeDismissedVersion(version: string | null): PortableSettings {
+    return this.update({
+      acm: { ...this.settings.acm, noticeDismissedVersion: version },
+    });
   }
 
   replace(next: PortableSettings | LegacyPortableSettings): PortableSettings {
@@ -270,7 +284,10 @@ export class PortableSettingsService {
     result.dnd = { ...result.dnd, ...value.dnd };
     result.notificationHistory = value.notificationHistory.slice(0, 100);
     result.appearance = { ...result.appearance, ...value.appearance };
-    result.acm = { enabled: value.acm?.enabled ?? true };
+    result.acm = {
+      enabled: value.acm?.enabled ?? true,
+      noticeDismissedVersion: value.acm?.noticeDismissedVersion ?? null,
+    };
     if (
       result.appearance.backgroundImage &&
       !isSafeImageFileName(result.appearance.backgroundImage)
