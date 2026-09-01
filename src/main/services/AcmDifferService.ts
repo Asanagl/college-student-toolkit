@@ -37,6 +37,8 @@ const DEFAULT_TEMP_ROOT = path.join(
 const TEMP_PREFIX = "college-toolkit-diff-";
 const OWNER_MARKER = ".college-toolkit-diff-owner.json";
 const CLEANUP_RETRIES = 3;
+const MAX_CLEANUP_RETRIES = 8;
+const CLEANUP_RETRY_DELAY_MS = 250;
 const STALE_TEMP_TTL_MS = 24 * 60 * 60 * 1000;
 
 function isResourceWriteError(error: unknown): boolean {
@@ -91,6 +93,14 @@ interface DiffTask {
   cleanupWarnings: string[];
   done: Promise<void> | null;
   runtimePath: string | null;
+  phase: ActivePhase | null;
+}
+
+interface ActivePhase {
+  side: Side;
+  phase: Phase;
+  executable: string;
+  runtime: PhaseRuntime;
 }
 
 interface PhaseRuntime {
@@ -169,8 +179,11 @@ export class AcmDifferService {
   private readonly removePath: (target: string) => void;
   private readonly writeFile: DiffTextWriter;
   private readonly listeners = new Set<(event: AcmDiffEvent) => void>();
+  private readonly pendingCleanupRetries = new Map<string, Promise<void>>();
   private active: DiffTask | null = null;
   private initialized = false;
+  private disposing = false;
+  private disposePromise: Promise<void> | null = null;
 
   constructor(options: AcmDifferServiceOptions = {}) {
     this.compiler = options.compiler ?? acmCompilerService;
@@ -178,9 +191,9 @@ export class AcmDifferService {
     this.platform = options.platform ?? process.platform;
     this.tempRoot = path.resolve(options.tempRoot ?? DEFAULT_TEMP_ROOT);
     this.limits = { ...DEFAULT_RUNNER_LIMITS, ...options.limits };
-    this.cleanupRetries = Math.max(
-      0,
-      Math.floor(options.cleanupRetries ?? CLEANUP_RETRIES),
+    this.cleanupRetries = Math.min(
+      MAX_CLEANUP_RETRIES,
+      Math.max(0, Math.floor(options.cleanupRetries ?? CLEANUP_RETRIES)),
     );
     this.staleTempTtlMs = Math.max(
       1,
@@ -202,6 +215,7 @@ export class AcmDifferService {
   }
 
   async init(): Promise<void> {
+    if (this.disposing) throw new Error("ACM 对拍服务正在退出");
     fs.mkdirSync(this.tempRoot, { recursive: true });
     if (this.isReparsePoint(this.tempRoot))
       throw new Error("ACM 对拍临时根目录不能是 reparse point");
@@ -228,6 +242,8 @@ export class AcmDifferService {
       return errorResult("VALIDATION_FAILED", "标准输入超过 256 KiB 限制");
     if (this.platform !== "win32")
       return errorResult("ACM_UNSUPPORTED", "ACM 对拍仅支持 Windows");
+    if (this.disposing)
+      return errorResult("ACM_PLUGIN_INVALID", "ACM 对拍服务正在退出");
     if (!this.initialized)
       return errorResult("ACM_PLUGIN_INVALID", "ACM 对拍服务尚未初始化");
     if (this.active)
@@ -243,6 +259,7 @@ export class AcmDifferService {
       cleanupWarnings: [],
       done: null,
       runtimePath: null,
+      phase: null,
     };
     this.active = task;
     try {
@@ -283,15 +300,41 @@ export class AcmDifferService {
     const task = this.active;
     if (!task) return { ok: true, data: false };
     task.stopRequested = true;
-    if (task.child) await this.terminate(task, task.child);
+    let terminationError: unknown;
+    if (task.child) {
+      try {
+        await this.terminate(task, task.child);
+      } catch (error) {
+        terminationError = error;
+        await this.finishAfterTerminationFailure(task);
+      }
+    }
     if (task.done) await task.done;
+    if (terminationError)
+      return errorResult(
+        "ACM_RUNNER_FAILED",
+        terminationError instanceof Error
+          ? terminationError.message
+          : String(terminationError),
+      );
     return { ok: true, data: true };
   }
 
-  async dispose(): Promise<void> {
-    await this.stop();
-    this.initialized = false;
-    this.listeners.clear();
+  dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposing = true;
+    this.disposePromise = this.disposeInternal();
+    return this.disposePromise;
+  }
+
+  private async disposeInternal(): Promise<void> {
+    try {
+      await this.stop();
+    } finally {
+      await Promise.allSettled([...this.pendingCleanupRetries.values()]);
+      this.initialized = false;
+      this.listeners.clear();
+    }
   }
 
   private async execute(task: DiffTask, compilerPath: string): Promise<void> {
@@ -496,6 +539,7 @@ export class AcmDifferService {
     }
     return new Promise((resolve) => {
       const runtime = this.createRuntime(resolve);
+      task.phase = { side, phase, executable, runtime };
       try {
         runtime.child = this.spawnPhase(task, side, phase, command, executable);
         task.child = runtime.child;
@@ -604,6 +648,7 @@ export class AcmDifferService {
     if (runtime.tempTimer) clearInterval(runtime.tempTimer);
     if (status !== "completed" && runtime.child)
       await this.terminate(task, runtime.child).catch(() => undefined);
+    if (task.phase?.runtime === runtime) task.phase = null;
     runtime.resolve({ status, errorCode });
     this.emit({
       taskId: task.id,
@@ -628,6 +673,21 @@ export class AcmDifferService {
       runtime,
       "timeout",
       "ACM_RUNNER_TIMEOUT",
+    );
+  }
+
+  private async finishAfterTerminationFailure(task: DiffTask): Promise<void> {
+    const phase = task.phase;
+    if (!phase || phase.runtime.settled) return;
+    phase.runtime.child = null;
+    task.child = null;
+    await this.finishPhase(
+      task,
+      phase.side,
+      phase.phase,
+      phase.runtime,
+      "cancelled",
+      "ACM_RUNNER_CANCELLED",
     );
   }
 
@@ -867,18 +927,7 @@ export class AcmDifferService {
     target: string,
     label: string,
   ): Promise<void> {
-    let directoryContainsReparse = false;
-    try {
-      directoryContainsReparse =
-        fs.lstatSync(target).isDirectory() && this.containsReparsePoint(target);
-    } catch {
-      // A concurrently removed executable is already clean.
-    }
-    if (
-      !this.isWithinRoot(target) ||
-      this.isReparsePoint(target) ||
-      directoryContainsReparse
-    ) {
+    if (!this.isSafeCleanupTarget(target)) {
       task.cleanupWarnings.push(`${label}：路径不安全，未删除`);
       return;
     }
@@ -891,16 +940,41 @@ export class AcmDifferService {
     }
     const warning = `${label}：${target}`;
     task.cleanupWarnings.push(warning);
+    this.scheduleCleanupRetry(target);
+  }
+
+  private scheduleCleanupRetry(target: string): void {
+    if (this.cleanupRetries === 0 || this.pendingCleanupRetries.has(target))
+      return;
+    const retry = this.retryCleanupPath(target);
+    this.pendingCleanupRetries.set(target, retry);
+    void retry.then(
+      () => this.removePendingCleanupRetry(target, retry),
+      () => this.removePendingCleanupRetry(target, retry),
+    );
+  }
+
+  private async retryCleanupPath(target: string): Promise<void> {
     for (let attempt = 1; attempt <= this.cleanupRetries; attempt += 1) {
-      setTimeout(() => {
-        try {
-          if (!this.isWithinRoot(target) || this.isReparsePoint(target)) return;
-          this.removePath(target);
-        } catch {
-          // A later retry or next startup may release the file lock.
-        }
-      }, attempt * 250);
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, attempt * CLEANUP_RETRY_DELAY_MS),
+      );
+      if (!this.isSafeCleanupTarget(target)) return;
+      try {
+        this.removePath(target);
+        if (!fs.existsSync(target)) return;
+      } catch {
+        // A later retry or next startup may release the file lock.
+      }
     }
+  }
+
+  private removePendingCleanupRetry(
+    target: string,
+    retry: Promise<void>,
+  ): void {
+    if (this.pendingCleanupRetries.get(target) === retry)
+      this.pendingCleanupRetries.delete(target);
   }
 
   private async terminate(task: DiffTask, child: ChildProcess): Promise<void> {
@@ -956,6 +1030,16 @@ export class AcmDifferService {
     }
   }
 
+  private isSafeCleanupTarget(target: string): boolean {
+    if (!this.isWithinRoot(target) || this.isReparsePoint(target)) return false;
+    try {
+      const stat = fs.lstatSync(target);
+      return !stat.isDirectory() || !this.containsReparsePoint(target);
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT";
+    }
+  }
+
   private containsReparsePoint(directory: string): boolean {
     const pending = [directory];
     try {
@@ -984,7 +1068,12 @@ export class AcmDifferService {
         if (!this.isWithinRoot(target) || this.isReparsePoint(target)) continue;
         const marker = this.readOwnedMarker(target);
         const age = Date.now() - fs.statSync(target).mtimeMs;
-        if (age < this.staleTempTtlMs || !marker) continue;
+        if (
+          age < this.staleTempTtlMs ||
+          !marker ||
+          !this.isSafeCleanupTarget(target)
+        )
+          continue;
         fs.rmSync(target, {
           recursive: true,
           force: true,

@@ -136,6 +136,12 @@ function factory(scenario: Scenario, commands: string[]): RunnerProcessFactory {
   };
 }
 
+class TerminationFailureHelper extends AcmRunnerHelper {
+  override async terminate(_child: ChildProcess): Promise<void> {
+    throw new Error("termination failed");
+  }
+}
+
 function request(
   overrides: Partial<AcmDiffStartRequest> = {},
 ): AcmDiffStartRequest {
@@ -495,6 +501,42 @@ describe("AcmDifferService", () => {
     await service.dispose();
   });
 
+  it("finishes the task when process termination reports an error", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-stop-error-"),
+    );
+    roots.push(root);
+    const service = new AcmDifferService({
+      compiler: compiler(),
+      helper: new TerminationFailureHelper(
+        factory(
+          { reference: "hang", candidate: "unused", holdReference: true },
+          [],
+        ),
+        "win32",
+      ),
+      platform: "win32",
+      tempRoot: root,
+    });
+    await service.init();
+    const events: AcmDiffEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await expect(service.start(request())).resolves.toMatchObject({ ok: true });
+    while (
+      !events.some(
+        (event) =>
+          event.stage === "reference-run" && event.status === "started",
+      )
+    )
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    await expect(service.stop()).resolves.toMatchObject({
+      ok: false,
+      errorCode: "ACM_RUNNER_FAILED",
+    });
+    expect(events.at(-1)?.result?.status).toBe("cancelled");
+    await service.dispose();
+  });
+
   it("keeps cleanup warnings separate from the comparison result", async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), "college-toolkit-diff-cleanup-"),
@@ -527,6 +569,57 @@ describe("AcmDifferService", () => {
       ]),
     });
     await service.dispose();
+  });
+
+  it("waits for scheduled cleanup retries before disposing", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-cleanup-wait-"),
+    );
+    roots.push(root);
+    const commands: string[] = [];
+    const firstCleanupTargets = new Set<string>();
+    const retriedTargets = new Set<string>();
+    const service = new AcmDifferService({
+      compiler: compiler(),
+      helper: new AcmRunnerHelper(
+        factory({ reference: "ok", candidate: "ok" }, commands),
+        "linux",
+      ),
+      platform: "win32",
+      tempRoot: root,
+      removePath: (target) => {
+        if (target.endsWith("program.exe")) {
+          if (!firstCleanupTargets.has(target)) {
+            firstCleanupTargets.add(target);
+            throw new Error("file is locked");
+          }
+          retriedTargets.add(target);
+        }
+        fs.rmSync(target, { recursive: true, force: true });
+      },
+    });
+    await service.init();
+    const comparison = new Promise<void>((resolve) => {
+      service.onEvent((event) => {
+        if (event.stage === "compare") resolve();
+      });
+    });
+    await service.start(request());
+    await comparison;
+    const disposing = service.dispose();
+    await expect(service.start(request())).resolves.toMatchObject({
+      ok: false,
+      errorCode: "ACM_PLUGIN_INVALID",
+    });
+    let disposed = false;
+    void disposing.then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+    await disposing;
+    expect(disposed).toBe(true);
+    expect(retriedTargets.size).toBe(2);
   });
 
   it("rejects non-Windows execution before creating a task", async () => {
@@ -602,6 +695,44 @@ describe("AcmDifferService", () => {
     await service.init();
     expect(fs.existsSync(stale)).toBe(false);
     expect(fs.existsSync(unrelated)).toBe(true);
+  });
+
+  it("keeps stale directories that contain a reparse point", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-stale-reparse-"),
+    );
+    roots.push(root);
+    const stale = path.join(root, "college-toolkit-diff-reparse");
+    fs.mkdirSync(stale);
+    fs.writeFileSync(
+      path.join(stale, ".college-toolkit-diff-owner.json"),
+      JSON.stringify({
+        formatVersion: 1,
+        kind: "temp-directory",
+        owner: "college-student-toolkit-acm-diff",
+        createdAt: Date.now(),
+      }),
+    );
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(stale, old, old);
+    const service = new AcmDifferService({
+      compiler: compiler(),
+      platform: "win32",
+      tempRoot: root,
+      staleTempTtlMs: 1000,
+    });
+    const internals = service as unknown as {
+      containsReparsePoint: (directory: string) => boolean;
+    };
+    const original = internals.containsReparsePoint;
+    internals.containsReparsePoint = () => true;
+    try {
+      await service.init();
+    } finally {
+      internals.containsReparsePoint = original;
+      await service.dispose();
+    }
+    expect(fs.existsSync(stale)).toBe(true);
   });
 
   it("checks tempBytes when a process closes before the monitor tick", async () => {
