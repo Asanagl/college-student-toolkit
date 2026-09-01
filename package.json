@@ -30,7 +30,7 @@
     "pretest:coverage": "npm rebuild better-sqlite3",
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
     "test:e2e": "playwright test --config playwright.config.ts",
-    "test:e2e:packaged": "playwright test --config playwright.config.ts --project=packaged",
+    "test:e2e:packaged": "playwright test --config playwright.config.ts --project=packaged --workers=1",
     "test:smoke:package": "node scripts/smoke-package.cjs",
     "test:smoke:appx": "node scripts/smoke-appx.cjs",
     "test:perf": "node scripts/test-perf.cjs",

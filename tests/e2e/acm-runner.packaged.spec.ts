@@ -589,7 +589,14 @@ test("packaged ACM external changes require explicit overwrite confirmation", as
       await pressWorkbenchShortcut(page, "Control+S");
       await page.getByRole("button", { name: "覆盖保存", exact: true }).click();
       await expect
-        .poll(() => fs.readFileSync(fixture.filePath, "utf8"))
+        .poll(() => {
+          try {
+            return fs.readFileSync(fixture.filePath, "utf8");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+            throw error;
+          }
+        })
         .toBe(source);
       await expect(page.locator(".acm-external-alert")).toHaveCount(0);
     });

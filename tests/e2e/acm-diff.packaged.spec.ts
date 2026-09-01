@@ -103,7 +103,12 @@ test("packaged ACM diff starts blank, compares tokens, isolates failures, and di
     await page
       .getByPlaceholder("输入将同时提供给标准程序和待测程序")
       .fill("41\n");
-    await page.getByRole("button", { name: "开始对拍" }).click();
+    const startButton = page.getByRole("button", { name: "开始对拍" });
+    // Compiler probing runs in parallel with the page mount. Wait for the
+    // actual readiness state before clicking so a slow packaged startup does
+    // not turn a disabled-button no-op into a misleading result timeout.
+    await expect(startButton).toBeEnabled({ timeout: 60_000 });
+    await startButton.click();
     await expect(page.getByText("AC：输出一致", { exact: true })).toBeVisible({
       timeout: 60_000,
     });
@@ -120,7 +125,8 @@ test("packaged ACM diff starts blank, compares tokens, isolates failures, and di
     );
 
     await setSource(page, VALID_SOURCE, WA_SOURCE);
-    await page.getByRole("button", { name: "开始对拍" }).click();
+    await expect(startButton).toBeEnabled({ timeout: 60_000 });
+    await startButton.click();
     await expect(page.getByText("WA：输出不一致", { exact: true })).toBeVisible(
       {
         timeout: 60_000,
@@ -132,7 +138,8 @@ test("packaged ACM diff starts blank, compares tokens, isolates failures, and di
 
     await captureDiffEvents(page);
     await setSource(page, "int main() { return 1; }", VALID_SOURCE);
-    await page.getByRole("button", { name: "开始对拍" }).click();
+    await expect(startButton).toBeEnabled({ timeout: 60_000 });
+    await startButton.click();
     await expect(
       page.getByText("标准程序失败 / 对拍无效", { exact: true }),
     ).toBeVisible({ timeout: 60_000 });
@@ -142,7 +149,8 @@ test("packaged ACM diff starts blank, compares tokens, isolates failures, and di
     ).toHaveLength(0);
 
     await setSource(page, VALID_SOURCE, BROKEN_SOURCE);
-    await page.getByRole("button", { name: "开始对拍" }).click();
+    await expect(startButton).toBeEnabled({ timeout: 60_000 });
+    await startButton.click();
     await expect(
       page.getByText("待测程序编译失败", { exact: true }),
     ).toBeVisible({
