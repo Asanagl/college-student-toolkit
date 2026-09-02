@@ -17,6 +17,7 @@
     "stage:toolchain": "node scripts/stage-toolchain.cjs",
     "build:runner-helper": "node scripts/build-acm-job-runner.cjs",
     "test:runner-helper": "node scripts/test-acm-job-runner.cjs",
+    "test:runner-helper:packaged": "node scripts/test-acm-job-runner.cjs --packaged",
     "test:runner-nested": "node scripts/test-acm-job-runner-nested.cjs",
     "test:runner-nested:packaged": "node scripts/test-acm-job-runner-nested.cjs --packaged",
     "test:runner-dev": "node scripts/run-with-electron-abi.cjs --build scripts/test-acm-runner-dev.cjs",

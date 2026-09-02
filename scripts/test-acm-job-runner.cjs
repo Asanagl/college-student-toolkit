@@ -5,17 +5,30 @@ const path = require("node:path");
 const { spawn, execFileSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
-const helper = path.join(
-  root,
-  ".build",
-  "acm-job-runner",
-  "acm-job-runner.exe",
-);
+const defaultAppxOutput = "release-v0.4.0-msix-local";
+const helper = resolveHelper();
 const breakawayProbe = path.join(
   root,
   "scripts",
   "acm-job-breakaway-probe.ps1",
 );
+
+function resolveHelper() {
+  const supplied = process.env.ACM_JOB_HELPER?.trim();
+  if (supplied) return path.resolve(supplied);
+  if (process.argv[2]?.trim() === "--packaged") {
+    return path.join(
+      path.resolve(root, process.env.APPX_OUTPUT_DIR || defaultAppxOutput),
+      "win-unpacked",
+      "resources",
+      "acm-job-runner.exe",
+    );
+  }
+  const argument = process.argv[2]?.trim();
+  return argument
+    ? path.resolve(root, argument)
+    : path.join(root, ".build", "acm-job-runner", "acm-job-runner.exe");
+}
 
 function processExists(pid) {
   try {
