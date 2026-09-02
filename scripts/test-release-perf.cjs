@@ -10,6 +10,10 @@ const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
+const packageManifest = require(path.join(root, "package.json"));
+const productVersion = String(packageManifest.version || "").trim();
+if (!/^\d+\.\d+\.\d+$/.test(productVersion))
+  throw new Error(`package.json version 无效：${productVersion}`);
 const OCR_COMPONENT = {
   id: "ocr-chi-sim",
   version: "1.0.0",
@@ -47,11 +51,12 @@ const { _electron: electron } = require("playwright");
 const Database = require("better-sqlite3");
 const executable = path.resolve(
   process.env.PACKAGED_EXECUTABLE?.trim() ||
-    "release-v0.3.0-msix-local/win-unpacked/大学生工具组.exe",
+    `release-v${productVersion}-msix-local/win-unpacked/大学生工具组.exe`,
 );
 const reportPath = path.resolve(
   root,
-  process.env.PERF_REPORT_PATH?.trim() || "docs/v0.3.0-performance.json",
+  process.env.PERF_REPORT_PATH?.trim() ||
+    `docs/v${productVersion}-performance-release.json`,
 );
 let runningReport = null;
 const dataset = {

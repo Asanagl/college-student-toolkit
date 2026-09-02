@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "passed",
-  "startedAt": "2026-08-31T13:08:10.235Z",
+  "startedAt": "2026-09-02T06:19:38.725Z",
   "executable": "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
   "host": {
     "platform": "win32",
@@ -45,14 +45,8 @@
         "backup.import",
         "coldStart"
       ],
-      "health": [
-        "idleRss",
-        "soak",
-        "shutdown"
-      ],
-      "ocrEvidence": [
-        "ocr"
-      ]
+      "health": ["idleRss", "soak", "shutdown"],
+      "ocrEvidence": ["ocr"]
     },
     "optional": [
       "pageSwitch.byRoute./schedule",
@@ -83,9 +77,9 @@
     "sqlite": {
       "query": {
         "sampleCount": 30,
-        "p50Ms": 2.8,
-        "p95Ms": 3.68,
-        "maxMs": 4.05,
+        "p50Ms": 2.57,
+        "p95Ms": 3.11,
+        "maxMs": 4.9,
         "thresholds": {
           "p95Ms": 100
         },
@@ -94,8 +88,8 @@
       "crud": {
         "sampleCount": 30,
         "p50Ms": 0.02,
-        "p95Ms": 0.05,
-        "maxMs": 0.09,
+        "p95Ms": 0.06,
+        "maxMs": 0.07,
         "thresholds": {
           "p95Ms": 100
         },
@@ -106,9 +100,9 @@
       "lists": {
         "schedules": {
           "sampleCount": 30,
-          "p50Ms": 46.66,
-          "p95Ms": 59.24,
-          "maxMs": 62.14,
+          "p50Ms": 43.53,
+          "p95Ms": 52.62,
+          "maxMs": 56.46,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -116,9 +110,9 @@
         },
         "courses": {
           "sampleCount": 30,
-          "p50Ms": 33.5,
-          "p95Ms": 48.76,
-          "maxMs": 50.44,
+          "p50Ms": 39.01,
+          "p95Ms": 55.92,
+          "maxMs": 56.63,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -126,9 +120,9 @@
         },
         "exams": {
           "sampleCount": 30,
-          "p50Ms": 66.11,
-          "p95Ms": 79.07,
-          "maxMs": 81.24,
+          "p50Ms": 67.42,
+          "p95Ms": 92.48,
+          "maxMs": 94.36,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -136,9 +130,9 @@
         },
         "labs": {
           "sampleCount": 30,
-          "p50Ms": 64.28,
-          "p95Ms": 95.34,
-          "maxMs": 95.75,
+          "p50Ms": 69.1,
+          "p95Ms": 88.46,
+          "maxMs": 91.69,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -146,9 +140,9 @@
         },
         "grades": {
           "sampleCount": 30,
-          "p50Ms": 15.45,
-          "p95Ms": 16.5,
-          "maxMs": 16.58,
+          "p50Ms": 15.85,
+          "p95Ms": 18.29,
+          "maxMs": 18.41,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -156,9 +150,9 @@
         },
         "gradeDashboard": {
           "sampleCount": 30,
-          "p50Ms": 15.55,
-          "p95Ms": 16.17,
-          "maxMs": 16.19,
+          "p50Ms": 16.55,
+          "p95Ms": 23.28,
+          "maxMs": 24.93,
           "thresholds": {
             "p95Ms": 1000
           },
@@ -167,9 +161,9 @@
       },
       "crud": {
         "sampleCount": 30,
-        "p50Ms": 46.93,
-        "p95Ms": 47.98,
-        "maxMs": 48.48,
+        "p50Ms": 47.98,
+        "p95Ms": 51.06,
+        "maxMs": 51.39,
         "thresholds": {
           "p95Ms": 150
         },
@@ -179,9 +173,9 @@
     "pageSwitch": {
       "overall": {
         "sampleCount": 30,
-        "p50Ms": 234,
-        "p95Ms": 266.55,
-        "maxMs": 267.22,
+        "p50Ms": 260,
+        "p95Ms": 299.92,
+        "maxMs": 299.96,
         "thresholds": {
           "p95Ms": 300
         },
@@ -190,9 +184,9 @@
       "byRoute": {
         "/schedule": {
           "sampleCount": 6,
-          "p50Ms": 218.94,
-          "p95Ms": 233.63,
-          "maxMs": 233.63,
+          "p50Ms": 216.73,
+          "p95Ms": 249.65,
+          "maxMs": 249.65,
           "thresholds": {
             "p95Ms": 300
           },
@@ -200,9 +194,9 @@
         },
         "/timetable": {
           "sampleCount": 6,
-          "p50Ms": 235.46,
-          "p95Ms": 267.22,
-          "maxMs": 267.22,
+          "p50Ms": 251.9,
+          "p95Ms": 299.92,
+          "maxMs": 299.92,
           "thresholds": {
             "p95Ms": 300
           },
@@ -210,9 +204,9 @@
         },
         "/exam": {
           "sampleCount": 6,
-          "p50Ms": 248.72,
-          "p95Ms": 265.93,
-          "maxMs": 265.93,
+          "p50Ms": 266.45,
+          "p95Ms": 282.84,
+          "maxMs": 282.84,
           "thresholds": {
             "p95Ms": 300
           },
@@ -220,9 +214,9 @@
         },
         "/lab": {
           "sampleCount": 6,
-          "p50Ms": 235.82,
-          "p95Ms": 266.55,
-          "maxMs": 266.55,
+          "p50Ms": 266.39,
+          "p95Ms": 299.96,
+          "maxMs": 299.96,
           "thresholds": {
             "p95Ms": 300
           },
@@ -230,9 +224,9 @@
         },
         "/grade": {
           "sampleCount": 6,
-          "p50Ms": 231.34,
-          "p95Ms": 249.95,
-          "maxMs": 249.95,
+          "p50Ms": 251.22,
+          "p95Ms": 283.24,
+          "maxMs": 283.24,
           "thresholds": {
             "p95Ms": 300
           },
@@ -242,9 +236,9 @@
     },
     "reminder": {
       "sampleCount": 30,
-      "p50Ms": 15.54,
-      "p95Ms": 31.13,
-      "maxMs": 31.57,
+      "p50Ms": 16.14,
+      "p95Ms": 22.73,
+      "maxMs": 31.99,
       "thresholds": {
         "p95Ms": 1000,
         "maxMs": 1500
@@ -252,12 +246,12 @@
       "pass": true
     },
     "backup": {
-      "archiveBytes": 11423488,
+      "archiveBytes": 11423051,
       "export": {
         "sampleCount": 30,
-        "p50Ms": 483.4,
-        "p95Ms": 534.61,
-        "maxMs": 562.92,
+        "p50Ms": 468.96,
+        "p95Ms": 549.87,
+        "maxMs": 572.99,
         "thresholds": {
           "p95Ms": 5000,
           "maxMs": 5000
@@ -266,9 +260,9 @@
       },
       "import": {
         "sampleCount": 30,
-        "p50Ms": 281.89,
-        "p95Ms": 309.49,
-        "maxMs": 329.16,
+        "p50Ms": 368.01,
+        "p95Ms": 492.09,
+        "maxMs": 498.71,
         "thresholds": {
           "p95Ms": 5000,
           "maxMs": 5000
@@ -278,9 +272,9 @@
     },
     "coldStart": {
       "sampleCount": 30,
-      "p50Ms": 1067.7,
-      "p95Ms": 1121.05,
-      "maxMs": 1133.01,
+      "p50Ms": 1070.36,
+      "p95Ms": 1140.33,
+      "maxMs": 1207.57,
       "thresholds": {
         "p95Ms": 3000
       },
@@ -289,54 +283,54 @@
     "idleRss": {
       "skipped": false,
       "rssBasis": "Browser+Tab+Utility（排除 GPU compositor）",
-      "baselineMiB": 320.6,
-      "finalMiB": 290.69,
-      "baselineTotalMiB": 564.2,
-      "finalTotalMiB": 488.64,
-      "baselineGpuMiB": 243.6,
-      "finalGpuMiB": 197.95,
+      "baselineMiB": 320.89,
+      "finalMiB": 291.9,
+      "baselineTotalMiB": 548.05,
+      "finalTotalMiB": 493.92,
+      "baselineGpuMiB": 227.16,
+      "finalGpuMiB": 202.02,
       "baselineProcesses": [
         {
           "type": "Browser",
-          "pid": 19828,
-          "workingSetSize": 170932
+          "pid": 50732,
+          "workingSetSize": 171140
         },
         {
           "type": "GPU",
-          "pid": 34012,
-          "workingSetSize": 249444
+          "pid": 13988,
+          "workingSetSize": 232616
         },
         {
           "type": "Utility",
-          "pid": 37560,
-          "workingSetSize": 48184
+          "pid": 33580,
+          "workingSetSize": 48208
         },
         {
           "type": "Tab",
-          "pid": 19236,
-          "workingSetSize": 109176
+          "pid": 28132,
+          "workingSetSize": 109244
         }
       ],
       "finalProcesses": [
         {
           "type": "Browser",
-          "pid": 19828,
-          "workingSetSize": 152280
+          "pid": 50732,
+          "workingSetSize": 152936
         },
         {
           "type": "GPU",
-          "pid": 34012,
-          "workingSetSize": 202704
+          "pid": 13988,
+          "workingSetSize": 206864
         },
         {
           "type": "Utility",
-          "pid": 37560,
-          "workingSetSize": 48152
+          "pid": 33580,
+          "workingSetSize": 48256
         },
         {
           "type": "Tab",
-          "pid": 19236,
-          "workingSetSize": 97232
+          "pid": 28132,
+          "workingSetSize": 97716
         }
       ],
       "pass": true,
@@ -350,9 +344,9 @@
       "totalBytes": 2471033,
       "progress": 100,
       "sampleCount": 30,
-      "p50Ms": 110.72,
-      "p95Ms": 142.13,
-      "maxMs": 142.21,
+      "p50Ms": 102.16,
+      "p95Ms": 116.94,
+      "maxMs": 116.96,
       "thresholds": {},
       "pass": true,
       "asset": {
@@ -377,12 +371,12 @@
     },
     "soak": {
       "skipped": false,
-      "cycles": 179,
+      "cycles": 180,
       "intervalMs": 10000,
-      "baselineMiB": 369.05,
-      "finalMiB": 374.91,
-      "peakMiB": 378,
-      "growthRatio": 0.0159,
+      "baselineMiB": 369.91,
+      "finalMiB": 406.64,
+      "peakMiB": 458.28,
+      "growthRatio": 0.0993,
       "pass": true,
       "thresholdGrowthRatio": 0.1
     },
@@ -395,5 +389,5 @@
   "observedFailures": [],
   "failures": [],
   "warnings": [],
-  "finishedAt": "2026-08-31T13:44:49.896Z"
+  "finishedAt": "2026-09-02T06:56:21.720Z"
 }
