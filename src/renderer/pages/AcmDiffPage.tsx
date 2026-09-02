@@ -450,6 +450,7 @@ export default function AcmDiffPage() {
         const saved = saveAs
           ? await window.api.acm.saveDocumentAs(request)
           : await window.api.acm.saveDocument(request);
+        if (!pageAliveRef.current) return;
         if (!saved.ok || !saved.data) {
           if (!saved.ok) message.error(errorText(saved));
           return;

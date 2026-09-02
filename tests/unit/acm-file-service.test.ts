@@ -682,4 +682,32 @@ describe("AcmFileService", () => {
       errorCode: "ACM_FILE_BUSY",
     });
   });
+
+  it("discards an in-flight save-as dialog after dispose instead of writing the file", async () => {
+    const directory = tempDirectory();
+    const target = path.join(directory, "late-save.cpp");
+    const dialogReady = deferred<void>();
+    const releaseDialog = deferred<void>();
+    const dialogs = {
+      showOpenDialog: vi.fn(),
+      showSaveDialog: vi.fn(async () => {
+        dialogReady.resolve();
+        await releaseDialog.promise;
+        return { canceled: false, filePath: target };
+      }),
+      showMessageBox: vi.fn(),
+    };
+    const service = new AcmFileService(dialogs);
+    const created = service.createDocument("blank");
+    if (!created.ok || !created.data) throw new Error("文档创建失败");
+    const saving = service.saveDocumentAs(
+      request(created.data.id, null, "late content"),
+    );
+    await dialogReady.promise;
+    const disposing = service.dispose();
+    releaseDialog.resolve();
+    await expect(saving).resolves.toMatchObject({ ok: true, data: null });
+    await disposing;
+    expect(fs.existsSync(target)).toBe(false);
+  });
 });

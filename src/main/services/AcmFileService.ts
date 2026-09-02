@@ -317,6 +317,7 @@ export class AcmFileService {
   private readonly scannedBackupDirectories = new Set<string>();
   private disposing = false;
   private openGeneration = 0;
+  private saveGeneration = 0;
   private readonly userDataPath: string;
 
   constructor(
@@ -416,6 +417,7 @@ export class AcmFileService {
     request: AcmDocumentSaveRequest,
     parent: BrowserWindow | null = null,
   ): Promise<IpcResult<AcmDocument | null>> {
+    const generation = this.saveGeneration;
     try {
       if (this.disposing)
         return errorResult("ACM_FILE_BUSY", "文件服务正在关闭");
@@ -432,12 +434,24 @@ export class AcmFileService {
             this.dialogs.showSaveDialog(this.saveOptions(request.filePath)),
           );
       if (result.canceled || !result.filePath) return { ok: true, data: null };
+      if (this.disposing || generation !== this.saveGeneration)
+        return { ok: true, data: null };
       const filePath = ensureCppPath(this.withCppExtension(result.filePath));
       return await this.enqueueWrite(request.documentId, async () => {
-        if (this.openDocuments.get(request.documentId) !== tracked)
+        if (
+          this.disposing ||
+          generation !== this.saveGeneration ||
+          this.openDocuments.get(request.documentId) !== tracked
+        )
           return errorResult("ACM_FILE_BUSY", "文档已关闭，无法继续保存");
         if (!(await this.confirmOverwrite(filePath, parent)))
           return { ok: true, data: null };
+        if (
+          this.disposing ||
+          generation !== this.saveGeneration ||
+          this.openDocuments.get(request.documentId) !== tracked
+        )
+          return errorResult("ACM_FILE_BUSY", "文档已关闭，无法继续保存");
         return this.saveDocumentAsUnlocked(request, filePath, tracked);
       });
     } catch (error) {
@@ -482,6 +496,7 @@ export class AcmFileService {
   async dispose(): Promise<void> {
     this.disposing = true;
     this.openGeneration += 1;
+    this.saveGeneration += 1;
     await Promise.all([this.openGate, this.writeGate, this.saveDialogGate]);
     await Promise.allSettled([...this.pendingCleanupRetries]);
     this.pendingExternalChecks.clear();

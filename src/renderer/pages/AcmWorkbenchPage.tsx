@@ -834,6 +834,7 @@ export default function AcmWorkbenchPage() {
       const result = await window.api.acm.saveDocumentAs(
         buildSaveRequest(document, true),
       );
+      if (!pageAliveRef.current) return;
       if (result.ok && result.data) {
         applySavedDocument(result.data);
         setExternalChanges((current) => ({ ...current, [document.id]: false }));
@@ -843,9 +844,10 @@ export default function AcmWorkbenchPage() {
         message.error(errorText(result));
       }
     } catch (error) {
+      if (!pageAliveRef.current) return;
       message.error(error instanceof Error ? error.message : "另存为失败");
     } finally {
-      setSaving(false);
+      if (pageAliveRef.current) setSaving(false);
     }
   }, [applySavedDocument, docsAvailable]);
 
@@ -866,6 +868,7 @@ export default function AcmWorkbenchPage() {
       setSaving(true);
       try {
         const result = await window.api.acm.saveDocument(request);
+        if (!pageAliveRef.current) return;
         if (result.ok && result.data) {
           applySavedDocument(result.data);
           setExternalChanges((current) => ({
