@@ -71,6 +71,6 @@ $breakawayPid = [uint32]0
 $command = $env:ComSpec + " /d /c ping 127.0.0.1 -t"
 $created = [AcmJobBreakaway]::TryBreakaway($command, [ref]$errorCode, [ref]$breakawayPid)
 $child = Start-Process -FilePath $env:ComSpec -ArgumentList @("/d","/c","ping","127.0.0.1","-t") -PassThru
-Set-Content -LiteralPath $env:ACM_JOB_RUNNER_MARKER -Value @($PID, $child.Id, $created, $errorCode)
+Set-Content -LiteralPath $env:ACM_JOB_RUNNER_MARKER -Value @($PID, $child.Id, $created, $errorCode, $breakawayPid)
 if ($created -ne 0) { exit 9 }
 Start-Sleep -Seconds 60

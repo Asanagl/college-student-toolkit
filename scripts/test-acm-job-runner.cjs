@@ -25,9 +25,9 @@ function resolveHelper() {
     );
   }
   const argument = process.argv[2]?.trim();
-  return argument
-    ? path.resolve(root, argument)
-    : path.join(root, ".build", "acm-job-runner", "acm-job-runner.exe");
+  if (!argument || argument.startsWith("--"))
+    return path.join(root, ".build", "acm-job-runner", "acm-job-runner.exe");
+  return path.resolve(root, argument);
 }
 
 function processExists(pid) {
@@ -153,6 +153,60 @@ function treeTerminationCommand() {
   );
 }
 
+async function verifyBreakawayAllowedWithoutHelper(target, directory, marker) {
+  let runner;
+  let extraPids = [];
+  try {
+    if (fs.existsSync(marker)) fs.rmSync(marker, { force: true });
+    runner = spawn(
+      target,
+      ["-NoProfile", "-NonInteractive", "-File", breakawayProbe],
+      {
+        cwd: directory,
+        windowsHide: true,
+        stdio: "ignore",
+        env: { ...process.env, ACM_JOB_RUNNER_MARKER: marker },
+      },
+    );
+    const deadline = Date.now() + 10_000;
+    let values = [];
+    while (Date.now() < deadline) {
+      if (fs.existsSync(marker)) {
+        values = fs
+          .readFileSync(marker, "utf8")
+          .split(/\r?\n/)
+          .map((value) => Number(value.trim()))
+          .filter((value) => Number.isFinite(value));
+        if (values.length >= 4) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (values.length < 4)
+      throw new Error("等待 fallback breakaway 探针结果超时");
+    const [shellPid, childPid, breakawayCreated, , breakawayPid] = values;
+    extraPids = [shellPid, childPid, breakawayPid].filter(
+      (pid) => Number.isInteger(pid) && pid > 0,
+    );
+    if (breakawayCreated === 0)
+      throw new Error("没有 helper 时 breakaway 仍失败，对照无效");
+    if (processExists(runner.pid)) {
+      if (!runner.kill()) throw new Error("无法结束 fallback wrapper");
+      await waitForExit(runner);
+    }
+    console.log(
+      JSON.stringify({
+        helper: null,
+        strategy: "fallback-allows-create-breakaway-from-job",
+        breakawayCreated: true,
+        targetPids: extraPids,
+      }),
+    );
+  } finally {
+    if (runner?.pid && processExists(runner.pid)) killPid(runner.pid);
+    extraPids.forEach(killPid);
+  }
+}
+
 async function verifyBreakawayRejected(target, directory, marker) {
   let runner;
   let pids = [];
@@ -259,9 +313,14 @@ async function run() {
   const marker = path.join(directory, "marker with spaces.txt");
   try {
     const target = powershellTarget();
-    await verifyExitCode(target, directory);
-    await verifyTreeTermination(target, directory, marker);
-    await verifyBreakawayRejected(target, directory, marker);
+    const fallbackOnly = process.argv[2]?.trim() === "--fallback";
+    if (fallbackOnly) {
+      await verifyBreakawayAllowedWithoutHelper(target, directory, marker);
+    } else {
+      await verifyExitCode(target, directory);
+      await verifyTreeTermination(target, directory, marker);
+      await verifyBreakawayRejected(target, directory, marker);
+    }
   } finally {
     await removeDirectory(directory);
   }
