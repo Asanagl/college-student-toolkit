@@ -235,10 +235,10 @@ public static class AcmOuterJobProbe {
       List<uint> values = new List<uint>();
       foreach (string line in lines) {
         uint pid;
-        if (uint.TryParse(line.Trim(), out pid) && pid > 0) values.Add(pid);
+        if (uint.TryParse(line.Trim(), out pid)) values.Add(pid);
       }
       if (values.Count < 3) return false;
-      pids = new uint[] { values[0], values[1], values[2] };
+      pids = values.ToArray();
       return true;
     } catch {
       return false;
@@ -341,6 +341,40 @@ public static class AcmOuterJobProbe {
       CloseHandle(job);
     }
   }
+
+  public static int RunBreakawayUnderOuterJob(string helper, string target, string probe, string marker) {
+    IntPtr job = CreateKillOnCloseJob();
+    if (job == IntPtr.Zero) return 90;
+    ProcessInformation information = new ProcessInformation();
+    try {
+      string[] arguments = new string[] {
+        target, "-NoProfile", "-NonInteractive", "-File", probe
+      };
+      if (!StartHelper(helper, arguments, out information)) return 91;
+      if (!AssignProcessToJobObject(job, information.Process)) {
+        TerminateAndWait(ref information);
+        return 92;
+      }
+      if (ResumeThread(information.Thread) == 0xffffffff) {
+        TerminateAndWait(ref information);
+        return 93;
+      }
+      uint[] pids;
+      if (!WaitForMarker(marker, out pids)) {
+        TerminateAndWait(ref information);
+        Console.WriteLine("BREAKAWAY_CREATED:timeout");
+        return 94;
+      }
+      uint created = pids.Length >= 3 ? pids[2] : 99;
+      Console.WriteLine("BREAKAWAY_CREATED:" + created);
+      TerminateAndWait(ref information);
+      return created == 0 ? 0 : 95;
+    } finally {
+      TerminateAndWait(ref information);
+      CloseProcessInformation(ref information);
+      CloseHandle(job);
+    }
+  }
 }
 '@
 Add-Type -TypeDefinition $source -Language CSharp
@@ -351,6 +385,9 @@ if ($exitCode -ne 7) { exit 1 }
 $nestedCode = [AcmOuterJobProbe]::RunNestedCleanup($env:ACM_JOB_HELPER, (Join-Path ($env:SystemRoot.Trim()) "System32\WindowsPowerShell\v1.0\powershell.exe"), $env:ACM_NESTED_MARKER)
 Write-Output ("NESTED_RESULT:" + $nestedCode)
 if ($nestedCode -ne 0) { exit 1 }
+$breakawayCode = [AcmOuterJobProbe]::RunBreakawayUnderOuterJob($env:ACM_JOB_HELPER, (Join-Path ($env:SystemRoot.Trim()) "System32\WindowsPowerShell\v1.0\powershell.exe"), $env:ACM_BREAKAWAY_PROBE, $env:ACM_BREAKAWAY_MARKER)
+Write-Output ("BREAKAWAY_NESTED_RESULT:" + $breakawayCode)
+if ($breakawayCode -ne 0) { exit 1 }
 exit 0
 `;
 
@@ -470,6 +507,13 @@ async function runProbe(helper) {
           ...process.env,
           ACM_JOB_HELPER: helper,
           ACM_NESTED_MARKER: marker,
+          ACM_BREAKAWAY_MARKER: path.join(directory, "breakaway-pids.txt"),
+          ACM_JOB_RUNNER_MARKER: path.join(directory, "breakaway-pids.txt"),
+          ACM_BREAKAWAY_PROBE: path.join(
+            root,
+            "scripts",
+            "acm-job-breakaway-probe.ps1",
+          ),
         },
       },
     );
@@ -485,6 +529,8 @@ async function runProbe(helper) {
       throw new Error("未观察到 helper 被单独终止");
     if (!stdout.includes("NESTED_TARGETS_EXITED:true"))
       throw new Error("未观察到 helper 终止后嵌套目标全部退出");
+    if (!stdout.includes("BREAKAWAY_CREATED:0"))
+      throw new Error("外层 Job 下 helper 未拒绝 CREATE_BREAKAWAY_FROM_JOB");
     const pids = readPids(marker);
     if (pids.length !== 3) throw new Error("嵌套目标 PID marker 不完整");
     await waitForPidsToExit(pids);
