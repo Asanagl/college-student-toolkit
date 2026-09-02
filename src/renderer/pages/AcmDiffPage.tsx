@@ -90,6 +90,32 @@ function resultWarnings(result: AcmDiffResult): string[] {
   ];
 }
 
+function uniqueWarnings(warnings: string[]): string[] {
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const warning of warnings) {
+    if (!warning || seen.has(warning)) continue;
+    seen.add(warning);
+    next.push(warning);
+  }
+  return next;
+}
+
+export function mergeDiffCleanupWarnings(
+  current: string[],
+  event: AcmDiffEvent,
+): string[] {
+  const extras = [
+    ...(event.cleanupWarnings ?? []),
+    ...(event.cleanupWarning ? [event.cleanupWarning] : []),
+    ...(event.terminationError && !event.result
+      ? [`子进程终止未确认：${event.terminationError}`]
+      : []),
+  ];
+  const base = event.result ? resultWarnings(event.result) : current;
+  return uniqueWarnings([...base, ...extras]);
+}
+
 export type DiffEventLifecycle = "none" | "pending-cleanup" | "finished";
 
 export function diffEventLifecycle(event: AcmDiffEvent): DiffEventLifecycle {
@@ -329,16 +355,8 @@ export default function AcmDiffPage() {
       }
       if (event.taskId !== taskRef.current) return;
       if (event.status === "started") setPhase(event.stage);
-      if (event.cleanupWarning)
-        setCleanupWarnings((items) => [
-          ...items,
-          event.cleanupWarning as string,
-        ]);
-      if (event.terminationError)
-        setCleanupWarnings((items) => [
-          ...items,
-          `子进程终止未确认：${event.terminationError}`,
-        ]);
+      if (event.result) setResult(event.result);
+      setCleanupWarnings((items) => mergeDiffCleanupWarnings(items, event));
       const lifecycle = diffEventLifecycle(event);
       if (lifecycle === "pending-cleanup") setCleanupPending(true);
       if (lifecycle === "finished") {
@@ -347,10 +365,6 @@ export default function AcmDiffPage() {
         busyRef.current = false;
         taskRef.current = null;
         setPhase(null);
-      }
-      if (event.result) {
-        setResult(event.result);
-        setCleanupWarnings(resultWarnings(event.result));
       }
       if (event.side === "comparison" && event.result) {
         if (lifecycle === "finished") {
@@ -473,10 +487,9 @@ export default function AcmDiffPage() {
       for (const event of pendingEventsRef.current.splice(0)) {
         if (event.taskId !== started.data.taskId) continue;
         const lifecycle = diffEventLifecycle(event);
-        if (event.side === "comparison" && event.result) {
+        if (event.side === "comparison" && event.result)
           setResult(event.result);
-          setCleanupWarnings(resultWarnings(event.result));
-        }
+        setCleanupWarnings((items) => mergeDiffCleanupWarnings(items, event));
         if (lifecycle === "finished") {
           setCleanupPending(false);
           setBusy(false);

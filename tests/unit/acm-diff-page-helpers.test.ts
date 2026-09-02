@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AcmDiffEvent } from "../../src/shared/types";
-import { diffEventLifecycle } from "../../src/renderer/pages/AcmDiffPage";
+import {
+  diffEventLifecycle,
+  mergeDiffCleanupWarnings,
+} from "../../src/renderer/pages/AcmDiffPage";
 
 function event(overrides: Partial<AcmDiffEvent> = {}): AcmDiffEvent {
   return {
@@ -38,5 +41,37 @@ describe("ACM 对拍页面状态 helper", () => {
         event({ side: "candidate", stage: "candidate-run", result: undefined }),
       ),
     ).toBe("none");
+  });
+
+  it("保留比较结果后再合并迟到清理警告", () => {
+    const initial = mergeDiffCleanupWarnings(
+      [],
+      event({
+        result: {
+          status: "reference-failed",
+          cleanupBlocked: true,
+          terminationError: "termination failed",
+        },
+      }),
+    );
+    expect(initial).toEqual([
+      "子进程终止未确认：termination failed",
+      "相关临时资源将在进程退出后继续清理",
+    ]);
+    expect(
+      mergeDiffCleanupWarnings(
+        initial,
+        event({
+          result: undefined,
+          cleanupConfirmed: true,
+          cleanupWarning: "清理对拍临时目录失败：locked",
+          cleanupWarnings: ["清理对拍临时目录失败：locked"],
+        }),
+      ),
+    ).toEqual([
+      "子进程终止未确认：termination failed",
+      "相关临时资源将在进程退出后继续清理",
+      "清理对拍临时目录失败：locked",
+    ]);
   });
 });

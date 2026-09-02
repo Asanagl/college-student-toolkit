@@ -668,6 +668,8 @@ export interface AcmDiffEvent {
     | "output-limit";
   result?: AcmDiffResult;
   cleanupWarning?: string;
+  /** 迟到清理产生的全部非阻断警告；结果已发出后仍会补发。 */
+  cleanupWarnings?: string[];
   terminationError?: string;
   cleanupBlocked?: boolean;
   /** 迟到的 exit/close 已确认，主进程已完成本任务的清理并释放 busy。 */

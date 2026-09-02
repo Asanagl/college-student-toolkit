@@ -724,6 +724,71 @@ describe("AcmDifferService", () => {
     await service.dispose();
   });
 
+  it("surfaces late cleanup warnings after the comparison result", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-late-cleanup-warning-"),
+    );
+    roots.push(root);
+    const service = new AcmDifferService({
+      compiler: compiler(),
+      helper: new LateExitTerminationFailureHelper(
+        factory(
+          { reference: "hang", candidate: "unused", holdReference: true },
+          [],
+        ),
+      ),
+      platform: "win32",
+      tempRoot: root,
+      limits: { runTimeoutMs: 5 },
+      removePath: () => {
+        throw new Error("file is locked");
+      },
+      cleanupRetries: 0,
+    });
+    await service.init();
+    const events: AcmDiffEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await expect(service.start(request())).resolves.toMatchObject({ ok: true });
+    await waitUntil(() =>
+      events.some((event) => event.stage === "compare" && event.result),
+    );
+    const comparison = events.find(
+      (event) => event.stage === "compare" && event.result,
+    );
+    expect(comparison?.result).toMatchObject({
+      status: "reference-failed",
+      errorCode: "ACM_RUNNER_TIMEOUT",
+      cleanupBlocked: true,
+      terminationError: "termination failed",
+    });
+    const earlyWarnings = comparison?.result?.cleanupWarnings ?? [];
+    expect(earlyWarnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("清理标准程序失败")]),
+    );
+    await waitUntil(() =>
+      events.some(
+        (event) =>
+          event.cleanupConfirmed === true &&
+          (event.cleanupWarnings ?? []).some((warning) =>
+            warning.includes("清理对拍临时目录失败"),
+          ),
+      ),
+    );
+    const confirmed = events.find((event) => event.cleanupConfirmed);
+    expect(confirmed).toMatchObject({
+      side: "comparison",
+      stage: "compare",
+      cleanupConfirmed: true,
+    });
+    expect(confirmed?.cleanupWarnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("清理对拍临时目录失败")]),
+    );
+    expect(
+      earlyWarnings.some((warning) => warning.includes("清理对拍临时目录失败")),
+    ).toBe(false);
+    await service.dispose();
+  });
+
   it("keeps cleanup warnings separate from the comparison result", async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), "college-toolkit-diff-cleanup-"),

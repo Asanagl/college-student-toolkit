@@ -1109,10 +1109,11 @@ export class AcmDifferService {
   }
 
   private finishLateExitCleanup(task: DiffTask): void {
+    const previousWarnings = task.cleanupWarnings.length;
     const cleanup = task.executionFinished
       ? this.cleanupTask(task)
       : (task.done ?? Promise.resolve());
-    void cleanup.then(() => this.emitCleanupConfirmed(task));
+    void cleanup.then(() => this.emitCleanupConfirmed(task, previousWarnings));
   }
 
   private clearChildTracking(task: DiffTask, child: ChildProcess): void {
@@ -1124,15 +1125,25 @@ export class AcmDifferService {
     task.lateExitWatched = false;
   }
 
-  private emitCleanupConfirmed(task: DiffTask): void {
+  private emitCleanupConfirmed(
+    task: DiffTask,
+    previousWarningCount = task.cleanupWarnings.length,
+  ): void {
     if (task.cleanupConfirmationEmitted) return;
     task.cleanupConfirmationEmitted = true;
+    const lateWarnings = task.cleanupWarnings.slice(previousWarningCount);
     this.emit({
       taskId: task.id,
       side: "comparison",
       stage: "compare",
       status: "completed",
       cleanupConfirmed: true,
+      ...(lateWarnings.length
+        ? {
+            cleanupWarning: lateWarnings[0],
+            cleanupWarnings: lateWarnings,
+          }
+        : {}),
     });
   }
 
@@ -1142,7 +1153,7 @@ export class AcmDifferService {
     label: string,
   ): Promise<void> {
     if (!this.isSafeCleanupTarget(target)) {
-      task.cleanupWarnings.push(`${label}：路径不安全，未删除`);
+      this.recordCleanupWarning(task, `${label}：路径不安全，未删除`);
       return;
     }
     try {
@@ -1152,9 +1163,21 @@ export class AcmDifferService {
       // The warning is intentionally surfaced with the comparison result; the
       // retries below are best effort because Windows may hold an executable.
     }
-    const warning = `${label}：${target}`;
-    task.cleanupWarnings.push(warning);
+    this.recordCleanupWarning(task, `${label}：${target}`);
     this.scheduleCleanupRetry(target);
+  }
+
+  private recordCleanupWarning(task: DiffTask, warning: string): void {
+    task.cleanupWarnings.push(warning);
+    if (!task.executionFinished || !task.cleanupConfirmationEmitted) return;
+    this.emit({
+      taskId: task.id,
+      side: "comparison",
+      stage: "compare",
+      status: "completed",
+      cleanupWarning: warning,
+      cleanupWarnings: [warning],
+    });
   }
 
   private scheduleCleanupRetry(target: string): void {
