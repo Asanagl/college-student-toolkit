@@ -2,7 +2,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { execFileSync, spawn } = require("node:child_process");
+const { execFileSync, spawn, spawnSync } = require("node:child_process");
 const { _electron: electron } = require("playwright");
 
 const root = path.resolve(__dirname, "..");
@@ -108,6 +108,100 @@ async function waitForRunnerEvent(page, predicate, label) {
   throw new Error(`等待开发 Runner 事件超时：${label}`);
 }
 
+function powershellTarget() {
+  return path.join(
+    process.env.SystemRoot?.trim() || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function killPid(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || !processExists(pid)) return;
+  const taskkill = path.join(
+    process.env.SystemRoot?.trim() || "C:\\Windows",
+    "System32",
+    "taskkill.exe",
+  );
+  try {
+    spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+  } catch {
+    // Cleanup is best effort after the assertion has captured the failure.
+  }
+}
+
+async function runDevelopmentBreakawayProbe() {
+  const probe = path.join(root, "scripts", "acm-job-breakaway-probe.ps1");
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "college-toolkit-dev-breakaway-"),
+  );
+  const marker = path.join(directory, "marker.txt");
+  let runner;
+  let extraPids = [];
+  try {
+    runner = spawn(
+      powershellTarget(),
+      ["-NoProfile", "-NonInteractive", "-File", probe],
+      {
+        cwd: directory,
+        windowsHide: true,
+        stdio: "ignore",
+        env: { ...process.env, ACM_JOB_RUNNER_MARKER: marker },
+      },
+    );
+    const deadline = Date.now() + 10_000;
+    let values = [];
+    while (Date.now() < deadline) {
+      if (fs.existsSync(marker)) {
+        values = fs
+          .readFileSync(marker, "utf8")
+          .split(/\r?\n/)
+          .map((value) => Number(value.trim()))
+          .filter((value) => Number.isFinite(value));
+        if (values.length >= 4) break;
+      }
+      await delay(100);
+    }
+    if (values.length < 4)
+      throw new Error("等待 development breakaway 探针结果超时");
+    const [shellPid, childPid, breakawayCreated, , breakawayPid] = values;
+    extraPids = [shellPid, childPid, breakawayPid].filter(
+      (pid) => Number.isInteger(pid) && pid > 0,
+    );
+    if (breakawayCreated === 0)
+      throw new Error("开发入口没有 helper 时 breakaway 仍失败，对照无效");
+    if (processExists(runner.pid) && !runner.kill())
+      throw new Error("无法结束 development breakaway wrapper");
+    console.log(
+      JSON.stringify({
+        mode: "development",
+        nativeHelper: false,
+        strategy: "development-allows-create-breakaway-from-job",
+        breakawayCreated: true,
+        targetPids: extraPids,
+      }),
+    );
+  } finally {
+    if (runner?.pid && processExists(runner.pid)) killPid(runner.pid);
+    extraPids.forEach(killPid);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 function assertDevelopmentRuntime(runtime) {
   if (runtime.packaged) throw new Error("开发 smoke 意外启动为 packaged 模式");
   const helperPath = path.join(runtime.resourcesPath, "acm-job-runner.exe");
@@ -206,6 +300,7 @@ async function run() {
     app = session.app;
     const { page, runButton } = await openWorkbench(app);
     await runTimeoutProbe(page, runButton);
+    await runDevelopmentBreakawayProbe();
     console.log(
       JSON.stringify({
         mode: "development",
@@ -213,6 +308,7 @@ async function run() {
         nativeHelper: false,
         termination: "taskkill-fallback",
         result: "timeout-confirmed",
+        breakaway: "allowed-without-job-object",
       }),
     );
   } finally {
