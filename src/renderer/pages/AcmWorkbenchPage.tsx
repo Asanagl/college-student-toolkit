@@ -552,6 +552,7 @@ export default function AcmWorkbenchPage() {
   const eventsByDocumentRef = useRef<RunnerEventsByDocument>({});
   const truncatedByDocumentRef = useRef<Record<string, boolean>>({});
   const openingRef = useRef(false);
+  const pageAliveRef = useRef(true);
   const runnerModeRef = useRef<"compile" | "run" | null>(null);
 
   useEffect(() => {
@@ -571,8 +572,10 @@ export default function AcmWorkbenchPage() {
     tabsRef.current = tabs;
   }, [tabs]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    pageAliveRef.current = true;
+    return () => {
+      pageAliveRef.current = false;
       if (runnerBusyRef.current) {
         void window.api.acm.stopRunner().catch((error: unknown) => {
           console.warn("释放 ACM Runner 失败", error);
@@ -581,9 +584,8 @@ export default function AcmWorkbenchPage() {
       tabsRef.current.forEach((tab) => {
         void releaseAcmDocument(tab.document.id);
       });
-    },
-    [],
-  );
+    };
+  }, []);
 
   const finishRunner = useCallback((taskId?: string) => {
     runnerTaskRef.current = null;
@@ -806,16 +808,21 @@ export default function AcmWorkbenchPage() {
     setOpening(true);
     try {
       const result = await window.api.acm.openDocument();
+      if (!pageAliveRef.current) {
+        if (result.ok && result.data) void releaseAcmDocument(result.data.id);
+        return;
+      }
       if (result.ok && result.data) {
         addDocumentTab(result.data);
       } else if (!result.ok) {
         message.error(errorText(result));
       }
     } catch (error) {
+      if (!pageAliveRef.current) return;
       message.error(error instanceof Error ? error.message : "打开文件失败");
     } finally {
       openingRef.current = false;
-      setOpening(false);
+      if (pageAliveRef.current) setOpening(false);
     }
   }, [addDocumentTab, docsAvailable]);
 

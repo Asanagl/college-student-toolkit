@@ -305,6 +305,7 @@ export default function AcmDiffPage() {
   const taskRef = useRef<string | null>(null);
   const busyRef = useRef(false);
   const pendingEventsRef = useRef<AcmDiffEvent[]>([]);
+  const pageAliveRef = useRef(true);
   const sides = useMemo(
     () => ({ reference, candidate }),
     [reference, candidate],
@@ -378,6 +379,7 @@ export default function AcmDiffPage() {
     });
     return () => {
       alive = false;
+      pageAliveRef.current = false;
       window.removeEventListener("acm-notice-cleared", showNotice);
       unsubscribe();
       if (busyRef.current) void stopDiffSafely();
@@ -420,6 +422,10 @@ export default function AcmDiffPage() {
         const scope =
           side === "candidate" ? "diff-candidate" : "diff-reference";
         const opened = await window.api.acm.openDocument(scope);
+        if (!pageAliveRef.current) {
+          if (opened.ok && opened.data) void releaseDocument(opened.data.id);
+          return;
+        }
         if (!opened.ok || !opened.data) {
           if (!opened.ok) message.error(errorText(opened));
           return;

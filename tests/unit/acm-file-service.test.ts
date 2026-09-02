@@ -654,4 +654,32 @@ describe("AcmFileService", () => {
     });
     expect(fs.readFileSync(target, "utf8")).toBe("old");
   });
+
+  it("discards an in-flight open after dispose instead of registering the document", async () => {
+    const directory = tempDirectory();
+    const filePath = path.join(directory, "late.cpp");
+    fs.writeFileSync(filePath, "int main() { return 0; }\n", "utf8");
+    const dialogReady = deferred<void>();
+    const releaseDialog = deferred<void>();
+    const dialogs = {
+      showOpenDialog: vi.fn(async () => {
+        dialogReady.resolve();
+        await releaseDialog.promise;
+        return { canceled: false, filePaths: [filePath] };
+      }),
+      showSaveDialog: vi.fn(),
+      showMessageBox: vi.fn(),
+    };
+    const service = new AcmFileService(dialogs);
+    const opening = service.openDocument();
+    await dialogReady.promise;
+    const disposing = service.dispose();
+    releaseDialog.resolve();
+    await expect(opening).resolves.toMatchObject({ ok: true, data: null });
+    await disposing;
+    expect(service.createDocument("blank")).toMatchObject({
+      ok: false,
+      errorCode: "ACM_FILE_BUSY",
+    });
+  });
 });

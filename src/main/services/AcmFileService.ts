@@ -316,6 +316,7 @@ export class AcmFileService {
   private readonly pendingCleanupRetries = new Set<Promise<void>>();
   private readonly scannedBackupDirectories = new Set<string>();
   private disposing = false;
+  private openGeneration = 0;
   private readonly userDataPath: string;
 
   constructor(
@@ -365,6 +366,7 @@ export class AcmFileService {
     parent: BrowserWindow | null = null,
     scope: AcmDocumentScope = "workbench",
   ): Promise<IpcResult<AcmDocument | null>> {
+    const generation = this.openGeneration;
     try {
       return await this.withOpenGate(async () => {
         const result = parent
@@ -372,9 +374,15 @@ export class AcmFileService {
           : await this.dialogs.showOpenDialog(this.openOptions());
         if (result.canceled || !result.filePaths[0])
           return { ok: true, data: null };
+        if (this.disposing || generation !== this.openGeneration)
+          return { ok: true, data: null };
         return {
           ok: true,
-          data: await this.readDocumentUnlocked(result.filePaths[0], scope),
+          data: await this.readDocumentUnlocked(
+            result.filePaths[0],
+            scope,
+            generation,
+          ),
         };
       });
     } catch (error) {
@@ -473,6 +481,7 @@ export class AcmFileService {
 
   async dispose(): Promise<void> {
     this.disposing = true;
+    this.openGeneration += 1;
     await Promise.all([this.openGate, this.writeGate, this.saveDialogGate]);
     await Promise.allSettled([...this.pendingCleanupRetries]);
     this.pendingExternalChecks.clear();
@@ -487,10 +496,18 @@ export class AcmFileService {
   private async readDocumentUnlocked(
     filePath: string,
     scope: AcmDocumentScope,
+    generation = this.openGeneration,
   ): Promise<AcmDocument> {
     const resolved = ensureCppPath(filePath);
     assertRegularPath(resolved, false);
-    const streamed = await this.streamFile(resolved, scope, true);
+    const streamed = await this.streamFile(
+      resolved,
+      scope,
+      true,
+      () => this.disposing || generation !== this.openGeneration,
+    );
+    if (this.disposing || generation !== this.openGeneration)
+      throw new AcmFileBusyError();
     const openBytes = [...this.openDocuments.values()].reduce(
       (total, state) =>
         state.scope === "diff-candidate" ? total : total + state.bytes,
@@ -705,6 +722,7 @@ export class AcmFileService {
     filePath: string,
     scope: AcmDocumentScope,
     includeContent: boolean,
+    shouldCancel?: () => boolean,
   ): Promise<{
     content?: string;
     fingerprint: DocumentFingerprint;
@@ -722,6 +740,7 @@ export class AcmFileService {
         handle,
         initial.size,
         includeContent,
+        shouldCancel,
       );
       const afterRead = await fs.promises.stat(filePath);
       if (
@@ -748,6 +767,7 @@ export class AcmFileService {
     handle: FileHandle,
     size: number,
     includeContent: boolean,
+    shouldCancel?: () => boolean,
   ): Promise<{ content?: string; sha256: string }> {
     const hash = createHash("sha256");
     const decoder = includeContent
@@ -758,6 +778,7 @@ export class AcmFileService {
     let position = 0;
     try {
       while (position < size) {
+        if (shouldCancel?.()) throw new AcmFileBusyError();
         const { bytesRead } = await handle.read(
           buffer,
           0,
