@@ -586,7 +586,9 @@ describe("AcmRunnerService", () => {
       ok: false,
       errorCode: "ACM_RUNNER_BUSY",
     });
+    expect(service.hasUnconfirmedChild()).toBe(true);
     await service.dispose();
+    expect(service.hasUnconfirmedChild()).toBe(true);
   });
 
   it("shares an in-flight timeout termination with a concurrent manual stop", async () => {

@@ -321,6 +321,10 @@ export class AcmRunnerService {
     return { ok: true, data: true };
   }
 
+  hasUnconfirmedChild(): boolean {
+    return Boolean(this.active?.terminationPending && this.active.child);
+  }
+
   async dispose(): Promise<void> {
     const task = this.active;
     if (task) {
@@ -330,6 +334,10 @@ export class AcmRunnerService {
       if (task.done) await task.done;
       else if (this.active === task) await this.finishPreparingTask(task);
     }
+    if (this.hasUnconfirmedChild())
+      console.warn(
+        "[acm-runner] 应用退出时子进程仍未确认退出，外部进程可能残留",
+      );
     this.initialized = false;
     this.listeners.clear();
   }

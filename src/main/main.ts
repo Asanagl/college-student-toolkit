@@ -1042,5 +1042,10 @@ app.on("before-quit", async (event) => {
   windowService.markQuitting();
   event.preventDefault();
   await disposeServices();
+  const unconfirmed =
+    acmRunnerService.hasUnconfirmedChild() ||
+    acmDifferService.hasUnconfirmedChild();
+  if (unconfirmed)
+    console.warn("[main] ACM 子进程退出未确认，应用退出后外部进程可能残留");
   app.exit(0);
 });

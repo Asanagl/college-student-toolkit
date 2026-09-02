@@ -874,6 +874,70 @@ describe("AcmDifferService", () => {
     expect(retriedTargets.size).toBe(2);
   });
 
+  it("caps concurrent cleanup retries and reports overflow as a warning", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-cleanup-cap-"),
+    );
+    roots.push(root);
+    const commands: string[] = [];
+    const retriedTargets = new Set<string>();
+    const service = new AcmDifferService({
+      compiler: compiler(),
+      helper: new AcmRunnerHelper(
+        factory({ reference: "ok", candidate: "ok" }, commands),
+        "linux",
+      ),
+      platform: "win32",
+      tempRoot: root,
+      maxPendingCleanupRetries: 1,
+      removePath: (target) => {
+        retriedTargets.add(target);
+        throw new Error("file is locked");
+      },
+    });
+    await service.init();
+    const events: AcmDiffEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.start(request());
+    await waitUntil(() => events.some((event) => event.stage === "compare"));
+    expect(service.getPendingCleanupRetryCount()).toBe(1);
+    expect(events.at(-1)?.result?.cleanupWarnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("清理重试队列已满，下次启动将继续清理"),
+      ]),
+    );
+    await service.dispose();
+    expect(retriedTargets.size).toBeGreaterThan(0);
+  });
+
+  it("keeps an unconfirmed child visible after dispose", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-unconfirmed-child-"),
+    );
+    roots.push(root);
+    const service = new AcmDifferService({
+      compiler: compiler(),
+      helper: new TerminationFailureHelper(
+        factory(
+          { reference: "hang", candidate: "unused", holdReference: true },
+          [],
+        ),
+        "win32",
+      ),
+      platform: "win32",
+      tempRoot: root,
+      limits: { runTimeoutMs: 5 },
+    });
+    await service.init();
+    const events: AcmDiffEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await expect(service.start(request())).resolves.toMatchObject({ ok: true });
+    await waitUntil(() => events.some((event) => event.stage === "compare"));
+    expect(service.hasUnconfirmedChild()).toBe(true);
+    await service.dispose();
+    expect(service.hasUnconfirmedChild()).toBe(true);
+  });
+
   it("rejects non-Windows execution before creating a task", async () => {
     const service = new AcmDifferService({
       compiler: compiler(),

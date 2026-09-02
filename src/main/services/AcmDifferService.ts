@@ -38,6 +38,7 @@ const TEMP_PREFIX = "college-toolkit-diff-";
 const OWNER_MARKER = ".college-toolkit-diff-owner.json";
 const CLEANUP_RETRIES = 3;
 const MAX_CLEANUP_RETRIES = 8;
+const MAX_PENDING_CLEANUP_RETRIES = 8;
 const CLEANUP_RETRY_DELAY_MS = 250;
 const STALE_TEMP_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_TERMINATION_ATTEMPTS = 2;
@@ -148,6 +149,7 @@ export interface AcmDifferServiceOptions {
   tempRoot?: string;
   limits?: Partial<RunnerLimits>;
   cleanupRetries?: number;
+  maxPendingCleanupRetries?: number;
   staleTempTtlMs?: number;
   removePath?: (target: string) => void;
   writeFile?: DiffTextWriter;
@@ -216,6 +218,7 @@ export class AcmDifferService {
   private readonly tempRoot: string;
   private readonly limits: RunnerLimits;
   private readonly cleanupRetries: number;
+  private readonly maxPendingCleanupRetries: number;
   private readonly staleTempTtlMs: number;
   private readonly removePath: (target: string) => void;
   private readonly writeFile: DiffTextWriter;
@@ -235,6 +238,15 @@ export class AcmDifferService {
     this.cleanupRetries = Math.min(
       MAX_CLEANUP_RETRIES,
       Math.max(0, Math.floor(options.cleanupRetries ?? CLEANUP_RETRIES)),
+    );
+    this.maxPendingCleanupRetries = Math.max(
+      1,
+      Math.min(
+        MAX_PENDING_CLEANUP_RETRIES,
+        Math.floor(
+          options.maxPendingCleanupRetries ?? MAX_PENDING_CLEANUP_RETRIES,
+        ),
+      ),
     );
     this.staleTempTtlMs = Math.max(
       1,
@@ -394,6 +406,14 @@ export class AcmDifferService {
     return { ok: true, data: true };
   }
 
+  hasUnconfirmedChild(): boolean {
+    return Boolean(this.active?.terminationPending && this.active.child);
+  }
+
+  getPendingCleanupRetryCount(): number {
+    return this.pendingCleanupRetries.size;
+  }
+
   dispose(): Promise<void> {
     if (this.disposePromise) return this.disposePromise;
     this.disposing = true;
@@ -406,6 +426,10 @@ export class AcmDifferService {
       await this.stop();
       if (this.active?.done) await this.active.done;
     } finally {
+      if (this.hasUnconfirmedChild())
+        console.warn(
+          "[acm-diff] 应用退出时子进程仍未确认退出，外部进程可能残留",
+        );
       await Promise.allSettled([...this.pendingCleanupRetries.values()]);
       this.initialized = false;
       this.listeners.clear();
@@ -1164,7 +1188,7 @@ export class AcmDifferService {
       // retries below are best effort because Windows may hold an executable.
     }
     this.recordCleanupWarning(task, `${label}：${target}`);
-    this.scheduleCleanupRetry(target);
+    this.scheduleCleanupRetry(task, target);
   }
 
   private recordCleanupWarning(task: DiffTask, warning: string): void {
@@ -1180,9 +1204,16 @@ export class AcmDifferService {
     });
   }
 
-  private scheduleCleanupRetry(target: string): void {
+  private scheduleCleanupRetry(task: DiffTask, target: string): void {
     if (this.cleanupRetries === 0 || this.pendingCleanupRetries.has(target))
       return;
+    if (this.pendingCleanupRetries.size >= this.maxPendingCleanupRetries) {
+      this.recordCleanupWarning(
+        task,
+        `清理重试队列已满，下次启动将继续清理：${target}`,
+      );
+      return;
+    }
     const retry = this.retryCleanupPath(target);
     this.pendingCleanupRetries.set(target, retry);
     void retry.then(
