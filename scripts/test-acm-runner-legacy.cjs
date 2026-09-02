@@ -4,7 +4,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const packageRoot = path.resolve(
@@ -80,6 +80,104 @@ function createOverlay() {
   }
 }
 
+function powershellTarget() {
+  return path.join(
+    process.env.SystemRoot?.trim() || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function killPid(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || !processExists(pid)) return;
+  const taskkill = path.join(
+    process.env.SystemRoot?.trim() || "C:\\Windows",
+    "System32",
+    "taskkill.exe",
+  );
+  try {
+    spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+  } catch {
+    // Cleanup is best effort after the assertion has captured the failure.
+  }
+}
+
+async function runLegacyBreakawayProbe(overlay) {
+  const helper = path.join(overlay, "resources", helperName);
+  if (fs.existsSync(helper)) fail("overlay 仍然包含 native helper");
+  const probe = path.join(root, "scripts", "acm-job-breakaway-probe.ps1");
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "college-toolkit-legacy-breakaway-"),
+  );
+  const marker = path.join(directory, "marker.txt");
+  let runner;
+  let extraPids = [];
+  try {
+    runner = spawn(
+      powershellTarget(),
+      ["-NoProfile", "-NonInteractive", "-File", probe],
+      {
+        cwd: overlay,
+        windowsHide: true,
+        stdio: "ignore",
+        env: {
+          ...process.env,
+          ACM_JOB_RUNNER_MARKER: marker,
+        },
+      },
+    );
+    const deadline = Date.now() + 10_000;
+    let values = [];
+    while (Date.now() < deadline) {
+      if (fs.existsSync(marker)) {
+        values = fs
+          .readFileSync(marker, "utf8")
+          .split(/\r?\n/)
+          .map((value) => Number(value.trim()))
+          .filter((value) => Number.isFinite(value));
+        if (values.length >= 4) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (values.length < 4) fail("等待 legacy breakaway 探针结果超时");
+    const [shellPid, childPid, breakawayCreated, , breakawayPid] = values;
+    extraPids = [shellPid, childPid, breakawayPid].filter(
+      (pid) => Number.isInteger(pid) && pid > 0,
+    );
+    if (breakawayCreated === 0)
+      fail("缺少 helper 的 packaged overlay 仍拒绝 CREATE_BREAKAWAY_FROM_JOB");
+    if (processExists(runner.pid) && !runner.kill())
+      fail("无法结束 legacy breakaway wrapper");
+    console.log(
+      JSON.stringify({
+        overlay,
+        nativeHelper: false,
+        strategy: "legacy-overlay-allows-create-breakaway-from-job",
+        breakawayCreated: true,
+        targetPids: extraPids,
+      }),
+    );
+  } finally {
+    if (runner?.pid && processExists(runner.pid)) killPid(runner.pid);
+    extraPids.forEach(killPid);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 function runTimeoutProbe(executable) {
   const cli = path.join(root, "node_modules", "@playwright", "test", "cli.js");
   if (!fs.existsSync(cli)) fail(`找不到 Playwright CLI：${cli}`);
@@ -138,7 +236,8 @@ async function run() {
   let status = 1;
   try {
     status = runTimeoutProbe(session.executable);
-    if (status === 0)
+    if (status === 0) {
+      await runLegacyBreakawayProbe(session.overlay);
       console.log(
         JSON.stringify({
           mode: "packaged-legacy-fallback",
@@ -146,8 +245,10 @@ async function run() {
           nativeHelper: false,
           termination: "taskkill-fallback",
           result: "timeout-confirmed",
+          breakaway: "allowed-without-job-object",
         }),
       );
+    }
   } finally {
     const cleaned = await cleanup(session.overlay);
     if (!cleaned) status = 1;
