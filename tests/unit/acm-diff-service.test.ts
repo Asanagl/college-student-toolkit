@@ -142,6 +142,54 @@ class TerminationFailureHelper extends AcmRunnerHelper {
   }
 }
 
+class LateExitTerminationFailureHelper extends AcmRunnerHelper {
+  private readonly scheduled = new WeakSet<ChildProcess>();
+
+  constructor(
+    factory: RunnerProcessFactory,
+    private readonly delayMs = 250,
+  ) {
+    super(factory, "win32", 50, null);
+  }
+
+  override async terminate(child: ChildProcess): Promise<void> {
+    if (!this.scheduled.has(child)) {
+      this.scheduled.add(child);
+      setTimeout(() => {
+        const fake = child as FakeChild;
+        fake.signalCode = "SIGTERM";
+        child.emit("close", null);
+      }, this.delayMs);
+    }
+    throw new Error("termination failed");
+  }
+}
+
+class DeferredTerminationHelper extends AcmRunnerHelper {
+  calls = 0;
+  private release: (() => void) | null = null;
+
+  constructor(factory: RunnerProcessFactory) {
+    super(factory, "win32", 50, null);
+  }
+
+  override terminate(child: ChildProcess): Promise<void> {
+    this.calls += 1;
+    return new Promise<void>((resolve) => {
+      this.release = () => {
+        const fake = child as FakeChild;
+        fake.signalCode = "SIGTERM";
+        child.emit("close", null);
+        resolve();
+      };
+    });
+  }
+
+  confirm(): void {
+    this.release?.();
+  }
+}
+
 function request(
   overrides: Partial<AcmDiffStartRequest> = {},
 ): AcmDiffStartRequest {
@@ -188,6 +236,17 @@ async function run(
   }
   await service.dispose();
   return { events, commands, root };
+}
+
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("等待对拍状态超时");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
 }
 
 afterEach(() => {
@@ -533,7 +592,135 @@ describe("AcmDifferService", () => {
       ok: false,
       errorCode: "ACM_RUNNER_FAILED",
     });
-    expect(events.at(-1)?.result?.status).toBe("cancelled");
+    expect(events.at(-1)?.result).toMatchObject({
+      status: "cancelled",
+      cleanupBlocked: true,
+      terminationError: "termination failed",
+    });
+    await expect(service.start(request())).resolves.toMatchObject({
+      ok: false,
+      errorCode: "ACM_RUNNER_BUSY",
+    });
+    await service.dispose();
+  });
+
+  it("keeps the task busy when automatic timeout termination fails", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-timeout-error-"),
+    );
+    roots.push(root);
+    const service = new AcmDifferService({
+      compiler: compiler(),
+      helper: new TerminationFailureHelper(
+        factory(
+          { reference: "hang", candidate: "unused", holdReference: true },
+          [],
+        ),
+        "win32",
+      ),
+      platform: "win32",
+      tempRoot: root,
+      limits: { runTimeoutMs: 5 },
+    });
+    await service.init();
+    const events: AcmDiffEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await expect(service.start(request())).resolves.toMatchObject({ ok: true });
+    while (!events.some((event) => event.stage === "compare"))
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    expect(events.at(-1)?.result).toMatchObject({
+      status: "reference-failed",
+      errorCode: "ACM_RUNNER_TIMEOUT",
+      cleanupBlocked: true,
+      terminationError: "termination failed",
+    });
+    await expect(service.start(request())).resolves.toMatchObject({
+      ok: false,
+      errorCode: "ACM_RUNNER_BUSY",
+    });
+    await service.dispose();
+  });
+
+  it("shares an in-flight timeout termination with a concurrent manual stop", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-timeout-stop-race-"),
+    );
+    roots.push(root);
+    const helper = new DeferredTerminationHelper(
+      factory(
+        { reference: "hang", candidate: "unused", holdReference: true },
+        [],
+      ),
+    );
+    const service = new AcmDifferService({
+      compiler: compiler(),
+      helper,
+      platform: "win32",
+      tempRoot: root,
+      limits: { runTimeoutMs: 5 },
+    });
+    const events: AcmDiffEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.init();
+    await expect(service.start(request())).resolves.toMatchObject({ ok: true });
+    await waitUntil(() => helper.calls === 1, 2_000);
+    const stopping = service.stop();
+    await Promise.resolve();
+    expect(helper.calls).toBe(1);
+    helper.confirm();
+    await expect(stopping).resolves.toMatchObject({ ok: true, data: true });
+    await waitUntil(() => events.some((event) => event.stage === "compare"));
+    await service.dispose();
+  });
+
+  it("cleans up after a late exit confirmation and allows the next task", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "college-toolkit-diff-late-exit-"),
+    );
+    roots.push(root);
+    const service = new AcmDifferService({
+      compiler: compiler(),
+      helper: new LateExitTerminationFailureHelper(
+        factory(
+          { reference: "hang", candidate: "unused", holdReference: true },
+          [],
+        ),
+      ),
+      platform: "win32",
+      tempRoot: root,
+      limits: { runTimeoutMs: 5 },
+    });
+    await service.init();
+    const events: AcmDiffEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await expect(service.start(request())).resolves.toMatchObject({ ok: true });
+    await waitUntil(() => events.some((event) => event.stage === "compare"));
+    expect(events.at(-1)?.result).toMatchObject({
+      status: "reference-failed",
+      errorCode: "ACM_RUNNER_TIMEOUT",
+      cleanupBlocked: true,
+      terminationError: "termination failed",
+    });
+    expect(await service.start(request())).toMatchObject({
+      ok: false,
+      errorCode: "ACM_RUNNER_BUSY",
+    });
+    await waitUntil(() => fs.readdirSync(root).length === 0);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        cleanupConfirmed: true,
+        side: "comparison",
+        stage: "compare",
+      }),
+    );
+
+    expect(await service.start(request())).toMatchObject({
+      ok: true,
+      data: { taskId: expect.any(String) },
+    });
+    await waitUntil(
+      () => events.filter((event) => event.stage === "compare").length >= 2,
+    );
     await service.dispose();
   });
 

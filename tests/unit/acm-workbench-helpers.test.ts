@@ -3,6 +3,7 @@ import type { RunnerEvent } from "../../src/shared/types";
 import {
   appendRunnerEvent,
   isTerminalRunnerEvent,
+  runnerEventLifecycle,
 } from "../../src/renderer/pages/AcmWorkbenchPage";
 import {
   confirmAcmNavigation,
@@ -28,6 +29,24 @@ describe("ACM Workbench 状态 helper", () => {
     expect(isTerminalRunnerEvent(event({ status: "cancelled" }), "run")).toBe(
       true,
     );
+  });
+
+  it("在终止未确认时保持 busy，迟到退出确认才释放", () => {
+    expect(
+      runnerEventLifecycle(
+        event({ status: "timeout", cleanupBlocked: true }),
+        "run",
+      ),
+    ).toBe("pending-cleanup");
+    expect(
+      runnerEventLifecycle(
+        event({
+          stage: "run-finished",
+          cleanupConfirmed: true,
+        }),
+        "run",
+      ),
+    ).toBe("finished");
   });
 
   it("按 UTF-8 字节和事件数限制终端 ring buffer", () => {

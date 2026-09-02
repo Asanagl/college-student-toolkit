@@ -40,6 +40,9 @@ const CLEANUP_RETRIES = 3;
 const MAX_CLEANUP_RETRIES = 8;
 const CLEANUP_RETRY_DELAY_MS = 250;
 const STALE_TEMP_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_TERMINATION_ATTEMPTS = 2;
+const TERMINATION_RETRY_DELAY_MS = 50;
+const TERMINATION_ATTEMPT_TIMEOUT_MS = 3_500;
 
 function isResourceWriteError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null)?.code;
@@ -52,6 +55,13 @@ class DiffResourceLimitError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DiffResourceLimitError";
+  }
+}
+
+class TerminationTimeoutError extends Error {
+  constructor() {
+    super("ACM 对拍终止操作超时");
+    this.name = "TerminationTimeoutError";
   }
 }
 
@@ -72,6 +82,8 @@ type PhaseStatus =
 interface PhaseOutcome {
   status: PhaseStatus;
   errorCode?: AcmDiffEvent["errorCode"];
+  terminationConfirmed?: boolean;
+  terminationError?: string;
 }
 
 interface SideTask {
@@ -94,6 +106,19 @@ interface DiffTask {
   done: Promise<void> | null;
   runtimePath: string | null;
   phase: ActivePhase | null;
+  cleanupBlocked: boolean;
+  terminationError: string | null;
+  terminationPending: boolean;
+  lateExitWatched: boolean;
+  executionFinished: boolean;
+  cleanupPromise: Promise<void> | null;
+  terminationAttempt: Promise<TerminationResult> | null;
+  cleanupConfirmationEmitted: boolean;
+}
+
+interface TerminationResult {
+  confirmed: boolean;
+  error?: Error;
 }
 
 interface ActivePhase {
@@ -112,6 +137,7 @@ interface PhaseRuntime {
   counts: { stdout: number; stderr: number };
   decoders: { stdout: StringDecoder; stderr: StringDecoder };
   decodersFlushed: boolean;
+  exitConfirmed: boolean;
   resolve: (outcome: PhaseOutcome) => void;
 }
 
@@ -161,6 +187,21 @@ function resultForPhase(
 
 function isComplete(outcome: PhaseOutcome): boolean {
   return outcome.status === "completed";
+}
+
+function resultFromPhase(
+  side: Side,
+  phase: Phase,
+  outcome: PhaseOutcome,
+): AcmDiffResult {
+  return {
+    status: resultForPhase(side, phase, outcome),
+    errorCode: outcome.errorCode,
+    ...(outcome.terminationError
+      ? { terminationError: outcome.terminationError }
+      : {}),
+    ...(outcome.terminationConfirmed === false ? { cleanupBlocked: true } : {}),
+  };
 }
 
 /**
@@ -260,6 +301,14 @@ export class AcmDifferService {
       done: null,
       runtimePath: null,
       phase: null,
+      cleanupBlocked: false,
+      terminationError: null,
+      terminationPending: false,
+      lateExitWatched: false,
+      executionFinished: false,
+      cleanupPromise: null,
+      terminationAttempt: null,
+      cleanupConfirmationEmitted: false,
     };
     this.active = task;
     try {
@@ -300,16 +349,41 @@ export class AcmDifferService {
     const task = this.active;
     if (!task) return { ok: true, data: false };
     task.stopRequested = true;
+    if (task.terminationPending && task.child)
+      return errorResult(
+        "ACM_RUNNER_FAILED",
+        task.terminationError ?? "ACM 对拍子进程终止尚未确认",
+      );
     let terminationError: unknown;
-    if (task.child) {
+    const phase = task.phase;
+    if (phase && !phase.runtime.settled) {
       try {
-        await this.terminate(task, task.child);
+        phase.runtime.forcedStatus = "cancelled";
+        await this.finishPhase(
+          task,
+          phase.side,
+          phase.phase,
+          phase.runtime,
+          "cancelled",
+          "ACM_RUNNER_CANCELLED",
+        );
       } catch (error) {
         terminationError = error;
-        await this.finishAfterTerminationFailure(task);
+      }
+    } else if (task.child) {
+      const child = task.child;
+      const termination = await this.terminateWithRetries(task, child);
+      if (termination.confirmed) this.clearChildTracking(task, child);
+      else {
+        terminationError =
+          termination.error instanceof Error
+            ? termination.error
+            : new Error(String(termination.error ?? "终止失败"));
+        this.markTerminationBlocked(task, child, terminationError as Error);
       }
     }
     if (task.done) await task.done;
+    terminationError ??= task.terminationError;
     if (terminationError)
       return errorResult(
         "ACM_RUNNER_FAILED",
@@ -330,6 +404,7 @@ export class AcmDifferService {
   private async disposeInternal(): Promise<void> {
     try {
       await this.stop();
+      if (this.active?.done) await this.active.done;
     } finally {
       await Promise.allSettled([...this.pendingCleanupRetries.values()]);
       this.initialized = false;
@@ -353,10 +428,7 @@ export class AcmDifferService {
         referenceDir.executable,
       );
       if (!isComplete(referenceCompile)) {
-        finalResult = {
-          status: resultForPhase("reference", "compile", referenceCompile),
-          errorCode: referenceCompile.errorCode,
-        };
+        finalResult = resultFromPhase("reference", "compile", referenceCompile);
         return;
       }
       const referenceRun = await this.runPhase(
@@ -368,10 +440,7 @@ export class AcmDifferService {
       );
       await this.cleanupExecutable(task, "reference");
       if (!isComplete(referenceRun)) {
-        finalResult = {
-          status: resultForPhase("reference", "run", referenceRun),
-          errorCode: referenceRun.errorCode,
-        };
+        finalResult = resultFromPhase("reference", "run", referenceRun);
         return;
       }
       currentSide = "candidate";
@@ -384,10 +453,7 @@ export class AcmDifferService {
         candidateDir.executable,
       );
       if (!isComplete(candidateCompile)) {
-        finalResult = {
-          status: resultForPhase("candidate", "compile", candidateCompile),
-          errorCode: candidateCompile.errorCode,
-        };
+        finalResult = resultFromPhase("candidate", "compile", candidateCompile);
         return;
       }
       const candidateRun = await this.runPhase(
@@ -399,10 +465,7 @@ export class AcmDifferService {
       );
       await this.cleanupExecutable(task, "candidate");
       if (!isComplete(candidateRun)) {
-        finalResult = {
-          status: resultForPhase("candidate", "run", candidateRun),
-          errorCode: candidateRun.errorCode,
-        };
+        finalResult = resultFromPhase("candidate", "run", candidateRun);
         return;
       }
       const compared = compareAcmTokens(
@@ -434,9 +497,9 @@ export class AcmDifferService {
       };
     } finally {
       task.request = { ...task.request, reference: "", candidate: "" };
+      task.executionFinished = true;
       await this.cleanupTask(task);
       this.finishResult(task, finalResult);
-      if (this.active === task) this.active = null;
     }
   }
 
@@ -602,6 +665,7 @@ export class AcmDifferService {
         stderr: new StringDecoder("utf8"),
       },
       decodersFlushed: false,
+      exitConfirmed: false,
       resolve,
     };
   }
@@ -646,16 +710,37 @@ export class AcmDifferService {
     this.flushPhaseOutput(task, side, phase, runtime);
     if (runtime.timer) clearTimeout(runtime.timer);
     if (runtime.tempTimer) clearInterval(runtime.tempTimer);
-    if (status !== "completed" && runtime.child)
-      await this.terminate(task, runtime.child).catch(() => undefined);
+    let terminationError: Error | undefined;
+    let terminationConfirmed = runtime.exitConfirmed || !runtime.child;
+    if (status !== "completed" && runtime.child && !terminationConfirmed) {
+      const termination = await this.terminateWithRetries(task, runtime.child);
+      terminationConfirmed =
+        termination.confirmed || runtime.exitConfirmed || !runtime.child;
+      terminationError = termination.error;
+      if (!terminationConfirmed && terminationError)
+        this.markTerminationBlocked(task, runtime.child, terminationError);
+    }
+    if (terminationConfirmed && runtime.child) {
+      this.clearChildTracking(task, runtime.child);
+      terminationError = undefined;
+    }
     if (task.phase?.runtime === runtime) task.phase = null;
-    runtime.resolve({ status, errorCode });
+    runtime.resolve({
+      status,
+      errorCode,
+      terminationConfirmed,
+      terminationError: terminationError?.message,
+    });
     this.emit({
       taskId: task.id,
       side,
       stage: stage(side, phase),
       status: eventStatus(status),
       errorCode,
+      terminationError: terminationConfirmed
+        ? undefined
+        : terminationError?.message,
+      cleanupBlocked: terminationConfirmed ? undefined : true,
     });
   }
 
@@ -673,21 +758,6 @@ export class AcmDifferService {
       runtime,
       "timeout",
       "ACM_RUNNER_TIMEOUT",
-    );
-  }
-
-  private async finishAfterTerminationFailure(task: DiffTask): Promise<void> {
-    const phase = task.phase;
-    if (!phase || phase.runtime.settled) return;
-    phase.runtime.child = null;
-    task.child = null;
-    await this.finishPhase(
-      task,
-      phase.side,
-      phase.phase,
-      phase.runtime,
-      "cancelled",
-      "ACM_RUNNER_CANCELLED",
     );
   }
 
@@ -810,7 +880,14 @@ export class AcmDifferService {
     runtime: PhaseRuntime,
     code: number | null,
   ): void {
-    task.child = null;
+    runtime.exitConfirmed = true;
+    const lateExitPending = Boolean(task.terminationPending);
+    if (runtime.child && task.child === runtime.child) {
+      this.clearChildTracking(task, runtime.child);
+      if (lateExitPending) this.finishLateExitCleanup(task);
+      else if (task.executionFinished) void this.cleanupTask(task);
+    }
+    if (runtime.settled) return;
     if (task.stopRequested && !runtime.forcedStatus) {
       void this.finishPhase(
         task,
@@ -883,9 +960,16 @@ export class AcmDifferService {
       ...(referenceOutput ? { referenceOutput } : {}),
       ...(candidateOutput ? { candidateOutput } : {}),
     };
-    const enriched: AcmDiffResult = task.cleanupWarnings.length
-      ? { ...withOutputs, cleanupWarnings: [...task.cleanupWarnings] }
-      : withOutputs;
+    const enriched: AcmDiffResult = {
+      ...withOutputs,
+      ...(task.cleanupWarnings.length
+        ? { cleanupWarnings: [...task.cleanupWarnings] }
+        : {}),
+      ...(task.cleanupBlocked ? { cleanupBlocked: true } : {}),
+      ...(task.terminationError
+        ? { terminationError: task.terminationError }
+        : {}),
+    };
     this.emit({
       taskId: task.id,
       side: "comparison",
@@ -893,6 +977,8 @@ export class AcmDifferService {
       status: result.status === "cancelled" ? "cancelled" : "completed",
       result: enriched,
       cleanupWarning: enriched.cleanupWarnings?.[0],
+      terminationError: enriched.terminationError,
+      cleanupBlocked: enriched.cleanupBlocked,
     });
   }
 
@@ -916,10 +1002,138 @@ export class AcmDifferService {
   }
 
   private async cleanupTask(task: DiffTask): Promise<void> {
+    if (task.cleanupPromise) return task.cleanupPromise;
+    const cleanup = this.cleanupTaskInternal(task);
+    task.cleanupPromise = cleanup;
+    try {
+      await cleanup;
+    } finally {
+      if (task.cleanupPromise === cleanup) task.cleanupPromise = null;
+    }
+  }
+
+  private async cleanupTaskInternal(task: DiffTask): Promise<void> {
+    if (task.terminationPending && task.child) {
+      console.warn("[acm-diff] 子进程退出未确认，暂缓清理对拍临时目录");
+      return;
+    }
+    task.termination = null;
     for (const side of ["reference", "candidate"] as const) {
       const dir = task.sides[side]?.dir;
       if (dir) await this.cleanupPath(task, dir, "清理对拍临时目录失败");
     }
+    if (this.active === task) this.active = null;
+  }
+
+  private terminateWithRetries(
+    task: DiffTask,
+    child: ChildProcess,
+  ): Promise<TerminationResult> {
+    if (task.terminationAttempt) return task.terminationAttempt;
+    const attempt = this.terminateWithRetriesInternal(task, child);
+    task.terminationAttempt = attempt;
+    void attempt.finally(() => {
+      if (task.terminationAttempt === attempt) task.terminationAttempt = null;
+    });
+    return attempt;
+  }
+
+  private async terminateWithRetriesInternal(
+    task: DiffTask,
+    child: ChildProcess,
+  ): Promise<TerminationResult> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < MAX_TERMINATION_ATTEMPTS; attempt += 1) {
+      try {
+        const termination = this.terminate(task, child);
+        await this.awaitTermination(termination);
+        this.clearChildTracking(task, child);
+        if (task.executionFinished) void this.cleanupTask(task);
+        return { confirmed: true };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        // A timed-out helper call may still be touching the process tree. Do
+        // not launch a second kill concurrently; late exit tracking remains
+        // responsible for releasing the task when that call eventually ends.
+        if (error instanceof TerminationTimeoutError)
+          return { confirmed: false, error: lastError };
+        if (attempt + 1 < MAX_TERMINATION_ATTEMPTS)
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, TERMINATION_RETRY_DELAY_MS),
+          );
+      }
+    }
+    return { confirmed: false, error: lastError };
+  }
+
+  private async awaitTermination(termination: Promise<void>): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new TerminationTimeoutError()),
+        TERMINATION_ATTEMPT_TIMEOUT_MS,
+      );
+      termination.then(
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  private markTerminationBlocked(
+    task: DiffTask,
+    child: ChildProcess,
+    error: Error,
+  ): void {
+    task.cleanupBlocked = true;
+    task.terminationPending = true;
+    task.terminationError = error.message;
+    this.watchLateExit(task, child);
+  }
+
+  private watchLateExit(task: DiffTask, child: ChildProcess): void {
+    if (task.lateExitWatched) return;
+    task.lateExitWatched = true;
+    const confirm = (): void => {
+      if (task.child !== child) return;
+      this.clearChildTracking(task, child);
+      this.finishLateExitCleanup(task);
+    };
+    child.once("exit", confirm);
+    child.once("close", confirm);
+  }
+
+  private finishLateExitCleanup(task: DiffTask): void {
+    const cleanup = task.executionFinished
+      ? this.cleanupTask(task)
+      : (task.done ?? Promise.resolve());
+    void cleanup.then(() => this.emitCleanupConfirmed(task));
+  }
+
+  private clearChildTracking(task: DiffTask, child: ChildProcess): void {
+    if (task.child === child) task.child = null;
+    task.terminationPending = false;
+    task.cleanupBlocked = false;
+    task.terminationError = null;
+    task.termination = null;
+    task.lateExitWatched = false;
+  }
+
+  private emitCleanupConfirmed(task: DiffTask): void {
+    if (task.cleanupConfirmationEmitted) return;
+    task.cleanupConfirmationEmitted = true;
+    this.emit({
+      taskId: task.id,
+      side: "comparison",
+      stage: "compare",
+      status: "completed",
+      cleanupConfirmed: true,
+    });
   }
 
   private async cleanupPath(

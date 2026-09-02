@@ -80,6 +80,31 @@ function showWarnings(warnings: string[] | undefined): void {
   for (const warning of warnings ?? []) message.warning(warning);
 }
 
+function resultWarnings(result: AcmDiffResult): string[] {
+  return [
+    ...(result.cleanupWarnings ?? []),
+    ...(result.terminationError
+      ? [`子进程终止未确认：${result.terminationError}`]
+      : []),
+    ...(result.cleanupBlocked ? ["相关临时资源将在进程退出后继续清理"] : []),
+  ];
+}
+
+export type DiffEventLifecycle = "none" | "pending-cleanup" | "finished";
+
+export function diffEventLifecycle(event: AcmDiffEvent): DiffEventLifecycle {
+  if (event.cleanupConfirmed) return "finished";
+  if (
+    event.cleanupBlocked ||
+    event.terminationError ||
+    event.result?.cleanupBlocked ||
+    event.result?.terminationError
+  )
+    return "pending-cleanup";
+  if (event.side === "comparison" && event.result) return "finished";
+  return "none";
+}
+
 async function releaseDocument(documentId: string): Promise<void> {
   try {
     await window.api.acm.releaseDocument(documentId);
@@ -247,6 +272,7 @@ export default function AcmDiffPage() {
   const [compilerProbe, setCompilerProbe] =
     useState<CompilerProbeResult | null>(null);
   const [busy, setBusy] = useState(false);
+  const [cleanupPending, setCleanupPending] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [result, setResult] = useState<AcmDiffResult | null>(null);
   const [cleanupWarnings, setCleanupWarnings] = useState<string[]>([]);
@@ -308,15 +334,32 @@ export default function AcmDiffPage() {
           ...items,
           event.cleanupWarning as string,
         ]);
-      if (event.result) {
-        setResult(event.result);
-        setCleanupWarnings(event.result.cleanupWarnings ?? []);
-      }
-      if (event.side === "comparison" && event.result) {
+      if (event.terminationError)
+        setCleanupWarnings((items) => [
+          ...items,
+          `子进程终止未确认：${event.terminationError}`,
+        ]);
+      const lifecycle = diffEventLifecycle(event);
+      if (lifecycle === "pending-cleanup") setCleanupPending(true);
+      if (lifecycle === "finished") {
+        setCleanupPending(false);
         setBusy(false);
         busyRef.current = false;
         taskRef.current = null;
         setPhase(null);
+      }
+      if (event.result) {
+        setResult(event.result);
+        setCleanupWarnings(resultWarnings(event.result));
+      }
+      if (event.side === "comparison" && event.result) {
+        if (lifecycle === "finished") {
+          setCleanupPending(false);
+          setBusy(false);
+          busyRef.current = false;
+          taskRef.current = null;
+          setPhase(null);
+        }
       }
     });
     return () => {
@@ -410,6 +453,7 @@ export default function AcmDiffPage() {
       return;
     }
     setBusy(true);
+    setCleanupPending(false);
     busyRef.current = true;
     setResult(null);
     setCleanupWarnings([]);
@@ -427,18 +471,19 @@ export default function AcmDiffPage() {
       }
       taskRef.current = started.data.taskId;
       for (const event of pendingEventsRef.current.splice(0)) {
-        if (
-          event.taskId === started.data.taskId &&
-          event.side === "comparison" &&
-          event.result
-        ) {
+        if (event.taskId !== started.data.taskId) continue;
+        const lifecycle = diffEventLifecycle(event);
+        if (event.side === "comparison" && event.result) {
           setResult(event.result);
-          setCleanupWarnings(event.result.cleanupWarnings ?? []);
+          setCleanupWarnings(resultWarnings(event.result));
+        }
+        if (lifecycle === "finished") {
+          setCleanupPending(false);
           setBusy(false);
           busyRef.current = false;
           taskRef.current = null;
           setPhase(null);
-        }
+        } else if (lifecycle === "pending-cleanup") setCleanupPending(true);
       }
     } catch (error) {
       setBusy(false);
@@ -563,7 +608,11 @@ export default function AcmDiffPage() {
           >
             停止
           </Button>
-          {busy ? <Tag color="processing">{phase ?? "准备中"}</Tag> : null}
+          {busy ? (
+            <Tag color="processing">
+              {cleanupPending ? "等待进程退出/清理" : (phase ?? "准备中")}
+            </Tag>
+          ) : null}
           <Tag color={compilerProbe?.available ? "success" : "warning"}>
             {compilerProbe?.available
               ? `g++ ${compilerProbe.version ?? "已就绪"}`

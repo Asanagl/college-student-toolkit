@@ -131,7 +131,13 @@ function eventText(event: RunnerEvent): string {
   const duration = event.durationMs == null ? "" : ` (${event.durationMs} ms)`;
   const exitCode = event.exitCode == null ? "" : `，退出码 ${event.exitCode}`;
   const errorCode = event.errorCode == null ? "" : `，${event.errorCode}`;
-  return `[${RUNNER_STATUS_LABELS[event.status]}]${exitCode}${errorCode}${duration}`;
+  const termination = event.terminationError
+    ? `，终止未确认：${event.terminationError}`
+    : event.cleanupBlocked
+      ? "，资源清理暂缓"
+      : "";
+  const confirmed = event.cleanupConfirmed ? "，清理已确认" : "";
+  return `[${RUNNER_STATUS_LABELS[event.status]}]${exitCode}${errorCode}${termination}${confirmed}${duration}`;
 }
 
 function eventBytes(event: RunnerEvent): number {
@@ -198,6 +204,18 @@ export function isTerminalRunnerEvent(
   if (mode === "run") return event.stage === "run-finished";
   if (mode === "compile") return event.stage === "compile-finished";
   return event.stage === "compile-finished" || event.stage === "run-finished";
+}
+
+export type RunnerEventLifecycle = "none" | "pending-cleanup" | "finished";
+
+export function runnerEventLifecycle(
+  event: RunnerEvent,
+  mode: "compile" | "run" | null,
+): RunnerEventLifecycle {
+  if (event.cleanupConfirmed) return "finished";
+  if (!isTerminalRunnerEvent(event, mode)) return "none";
+  if (event.cleanupBlocked || event.terminationError) return "pending-cleanup";
+  return "finished";
 }
 
 function pluginAlertType(
@@ -509,6 +527,7 @@ export default function AcmWorkbenchPage() {
     useState<CompilerProbeResult | null>(null);
   const [compilerLoading, setCompilerLoading] = useState(false);
   const [runnerBusy, setRunnerBusy] = useState(false);
+  const [runnerCleanupPending, setRunnerCleanupPending] = useState(false);
   const [runnerDocumentId, setRunnerDocumentId] = useState<string | null>(null);
   const [runnerTaskId, setRunnerTaskId] = useState<string | null>(null);
   const [runnerPhase, setRunnerPhase] = useState<"compile" | "run" | null>(
@@ -527,6 +546,7 @@ export default function AcmWorkbenchPage() {
   const runnerTaskRef = useRef<string | null>(null);
   const pendingRunnerEventsRef = useRef<RunnerEvent[]>([]);
   const runnerBusyRef = useRef(false);
+  const runnerCleanupPendingRef = useRef(false);
   const runnerDocumentIdRef = useRef<string | null>(null);
   const tabsRef = useRef<AcmTabState[]>([]);
   const eventsByDocumentRef = useRef<RunnerEventsByDocument>({});
@@ -569,6 +589,7 @@ export default function AcmWorkbenchPage() {
     runnerTaskRef.current = null;
     runnerModeRef.current = null;
     runnerBusyRef.current = false;
+    runnerCleanupPendingRef.current = false;
     runnerDocumentIdRef.current = null;
     pendingRunnerEventsRef.current = taskId
       ? pendingRunnerEventsRef.current.filter(
@@ -579,6 +600,7 @@ export default function AcmWorkbenchPage() {
     setRunnerTaskId(null);
     setRunnerDocumentId(null);
     setRunnerPhase(null);
+    setRunnerCleanupPending(false);
   }, []);
 
   const applySavedDocument = useCallback((document: AcmDocument) => {
@@ -692,12 +714,20 @@ export default function AcmWorkbenchPage() {
         if (event.stage === "compile-started") setRunnerPhase("compile");
         if (event.stage === "run-started") setRunnerPhase("run");
         if (!currentTaskId) {
-          if (isTerminalRunnerEvent(event, runnerModeRef.current))
+          if (
+            event.cleanupConfirmed ||
+            isTerminalRunnerEvent(event, runnerModeRef.current)
+          )
             pendingRunnerEventsRef.current.push(event);
           return;
         }
-        if (isTerminalRunnerEvent(event, runnerModeRef.current)) {
+        const lifecycle = runnerEventLifecycle(event, runnerModeRef.current);
+        if (lifecycle === "finished") {
           finishRunner(event.taskId);
+        } else if (lifecycle === "pending-cleanup") {
+          runnerCleanupPendingRef.current = true;
+          setRunnerCleanupPending(true);
+          setRunnerPhase(null);
         }
       });
     } catch (error) {
@@ -935,6 +965,7 @@ export default function AcmWorkbenchPage() {
       )
         return;
       setRunnerBusy(true);
+      setRunnerCleanupPending(false);
       setRunnerDocumentId(document.id);
       setRunnerPhase("compile");
       runnerBusyRef.current = true;
@@ -951,11 +982,21 @@ export default function AcmWorkbenchPage() {
         if (result.ok && result.data) {
           runnerTaskRef.current = result.data.taskId;
           setRunnerTaskId(result.data.taskId);
-          const pending = pendingRunnerEventsRef.current.find(
+          const pendingEvents = pendingRunnerEventsRef.current.filter(
             (event) => event.taskId === result.data?.taskId,
           );
-          if (pending && isTerminalRunnerEvent(pending, mode))
-            finishRunner(pending.taskId);
+          for (const pending of pendingEvents) {
+            const lifecycle = runnerEventLifecycle(pending, mode);
+            if (lifecycle === "finished") {
+              finishRunner(pending.taskId);
+              break;
+            }
+            if (lifecycle === "pending-cleanup") {
+              runnerCleanupPendingRef.current = true;
+              setRunnerCleanupPending(true);
+              setRunnerPhase(null);
+            }
+          }
         } else {
           finishRunner();
           message.error(errorText(result));
@@ -1289,7 +1330,11 @@ export default function AcmWorkbenchPage() {
           </Button>
           {runnerForActive && (
             <Tag color="processing">
-              {runnerPhase === "compile" ? "编译中" : "运行中"}
+              {runnerCleanupPending
+                ? "等待进程退出/清理"
+                : runnerPhase === "compile"
+                  ? "编译中"
+                  : "运行中"}
             </Tag>
           )}
           {runnerBusy && runnerDocumentId !== activeId && (

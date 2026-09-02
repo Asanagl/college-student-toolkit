@@ -136,6 +136,60 @@ function factoryFor(scenario: FakeScenario): RunnerProcessFactory {
   };
 }
 
+class TerminationFailureHelper extends AcmRunnerHelper {
+  override async terminate(_child: ChildProcess): Promise<void> {
+    throw new Error("termination failed");
+  }
+}
+
+class LateExitTerminationFailureHelper extends AcmRunnerHelper {
+  private readonly scheduled = new WeakSet<ChildProcess>();
+
+  constructor(
+    factory: RunnerProcessFactory,
+    private readonly delayMs = 250,
+  ) {
+    super(factory, "win32", 50, null);
+  }
+
+  override async terminate(child: ChildProcess): Promise<void> {
+    if (!this.scheduled.has(child)) {
+      this.scheduled.add(child);
+      setTimeout(() => {
+        const fake = child as FakeChild;
+        fake.signalCode = "SIGTERM";
+        child.emit("close", null);
+      }, this.delayMs);
+    }
+    throw new Error("termination failed");
+  }
+}
+
+class DeferredTerminationHelper extends AcmRunnerHelper {
+  calls = 0;
+  private release: (() => void) | null = null;
+
+  constructor(factory: RunnerProcessFactory) {
+    super(factory, "win32", 50, null);
+  }
+
+  override terminate(child: ChildProcess): Promise<void> {
+    this.calls += 1;
+    return new Promise<void>((resolve) => {
+      this.release = () => {
+        const fake = child as FakeChild;
+        fake.signalCode = "SIGTERM";
+        child.emit("close", null);
+        resolve();
+      };
+    });
+  }
+
+  confirm(): void {
+    this.release?.();
+  }
+}
+
 async function waitFor(
   events: RunnerEvent[],
   predicate: (event: RunnerEvent) => boolean,
@@ -143,6 +197,17 @@ async function waitFor(
   const deadline = Date.now() + 2000;
   while (!events.some(predicate)) {
     if (Date.now() > deadline) throw new Error("等待 runner 事件超时");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("等待 runner 状态超时");
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
 }
@@ -487,6 +552,118 @@ describe("AcmRunnerService", () => {
       errorCode: "ACM_RUNNER_OUTPUT_LIMIT",
     });
     await tempService.dispose();
+  });
+
+  it("surfaces timeout termination failure and keeps the task busy", async () => {
+    const service = new AcmRunnerService({
+      compiler: compiler(),
+      helper: new TerminationFailureHelper(
+        factoryFor({
+          compileExitCode: 0,
+          compileStderr: "",
+          runOutput: "",
+          runStderr: "",
+          holdRun: true,
+        }),
+        "win32",
+      ),
+      platform: "win32",
+      tempRoot: createTempRoot(),
+      limits: { runTimeoutMs: 5 },
+    });
+    const events: RunnerEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.init();
+    expect((await service.start(request())).ok).toBe(true);
+    await waitFor(events, (event) => event.stage === "run-finished");
+    expect(events.at(-1)).toMatchObject({
+      status: "timeout",
+      errorCode: "ACM_RUNNER_TIMEOUT",
+      terminationError: "termination failed",
+      cleanupBlocked: true,
+    });
+    expect(await service.start(request())).toMatchObject({
+      ok: false,
+      errorCode: "ACM_RUNNER_BUSY",
+    });
+    await service.dispose();
+  });
+
+  it("shares an in-flight timeout termination with a concurrent manual stop", async () => {
+    const helper = new DeferredTerminationHelper(
+      factoryFor({
+        compileExitCode: 0,
+        compileStderr: "",
+        runOutput: "",
+        runStderr: "",
+        holdRun: true,
+      }),
+    );
+    const service = new AcmRunnerService({
+      compiler: compiler(),
+      helper,
+      platform: "win32",
+      tempRoot: createTempRoot(),
+      limits: { runTimeoutMs: 5 },
+    });
+    const events: RunnerEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.init();
+    expect((await service.start(request())).ok).toBe(true);
+    await waitUntil(() => helper.calls === 1, 2_000);
+    const stopping = service.stop();
+    await Promise.resolve();
+    expect(helper.calls).toBe(1);
+    helper.confirm();
+    await expect(stopping).resolves.toMatchObject({ ok: true, data: true });
+    await waitFor(events, (event) => event.stage === "run-finished");
+    await service.dispose();
+  });
+
+  it("cleans up after a late exit confirmation and allows the next task", async () => {
+    const tempRoot = createTempRoot();
+    const service = new AcmRunnerService({
+      compiler: compiler(),
+      helper: new LateExitTerminationFailureHelper(
+        factoryFor({
+          compileExitCode: 0,
+          compileStderr: "",
+          runOutput: "",
+          runStderr: "",
+          holdRun: true,
+        }),
+      ),
+      platform: "win32",
+      tempRoot,
+      limits: { runTimeoutMs: 5 },
+    });
+    const events: RunnerEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.init();
+    expect((await service.start(request())).ok).toBe(true);
+    await waitFor(events, (event) => event.stage === "run-finished");
+    expect(await service.start(request())).toMatchObject({
+      ok: false,
+      errorCode: "ACM_RUNNER_BUSY",
+    });
+    await waitUntil(() => fs.readdirSync(tempRoot).length === 0);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        cleanupConfirmed: true,
+        stage: "run-finished",
+      }),
+    );
+
+    expect(await service.start(request({ mode: "compile" }))).toMatchObject({
+      ok: true,
+      data: { taskId: expect.any(String) },
+    });
+    await waitFor(
+      events,
+      (event) =>
+        event.stage === "compile-finished" && event.status === "completed",
+    );
+    await service.dispose();
   });
 });
 

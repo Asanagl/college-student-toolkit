@@ -589,6 +589,11 @@ export interface RunnerEvent {
     | "output-limit";
   exitCode?: number | null;
   errorCode?: IpcErrorCode;
+  /** 终止未确认时保留原阶段结果，并附带可观测的失败原因。 */
+  terminationError?: string;
+  cleanupBlocked?: boolean;
+  /** 迟到的 exit/close 已确认，主进程已完成本任务的清理并释放 busy。 */
+  cleanupConfirmed?: boolean;
   durationMs?: number;
 }
 
@@ -635,6 +640,9 @@ export interface AcmDiffResult {
   candidateOutput?: AcmDiffProgramOutput;
   /** 临时可执行文件或目录清理失败的非阻断警告。 */
   cleanupWarnings?: string[];
+  /** 子进程退出尚未确认时，结果仍返回但任务会继续被服务跟踪。 */
+  cleanupBlocked?: boolean;
+  terminationError?: string;
   errorCode?: IpcErrorCode;
 }
 
@@ -660,6 +668,10 @@ export interface AcmDiffEvent {
     | "output-limit";
   result?: AcmDiffResult;
   cleanupWarning?: string;
+  terminationError?: string;
+  cleanupBlocked?: boolean;
+  /** 迟到的 exit/close 已确认，主进程已完成本任务的清理并释放 busy。 */
+  cleanupConfirmed?: boolean;
   errorCode?: IpcErrorCode;
 }
 
