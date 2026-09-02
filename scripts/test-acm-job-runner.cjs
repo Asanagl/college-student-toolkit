@@ -11,6 +11,11 @@ const helper = path.join(
   "acm-job-runner",
   "acm-job-runner.exe",
 );
+const breakawayProbe = path.join(
+  root,
+  "scripts",
+  "acm-job-breakaway-probe.ps1",
+);
 
 function processExists(pid) {
   try {
@@ -135,6 +140,62 @@ function treeTerminationCommand() {
   );
 }
 
+async function verifyBreakawayRejected(target, directory, marker) {
+  let runner;
+  let pids = [];
+  try {
+    if (fs.existsSync(marker)) fs.rmSync(marker, { force: true });
+    runner = spawn(
+      helper,
+      [target, "-NoProfile", "-NonInteractive", "-File", breakawayProbe],
+      {
+        cwd: directory,
+        windowsHide: true,
+        stdio: "ignore",
+        env: { ...process.env, ACM_JOB_RUNNER_MARKER: marker },
+      },
+    );
+    const deadline = Date.now() + 10_000;
+    let values = [];
+    while (Date.now() < deadline) {
+      if (fs.existsSync(marker)) {
+        values = fs
+          .readFileSync(marker, "utf8")
+          .split(/\r?\n/)
+          .map((value) => Number(value.trim()))
+          .filter((value) => Number.isFinite(value));
+        if (values.length >= 4) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (values.length < 4) throw new Error("等待 breakaway 探针结果超时");
+    const [shellPid, childPid, breakawayCreated, breakawayError] = values;
+    if (breakawayCreated !== 0)
+      throw new Error("helper Job 允许 CREATE_BREAKAWAY_FROM_JOB");
+    if (breakawayError !== 5 && breakawayError !== 87)
+      throw new Error(`意外的 breakaway 错误码：${breakawayError}`);
+    pids = [shellPid, childPid].filter(
+      (pid) => Number.isInteger(pid) && pid > 0,
+    );
+    if (!pids.every(processExists)) throw new Error("breakaway 对照后代未启动");
+    if (!runner.kill()) throw new Error("无法结束 helper wrapper");
+    await waitForExit(runner);
+    await waitForPidsToExit(pids);
+    console.log(
+      JSON.stringify({
+        helper,
+        strategy: "reject-create-breakaway-from-job",
+        breakawayCreated: false,
+        breakawayError,
+        targetPids: pids,
+      }),
+    );
+  } finally {
+    if (runner?.pid && processExists(runner.pid)) killPid(runner.pid);
+    pids.forEach(killPid);
+  }
+}
+
 async function verifyTreeTermination(target, directory, marker) {
   let runner;
   let pids = [];
@@ -187,6 +248,7 @@ async function run() {
     const target = powershellTarget();
     await verifyExitCode(target, directory);
     await verifyTreeTermination(target, directory, marker);
+    await verifyBreakawayRejected(target, directory, marker);
   } finally {
     await removeDirectory(directory);
   }
