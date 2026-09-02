@@ -1,4 +1,5 @@
 import {
+  app,
   BrowserWindow,
   dialog,
   type MessageBoxOptions,
@@ -32,6 +33,11 @@ export const ACM_MAX_PENDING_SAVE_DIALOGS = 4;
 const FILE_READ_CHUNK_BYTES = 64 * 1024;
 const BACKUP_CLEANUP_RETRIES = 3;
 const BACKUP_CLEANUP_DELAY_MS = 250;
+const STALE_BACKUP_SUFFIX = ".bak";
+const BACKUP_DIRECTORY_INDEX = "acm-file-backups.json";
+const MAX_BACKUP_DIRECTORIES = 64;
+const STALE_BACKUP_NAME =
+  /^(.+)\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.bak$/i;
 
 const TEMPLATES: Record<AcmTemplateId, string> = {
   blank: "",
@@ -95,7 +101,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function withWarnings<T>(result: IpcResult<T>, warnings: string[]): IpcResult<T> {
+function withWarnings<T>(
+  result: IpcResult<T>,
+  warnings: string[],
+): IpcResult<T> {
   return warnings.length ? { ...result, warnings } : result;
 }
 
@@ -283,6 +292,14 @@ function samePath(left: string, right: string): boolean {
     : normalizedLeft === normalizedRight;
 }
 
+function defaultUserDataPath(): string {
+  try {
+    return app.getPath("userData");
+  } catch {
+    return "";
+  }
+}
+
 export class AcmFileService {
   private readonly openDocuments = new Map<string, OpenDocumentState>();
   private openGate: Promise<void> = Promise.resolve();
@@ -297,11 +314,23 @@ export class AcmFileService {
     Promise<IpcResult<AcmDocumentExternalState>>
   >();
   private readonly pendingCleanupRetries = new Set<Promise<void>>();
+  private readonly scannedBackupDirectories = new Set<string>();
   private disposing = false;
+  private readonly userDataPath: string;
 
-  constructor(private readonly dialogs: DialogAccess = dialog) {}
+  constructor(
+    private readonly dialogs: DialogAccess = dialog,
+    userDataPath?: string,
+  ) {
+    this.userDataPath = userDataPath ?? defaultUserDataPath();
+  }
 
-  async init(): Promise<void> {}
+  async init(): Promise<void> {
+    if (this.disposing) return;
+    this.loadBackupDirectories();
+    await this.scanOpenDocumentBackupDirectories();
+    this.persistBackupDirectories();
+  }
 
   createDocument(
     template: AcmTemplateId,
@@ -448,6 +477,11 @@ export class AcmFileService {
     await Promise.allSettled([...this.pendingCleanupRetries]);
     this.pendingExternalChecks.clear();
     this.openDocuments.clear();
+    this.scannedBackupDirectories.clear();
+  }
+
+  async scanBackupDirectory(directory: string): Promise<string[]> {
+    return this.cleanupStaleBackupsInDirectory(directory);
   }
 
   private async readDocumentUnlocked(
@@ -819,6 +853,7 @@ export class AcmFileService {
   ): Promise<string[]> {
     const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
     const backupPath = `${filePath}.${process.pid}.${randomUUID()}.bak`;
+    this.rememberBackupDirectory(filePath);
     let backupRetained = false;
     try {
       await fs.promises.writeFile(tempPath, content, "utf8");
@@ -874,6 +909,121 @@ export class AcmFileService {
       () => this.pendingCleanupRetries.delete(retry),
       () => this.pendingCleanupRetries.delete(retry),
     );
+  }
+
+  private rememberBackupDirectory(filePath: string): void {
+    const directory = path.resolve(path.dirname(filePath));
+    this.scannedBackupDirectories.add(directory);
+    if (this.scannedBackupDirectories.size > MAX_BACKUP_DIRECTORIES) {
+      const first = this.scannedBackupDirectories.values().next().value;
+      if (first && first !== directory)
+        this.scannedBackupDirectories.delete(first);
+    }
+    this.persistBackupDirectories();
+  }
+
+  private backupIndexPath(): string {
+    return path.join(this.userDataPath, BACKUP_DIRECTORY_INDEX);
+  }
+
+  private loadBackupDirectories(): void {
+    if (!this.userDataPath) return;
+    try {
+      const value = JSON.parse(
+        fs.readFileSync(this.backupIndexPath(), "utf8"),
+      ) as Record<string, unknown>;
+      if (
+        value.formatVersion !== 1 ||
+        value.kind !== "acm-file-backup-directories" ||
+        !Array.isArray(value.directories)
+      )
+        return;
+      for (const entry of value.directories) {
+        if (typeof entry !== "string" || !entry.trim()) continue;
+        const resolved = path.resolve(entry);
+        if (
+          isDevicePath(resolved) ||
+          isUncPath(resolved) ||
+          isReparsePoint(resolved)
+        )
+          continue;
+        this.scannedBackupDirectories.add(resolved);
+        if (this.scannedBackupDirectories.size >= MAX_BACKUP_DIRECTORIES) break;
+      }
+    } catch {
+      // A missing or corrupt index is non-fatal; the next save recreates it.
+    }
+  }
+
+  private persistBackupDirectories(): void {
+    if (!this.userDataPath) return;
+    try {
+      fs.mkdirSync(this.userDataPath, { recursive: true });
+      const target = this.backupIndexPath();
+      const tempPath = `${target}.${process.pid}.tmp`;
+      fs.writeFileSync(
+        tempPath,
+        `${JSON.stringify({
+          formatVersion: 1,
+          kind: "acm-file-backup-directories",
+          directories: [...this.scannedBackupDirectories],
+        })}\n`,
+        "utf8",
+      );
+      fs.renameSync(tempPath, target);
+    } catch (error) {
+      console.warn(
+        `[acm-file] 保存备份扫描目录失败: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private async scanOpenDocumentBackupDirectories(): Promise<void> {
+    const directories = new Set<string>();
+    for (const state of this.openDocuments.values()) {
+      if (!state.filePath) continue;
+      directories.add(path.resolve(path.dirname(state.filePath)));
+    }
+    for (const directory of this.scannedBackupDirectories)
+      directories.add(directory);
+    const remaining = new Set<string>();
+    for (const directory of directories) {
+      const warnings = await this.cleanupStaleBackupsInDirectory(directory);
+      if (warnings.length > 0) remaining.add(directory);
+    }
+    this.scannedBackupDirectories.clear();
+    for (const directory of remaining)
+      this.scannedBackupDirectories.add(directory);
+  }
+
+  private async cleanupStaleBackupsInDirectory(
+    directory: string,
+  ): Promise<string[]> {
+    const resolved = path.resolve(directory);
+    const warnings: string[] = [];
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(resolved, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(STALE_BACKUP_SUFFIX))
+        continue;
+      const match = STALE_BACKUP_NAME.exec(entry.name);
+      if (!match) continue;
+      const backupPath = path.join(resolved, entry.name);
+      try {
+        assertRegularPath(backupPath, true);
+        if (isReparsePoint(backupPath)) continue;
+        if (!(await this.removeBackupFile(backupPath)))
+          warnings.push(`启动扫描未能删除遗留备份：${backupPath}`);
+      } catch {
+        warnings.push(`启动扫描跳过不安全备份：${backupPath}`);
+      }
+    }
+    return warnings;
   }
 
   private async retryBackupCleanup(backupPath: string): Promise<void> {

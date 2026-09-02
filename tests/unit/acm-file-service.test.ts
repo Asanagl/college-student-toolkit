@@ -432,6 +432,61 @@ describe("AcmFileService", () => {
     ).toEqual([]);
   });
 
+  it("scans leftover pid-uuid backups on init and ignores unrelated bak files", async () => {
+    const directory = tempDirectory();
+    const leftover = path.join(
+      directory,
+      "main.cpp.4242.123e4567-e89b-12d3-a456-426614174000.bak",
+    );
+    const unrelated = path.join(directory, "notes.bak");
+    fs.writeFileSync(leftover, "stale\n", "utf8");
+    fs.writeFileSync(unrelated, "keep\n", "utf8");
+    const service = new AcmFileService({
+      showOpenDialog: vi.fn(),
+      showSaveDialog: vi.fn(),
+      showMessageBox: vi.fn(),
+    });
+    const warnings = await service.scanBackupDirectory(directory);
+    expect(warnings).toEqual([]);
+    expect(fs.existsSync(leftover)).toBe(false);
+    expect(fs.existsSync(unrelated)).toBe(true);
+    await service.dispose();
+  });
+
+  it("recovers leftover backups after a simulated crash restart", async () => {
+    const directory = tempDirectory();
+    const userData = tempDirectory();
+    const filePath = path.join(directory, "main.cpp");
+    const leftover = path.join(
+      directory,
+      "main.cpp.4242.123e4567-e89b-12d3-a456-426614174000.bak",
+    );
+    const unrelated = path.join(directory, "notes.bak");
+    fs.writeFileSync(filePath, "old\n", "utf8");
+    const dialogs = {
+      showOpenDialog: vi.fn(async () => ({
+        canceled: false,
+        filePaths: [filePath],
+      })),
+      showSaveDialog: vi.fn(),
+      showMessageBox: vi.fn(),
+    };
+    const first = new AcmFileService(dialogs, userData);
+    const opened = await first.openDocument();
+    if (!opened.ok || !opened.data) throw new Error("文档未打开");
+    const saved = await first.saveDocument(
+      request(opened.data.id, filePath, "new\n", opened.data.savedFingerprint),
+    );
+    expect(saved.ok).toBe(true);
+    fs.writeFileSync(leftover, "stale\n", "utf8");
+    fs.writeFileSync(unrelated, "keep\n", "utf8");
+    const second = new AcmFileService(dialogs, userData);
+    await second.init();
+    expect(fs.existsSync(leftover)).toBe(false);
+    expect(fs.existsSync(unrelated)).toBe(true);
+    await second.dispose();
+  });
+
   it("adds cpp extension, asks before overwrite, and rejects invalid paths/content", async () => {
     const directory = tempDirectory();
     const target = path.join(directory, "existing.cpp");
