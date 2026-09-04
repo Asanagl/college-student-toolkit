@@ -8,7 +8,7 @@ const { spawn, spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const packageRoot = path.resolve(
-  process.env.PACKAGED_ROOT?.trim() || "release-v0.4.0-msix-local/win-unpacked",
+  process.env.PACKAGED_ROOT?.trim() || "release-v0.5.0-msix-local/win-unpacked",
 );
 const executableName = "大学生工具组.exe";
 const helperName = "acm-job-runner.exe";

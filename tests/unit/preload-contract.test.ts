@@ -70,6 +70,7 @@ describe("preload RendererApi contract", () => {
       "appearance",
       "ocrComponent",
       "acm",
+      "onboarding",
     ]);
   });
 
@@ -158,6 +159,8 @@ describe("preload RendererApi contract", () => {
     await call("acm", "dismissNotice");
     await call("acm", "clearNotice");
     await call("acm", "releaseDocument", "document-id");
+    await call("onboarding", "getState");
+    await call("onboarding", "complete");
     expect(electronState.invoke.mock.calls.length).toBeGreaterThan(60);
   });
 

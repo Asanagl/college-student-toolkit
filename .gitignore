@@ -10,6 +10,8 @@ release-v0.3.0-rc-*/
 release-v0.3.0-rc/
 release-v0.3.0-msix-*/
 release-v0.4.0-msix-*/
+release-v0.5.0-msix-*/
+release-v0.5.0-dir-debug/
 
 # Electron builder
 *.exe

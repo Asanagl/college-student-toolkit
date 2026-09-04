@@ -137,6 +137,7 @@ const electronMocks = vi.hoisted(() => {
   }
 
   const ipcListeners = new Map<string, Listener>();
+  const ipcHandlers = new Map<string, Listener>();
   const ipcMain = {
     on: vi.fn((channel: string, listener: Listener) => {
       ipcListeners.set(channel, listener);
@@ -144,7 +145,9 @@ const electronMocks = vi.hoisted(() => {
     removeListener: vi.fn((channel: string, listener: Listener) => {
       if (ipcListeners.get(channel) === listener) ipcListeners.delete(channel);
     }),
-    handle: vi.fn(),
+    handle: vi.fn((channel: string, listener: Listener) => {
+      ipcHandlers.set(channel, listener);
+    }),
   };
   const dialog = {
     showMessageBox: vi.fn(async () => ({ response: 0 })),
@@ -159,6 +162,7 @@ const electronMocks = vi.hoisted(() => {
     FakeSession,
     dialog,
     ipcListeners,
+    ipcHandlers,
     ipcMain,
     session,
   };
@@ -177,6 +181,7 @@ import {
   registerImportBrowserIpcHandlers,
   validateImportUrl,
 } from "../../src/main/services/ImportBrowserService";
+import { IPC_CHANNELS } from "../../src/shared/types";
 
 describe("教务导入地址边界", () => {
   it.each([
@@ -217,6 +222,7 @@ describe("教务导入临时窗口生命周期与导航安全", () => {
     electronMocks.FakeWebContentsView.instances.length = 0;
     electronMocks.FakeSession.instances.length = 0;
     electronMocks.ipcListeners.clear();
+    electronMocks.ipcHandlers.clear();
     vi.clearAllMocks();
   });
 
@@ -792,8 +798,16 @@ describe("教务导入临时窗口生命周期与导航安全", () => {
   });
 
   it("只注册一次导入 IPC handlers", () => {
-    registerImportBrowserIpcHandlers();
-    registerImportBrowserIpcHandlers();
+    registerImportBrowserIpcHandlers(() => false);
+    registerImportBrowserIpcHandlers(() => true);
     expect(electronMocks.ipcMain.handle).toHaveBeenCalledTimes(4);
+    const handler = electronMocks.ipcHandlers.get(
+      IPC_CHANNELS.TIMETABLE_OPEN_BROWSER,
+    );
+    expect(handler).toBeDefined();
+    expect(handler?.({})).toMatchObject({
+      ok: false,
+      errorCode: "IPC_UNAUTHORIZED",
+    });
   });
 });

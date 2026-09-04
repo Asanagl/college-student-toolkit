@@ -39,7 +39,7 @@ if (packageVersionParts.some((part) => part > 65535)) {
 const root = path.resolve(__dirname, "..");
 const env = {
   ...process.env,
-  APPX_OUTPUT_DIR: process.env.APPX_OUTPUT_DIR || "release-v0.4.0-msix-store",
+  APPX_OUTPUT_DIR: process.env.APPX_OUTPUT_DIR || "release-v0.5.0-msix-store",
 };
 const result = spawnSync(
   process.execPath,

@@ -31,12 +31,15 @@ import {
   type IpcResult,
   type Lab,
   type MaterialMode,
+  type OnboardingState,
   type PeriodConfig,
   type RunnerEvent,
   type Schedule,
 } from "../shared/types";
+import { resolveOnboardingState } from "../shared/onboarding";
 import { PRODUCT_VERSION } from "../shared/version";
-import { dataService } from "./services/DataService";
+import { dataService, DEFAULT_PERIODS } from "./services/DataService";
+import { CURRENT_DEFAULT_GPA_FORMULA } from "./services/DatabaseMigrator";
 import { portableSettingsService } from "./services/PortableSettingsService";
 import { notificationService } from "./services/NotificationService";
 import { timetableService } from "./services/TimetableService";
@@ -58,6 +61,7 @@ import { canUseAcmDocumentScope } from "./services/AcmDocumentPolicy";
 import { acmLifecycleQueue } from "./services/AcmLifecycleQueue";
 import { acmRunnerService } from "./services/AcmRunnerService";
 import { acmDifferService } from "./services/AcmDifferService";
+import { writeTextFileAtomically } from "./services/AtomicFile";
 import { parseDomWithAllParsers } from "./services/parsers";
 import { parseDomForExams } from "./services/parsers/exam";
 import { parseOcrToExams } from "./services/ExamOcrParser";
@@ -136,11 +140,11 @@ const services = [
 ];
 
 function createMainWindow(): void {
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
   windowService.createMainWindow((win) => {
-    const devUrl = process.env.VITE_DEV_SERVER_URL;
     if (devUrl) void win.loadURL(devUrl);
     else void win.loadFile(path.join(__dirname, "../../dist/index.html"));
-  });
+  }, devUrl);
 }
 
 function errorCode(error: unknown): IpcErrorCode | undefined {
@@ -233,6 +237,26 @@ async function wrapWriteIpcAsync<T>(
   return wrapIpcAsync(fn);
 }
 
+function unauthorizedIpcResult<T>(): IpcResult<T> {
+  return {
+    ok: false,
+    error: "未授权的 IPC 调用",
+    errorCode: "IPC_UNAUTHORIZED",
+  };
+}
+
+/** 所有主应用 IPC 共用同一 sender/frame/origin 边界，避免远程页面借用 preload。 */
+function registerIpcHandler<T extends unknown[]>(
+  channel: string,
+  handler: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown,
+): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!windowService.isTrustedMainFrameEvent(event))
+      return unauthorizedIpcResult();
+    return handler(event, ...(args as T));
+  });
+}
+
 function refreshReminders(): void {
   void reminderScheduler
     .recompute()
@@ -262,10 +286,10 @@ function getDefaultGradeFormula(): GpaFormula {
 }
 
 function registerCrudHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_LIST, () =>
+  registerIpcHandler(IPC_CHANNELS.SCHEDULE_LIST, () =>
     wrap(() => dataService.schedules.list()),
   );
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_ADD, (_event, item: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SCHEDULE_ADD, (_event, item: unknown) => {
     const result = wrapWrite(() =>
       dataService.schedules.add(
         parseIpc(scheduleAddSchema, item) as Omit<
@@ -277,7 +301,7 @@ function registerCrudHandlers(): void {
     if (result.ok) refreshReminders();
     return result;
   });
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.SCHEDULE_UPDATE,
     (_event, id: unknown, patch: unknown) => {
       const result = wrapWrite(() =>
@@ -290,7 +314,7 @@ function registerCrudHandlers(): void {
       return result;
     },
   );
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_REMOVE, (_event, id: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SCHEDULE_REMOVE, (_event, id: unknown) => {
     const result = wrapWrite(() =>
       dataService.schedules.remove(parseIpc(tokenSchema, id)),
     );
@@ -298,10 +322,10 @@ function registerCrudHandlers(): void {
     return result;
   });
 
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_LIST, () =>
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_LIST, () =>
     wrap(() => dataService.courses.list()),
   );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_ADD, (_event, item: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_ADD, (_event, item: unknown) => {
     const result = wrapWrite(() =>
       dataService.courses.add(
         parseIpc(courseAddSchema, item) as Omit<
@@ -313,7 +337,7 @@ function registerCrudHandlers(): void {
     if (result.ok) refreshReminders();
     return result;
   });
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.TIMETABLE_UPDATE,
     (_event, id: unknown, patch: unknown) => {
       const result = wrapWrite(() =>
@@ -326,17 +350,17 @@ function registerCrudHandlers(): void {
       return result;
     },
   );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_REMOVE, (_event, id: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_REMOVE, (_event, id: unknown) => {
     const result = wrapWrite(() =>
       dataService.courses.remove(parseIpc(tokenSchema, id)),
     );
     if (result.ok) refreshReminders();
     return result;
   });
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_GET_PREFERENCES, () =>
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_GET_PREFERENCES, () =>
     timetableService.getPreferences(),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.TIMETABLE_SET_SEMESTER_START,
     (_event, value: unknown) => {
       const result = wrapWrite(() =>
@@ -347,28 +371,31 @@ function registerCrudHandlers(): void {
     },
   );
 
-  ipcMain.handle(IPC_CHANNELS.PERIOD_CONFIG_GET, () =>
+  registerIpcHandler(IPC_CHANNELS.PERIOD_CONFIG_GET, () =>
     wrap(() => dataService.periodConfig.getAll()),
   );
-  ipcMain.handle(IPC_CHANNELS.PERIOD_CONFIG_SAVE, (_event, config: unknown) => {
-    const result = wrapWrite(() => {
-      dataService.periodConfig.saveAll(
-        parseIpc(periodConfigSchema, config) as PeriodConfig[],
-      );
-      return true;
-    });
-    if (result.ok) refreshReminders();
-    return result;
-  });
+  registerIpcHandler(
+    IPC_CHANNELS.PERIOD_CONFIG_SAVE,
+    (_event, config: unknown) => {
+      const result = wrapWrite(() => {
+        dataService.periodConfig.saveAll(
+          parseIpc(periodConfigSchema, config) as PeriodConfig[],
+        );
+        return true;
+      });
+      if (result.ok) refreshReminders();
+      return result;
+    },
+  );
 
   registerEntityHandlers();
 }
 
 function registerEntityHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.EXAM_LIST, () =>
+  registerIpcHandler(IPC_CHANNELS.EXAM_LIST, () =>
     wrap(() => dataService.exams.list()),
   );
-  ipcMain.handle(IPC_CHANNELS.EXAM_ADD, (_event, item: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.EXAM_ADD, (_event, item: unknown) => {
     const result = wrapWrite(() =>
       dataService.exams.add(
         parseIpc(examAddSchema, item) as Omit<
@@ -380,7 +407,7 @@ function registerEntityHandlers(): void {
     if (result.ok) refreshReminders();
     return result;
   });
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.EXAM_UPDATE,
     (_event, id: unknown, patch: unknown) => {
       const result = wrapWrite(() =>
@@ -393,17 +420,17 @@ function registerEntityHandlers(): void {
       return result;
     },
   );
-  ipcMain.handle(IPC_CHANNELS.EXAM_REMOVE, (_event, id: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.EXAM_REMOVE, (_event, id: unknown) => {
     const result = wrapWrite(() =>
       dataService.exams.remove(parseIpc(tokenSchema, id)),
     );
     if (result.ok) refreshReminders();
     return result;
   });
-  ipcMain.handle(IPC_CHANNELS.LAB_LIST, () =>
+  registerIpcHandler(IPC_CHANNELS.LAB_LIST, () =>
     wrap(() => dataService.labs.list()),
   );
-  ipcMain.handle(IPC_CHANNELS.LAB_ADD, (_event, item: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.LAB_ADD, (_event, item: unknown) => {
     const result = wrapWrite(() =>
       dataService.labs.add(
         parseIpc(labAddSchema, item) as Omit<
@@ -415,7 +442,7 @@ function registerEntityHandlers(): void {
     if (result.ok) refreshReminders();
     return result;
   });
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.LAB_UPDATE,
     (_event, id: unknown, patch: unknown) => {
       const result = wrapWrite(() =>
@@ -428,25 +455,25 @@ function registerEntityHandlers(): void {
       return result;
     },
   );
-  ipcMain.handle(IPC_CHANNELS.LAB_REMOVE, (_event, id: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.LAB_REMOVE, (_event, id: unknown) => {
     const result = wrapWrite(() =>
       dataService.labs.remove(parseIpc(tokenSchema, id)),
     );
     if (result.ok) refreshReminders();
     return result;
   });
-  ipcMain.handle(IPC_CHANNELS.GRADE_LIST, () =>
+  registerIpcHandler(IPC_CHANNELS.GRADE_LIST, () =>
     wrap(() => dataService.grades.list()),
   );
-  ipcMain.handle(IPC_CHANNELS.GRADE_PAGE, (_event, query: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.GRADE_PAGE, (_event, query: unknown) =>
     wrap(() =>
       dataService.grades.listPage(parseIpc(gradePageQuerySchema, query)),
     ),
   );
-  ipcMain.handle(IPC_CHANNELS.GRADE_DASHBOARD, () =>
+  registerIpcHandler(IPC_CHANNELS.GRADE_DASHBOARD, () =>
     wrap(() => dataService.grades.getDashboard(getDefaultGradeFormula())),
   );
-  ipcMain.handle(IPC_CHANNELS.GRADE_ADD, (_event, item: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.GRADE_ADD, (_event, item: unknown) =>
     wrapWrite(() =>
       dataService.grades.add(
         parseIpc(gradeAddSchema, item) as Omit<
@@ -456,7 +483,7 @@ function registerEntityHandlers(): void {
       ),
     ),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.GRADE_UPDATE,
     (_event, id: unknown, patch: unknown) =>
       wrapWrite(() =>
@@ -466,16 +493,16 @@ function registerEntityHandlers(): void {
         ),
       ),
   );
-  ipcMain.handle(IPC_CHANNELS.GRADE_REMOVE, (_event, id: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.GRADE_REMOVE, (_event, id: unknown) =>
     wrapWrite(() => dataService.grades.remove(parseIpc(tokenSchema, id))),
   );
-  ipcMain.handle(IPC_CHANNELS.FORMULA_GET, (_event, id: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.FORMULA_GET, (_event, id: unknown) =>
     wrap(() => dataService.formulas.getById(parseIpc(formulaIdSchema, id))),
   );
-  ipcMain.handle(IPC_CHANNELS.FORMULA_LIST, () =>
+  registerIpcHandler(IPC_CHANNELS.FORMULA_LIST, () =>
     wrap(() => dataService.formulas.list()),
   );
-  ipcMain.handle(IPC_CHANNELS.FORMULA_SAVE, (_event, formula: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.FORMULA_SAVE, (_event, formula: unknown) =>
     wrapWrite(() =>
       dataService.formulas.save(
         parseIpc(formulaSchema, formula) as Omit<
@@ -488,23 +515,27 @@ function registerEntityHandlers(): void {
 }
 
 function registerImportHandlers(): void {
-  registerImportBrowserIpcHandlers();
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_PARSE_DOM, (_event, html: unknown) =>
-    wrap(() => parseDomWithAllParsers(parseIpc(htmlSchema, html))),
+  registerImportBrowserIpcHandlers((event) =>
+    windowService.isTrustedMainFrameEvent(event),
   );
-  ipcMain.handle(IPC_CHANNELS.EXAM_PARSE_DOM, (_event, html: unknown) =>
+  registerIpcHandler(
+    IPC_CHANNELS.TIMETABLE_PARSE_DOM,
+    (_event, html: unknown) =>
+      wrap(() => parseDomWithAllParsers(parseIpc(htmlSchema, html))),
+  );
+  registerIpcHandler(IPC_CHANNELS.EXAM_PARSE_DOM, (_event, html: unknown) =>
     wrap(() => parseDomForExams(parseIpc(htmlSchema, html))),
   );
-  ipcMain.handle(IPC_CHANNELS.LAB_PARSE_DOM, (_event, html: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.LAB_PARSE_DOM, (_event, html: unknown) =>
     wrap(() => parseDomForLabs(parseIpc(htmlSchema, html))),
   );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_RUN_OCR, (_event, image: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_RUN_OCR, (_event, image: unknown) =>
     runOcr(image, "course"),
   );
-  ipcMain.handle(IPC_CHANNELS.EXAM_RUN_OCR, (_event, image: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.EXAM_RUN_OCR, (_event, image: unknown) =>
     runOcr(image, "exam"),
   );
-  ipcMain.handle(IPC_CHANNELS.LAB_RUN_OCR, (_event, image: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.LAB_RUN_OCR, (_event, image: unknown) =>
     runOcr(image, "lab"),
   );
 }
@@ -523,34 +554,34 @@ async function runOcr(
 }
 
 function registerNotificationHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_SEND, (_event, payload: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_SEND, (_event, payload: unknown) =>
     wrapWriteIpcAsync(() =>
       notificationService.send(parseIpc(notificationPayloadSchema, payload)),
     ),
   );
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_SET_DND, (_event, config: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_SET_DND, (_event, config: unknown) =>
     wrapWriteIpcAsync(() =>
       notificationService.setDnd(parseIpc(dndSchema, config)),
     ),
   );
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_GET_DND, () =>
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_GET_DND, () =>
     wrapIpcAsync(() => notificationService.getDnd()),
   );
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_GET_HISTORY, () =>
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_GET_HISTORY, () =>
     wrapIpcAsync(() => notificationService.getHistory()),
   );
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_CLEAR_HISTORY, () =>
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_CLEAR_HISTORY, () =>
     wrapWriteIpcAsync(() => notificationService.clearHistory()),
   );
 }
 
 function registerDataHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.DATA_EXPORT_BACKUP, (event) =>
+  registerIpcHandler(IPC_CHANNELS.DATA_EXPORT_BACKUP, (event) =>
     wrapIpcAsync(() =>
       dataService.exportBackup(BrowserWindow.fromWebContents(event.sender)),
     ),
   );
-  ipcMain.handle(IPC_CHANNELS.DATA_PREPARE_IMPORT, (event) =>
+  registerIpcHandler(IPC_CHANNELS.DATA_PREPARE_IMPORT, (event) =>
     wrapIpcAsync(() =>
       dataService.prepareImport(
         event.sender.id,
@@ -558,7 +589,7 @@ function registerDataHandlers(): void {
       ),
     ),
   );
-  ipcMain.handle(IPC_CHANNELS.DATA_COMMIT_IMPORT, (event, token: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.DATA_COMMIT_IMPORT, (event, token: unknown) =>
     wrapIpcAsync(async () => {
       const result = await dataService.commitImport(
         event.sender.id,
@@ -575,7 +606,7 @@ function registerDataHandlers(): void {
       return result;
     }),
   );
-  ipcMain.handle(IPC_CHANNELS.DATA_CANCEL_IMPORT, (event, token: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.DATA_CANCEL_IMPORT, (event, token: unknown) =>
     wrapIpcAsync(() =>
       dataService.cancelImport(event.sender.id, parseIpc(tokenSchema, token)),
     ),
@@ -588,25 +619,25 @@ function broadcastRestoreCompleted(): void {
 }
 
 function registerSettingsHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.THEME_GET, () =>
+  registerIpcHandler(IPC_CHANNELS.THEME_GET, () =>
     wrap(() => themeService.getMode()),
   );
-  ipcMain.handle(IPC_CHANNELS.THEME_SET, (_event, mode: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.THEME_SET, (_event, mode: unknown) =>
     wrapWrite(() => {
       themeService.setMode(parseIpc(themeModeSchema, mode));
       return true;
     }),
   );
-  ipcMain.handle(IPC_CHANNELS.THEME_GET_RESOLVED, () =>
+  registerIpcHandler(IPC_CHANNELS.THEME_GET_RESOLVED, () =>
     wrap(() => themeService.getResolved()),
   );
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_GET, () =>
+  registerIpcHandler(IPC_CHANNELS.APPEARANCE_GET, () =>
     wrap(() => appearanceService.getConfig()),
   );
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_CHOOSE_BG, () =>
+  registerIpcHandler(IPC_CHANNELS.APPEARANCE_CHOOSE_BG, () =>
     wrapWriteAsync(() => appearanceService.chooseBackgroundImage()),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.APPEARANCE_SET_MATERIAL,
     (_event, mode: unknown) =>
       wrapWrite(() => {
@@ -616,19 +647,21 @@ function registerSettingsHandlers(): void {
         return true;
       }),
   );
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_CLEAR_BG, () =>
+  registerIpcHandler(IPC_CHANNELS.APPEARANCE_CLEAR_BG, () =>
     wrapWriteAsync(async () => {
       await appearanceService.clearBackgroundImage();
       return true;
     }),
   );
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_SET_BLUR, (_event, value: unknown) =>
-    wrapWrite(() => {
-      appearanceService.setBlurRadius(parseIpc(blurSchema, value));
-      return true;
-    }),
+  registerIpcHandler(
+    IPC_CHANNELS.APPEARANCE_SET_BLUR,
+    (_event, value: unknown) =>
+      wrapWrite(() => {
+        appearanceService.setBlurRadius(parseIpc(blurSchema, value));
+        return true;
+      }),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.APPEARANCE_SET_CLARITY,
     (_event, value: unknown) =>
       wrapWrite(() => {
@@ -636,35 +669,149 @@ function registerSettingsHandlers(): void {
         return true;
       }),
   );
-  ipcMain.handle(IPC_CHANNELS.UPDATE_CHECK, () =>
+  registerIpcHandler(IPC_CHANNELS.UPDATE_CHECK, () =>
     wrapIpcAsync(() => updateService.checkManual()),
   );
-  ipcMain.handle(IPC_CHANNELS.UPDATE_INSTALL, () =>
+  registerIpcHandler(IPC_CHANNELS.UPDATE_INSTALL, () =>
     wrapWriteIpcAsync(() => updateService.installUpdate()),
   );
-  ipcMain.handle(IPC_CHANNELS.UPDATE_GET_CURRENT_VERSION, () =>
+  registerIpcHandler(IPC_CHANNELS.UPDATE_GET_CURRENT_VERSION, () =>
     wrap(() => PRODUCT_VERSION),
   );
-  ipcMain.handle(IPC_CHANNELS.UPDATE_GET_CHANNEL, () =>
+  registerIpcHandler(IPC_CHANNELS.UPDATE_GET_CHANNEL, () =>
     wrap(() => updateService.getChannel()),
   );
 }
 
+function onboardingStatePath(): string {
+  return path.join(app.getPath("userData"), "onboarding-state.json");
+}
+
+function samePeriodConfig(left: PeriodConfig, right: PeriodConfig): boolean {
+  return (
+    left.index === right.index &&
+    left.startTime === right.startTime &&
+    left.endTime === right.endTime &&
+    left.breakAfter === right.breakAfter &&
+    left.isLab === right.isLab &&
+    left.reminderOffset === right.reminderOffset
+  );
+}
+
+function hasNonDefaultDatabaseSettings(): boolean {
+  const counts = dataService.getRecordCounts();
+  if (
+    counts.schedules > 0 ||
+    counts.courses > 0 ||
+    counts.exams > 0 ||
+    counts.labs > 0 ||
+    counts.grades > 0
+  )
+    return true;
+  const defaultFormula = dataService.formulas.getById("default");
+  if (
+    !defaultFormula ||
+    defaultFormula.formula.trim() !== CURRENT_DEFAULT_GPA_FORMULA ||
+    !defaultFormula.isDefault ||
+    counts.formulas !== 1
+  )
+    return true;
+  const periods = dataService.periodConfig.getAll();
+  return (
+    periods.length !== DEFAULT_PERIODS.length ||
+    periods.some(
+      (period, index) => !samePeriodConfig(period, DEFAULT_PERIODS[index]),
+    )
+  );
+}
+
+function hasNonDefaultPortableSettings(): boolean {
+  const settings = portableSettingsService.get();
+  return Boolean(
+    settings.themeMode !== "system" ||
+      settings.timetable.semesterStart ||
+      settings.dnd.enabled ||
+      settings.notificationHistory.length ||
+      settings.appearance.material !== "none" ||
+      settings.appearance.backgroundImage ||
+      settings.appearance.blurRadius !== 0 ||
+      settings.appearance.clarity !== 100 ||
+      !settings.acm.enabled ||
+      settings.acm.noticeDismissedVersion,
+  );
+}
+
+function hasCustomCompilerSelection(): boolean {
+  const selection = acmCompilerService.getSelection();
+  return Boolean(
+    selection.ok &&
+      selection.data &&
+      (selection.data.mode === "user" || Boolean(selection.data.path)),
+  );
+}
+
+function hasExistingUserData(): boolean {
+  try {
+    return (
+      hasNonDefaultDatabaseSettings() ||
+      hasNonDefaultPortableSettings() ||
+      hasCustomCompilerSelection()
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readOnboardingState(): OnboardingState {
+  let marker: boolean | undefined;
+  try {
+    const raw: unknown = JSON.parse(
+      fs.readFileSync(onboardingStatePath(), "utf8"),
+    );
+    if (
+      raw &&
+      typeof raw === "object" &&
+      "completed" in raw &&
+      typeof raw.completed === "boolean"
+    ) {
+      marker = raw.completed;
+    }
+  } catch {
+    // Missing or malformed local marker means the welcome page is required.
+  }
+  return resolveOnboardingState(marker, hasExistingUserData());
+}
+
+function writeOnboardingState(completed: boolean): OnboardingState {
+  const target = onboardingStatePath();
+  writeTextFileAtomically(target, JSON.stringify({ completed }));
+  return { required: !completed, completed };
+}
+
+function registerOnboardingHandlers(): void {
+  registerIpcHandler(IPC_CHANNELS.ONBOARDING_GET_STATE, () =>
+    wrap(() => readOnboardingState()),
+  );
+  registerIpcHandler(IPC_CHANNELS.ONBOARDING_COMPLETE, () =>
+    wrapWrite(() => writeOnboardingState(true)),
+  );
+}
+
 function registerOcrComponentHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.OCR_COMPONENT_GET_STATUS, () =>
+  registerIpcHandler(IPC_CHANNELS.OCR_COMPONENT_GET_STATUS, () =>
     wrapIpc(() => ocrComponentService.getStatus()),
   );
-  ipcMain.handle(IPC_CHANNELS.OCR_COMPONENT_INSTALL, () =>
+  registerIpcHandler(IPC_CHANNELS.OCR_COMPONENT_INSTALL, () =>
     wrapWriteIpcAsync(async () => {
       const result = await ocrComponentService.install();
       if (result.ok) await ocrService.invalidateWorker();
       return result;
     }),
   );
-  ipcMain.handle(IPC_CHANNELS.OCR_COMPONENT_CANCEL_INSTALL, () =>
+  registerIpcHandler(IPC_CHANNELS.OCR_COMPONENT_CANCEL_INSTALL, () =>
     wrapWriteIpc(() => ocrComponentService.cancelInstall()),
   );
-  ipcMain.handle(IPC_CHANNELS.OCR_COMPONENT_REMOVE, () =>
+  registerIpcHandler(IPC_CHANNELS.OCR_COMPONENT_REMOVE, () =>
     wrapWriteIpcAsync(async () => {
       const result = ocrComponentService.remove();
       if (result.ok) await ocrService.invalidateWorker();
@@ -751,10 +898,10 @@ function parseDocumentScope(
 }
 
 function registerAcmPluginHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.ACM_GET_STATUS, () =>
+  registerIpcHandler(IPC_CHANNELS.ACM_GET_STATUS, () =>
     wrapIpc(() => acmPluginService.getStatus()),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_SET_ENABLED, (_event, enabled: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.ACM_SET_ENABLED, (_event, enabled: unknown) =>
     wrapWriteIpcAsync<AcmPluginStatus>(() =>
       acmLifecycleQueue.run(async () => {
         if (typeof enabled !== "boolean")
@@ -791,20 +938,20 @@ function registerAcmPluginHandlers(): void {
       }),
     ),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_RETRY, () =>
+  registerIpcHandler(IPC_CHANNELS.ACM_RETRY, () =>
     wrapIpcAsync(() => acmLifecycleQueue.run(() => acmPluginService.retry())),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_NOTICE_GET_STATE, () =>
+  registerIpcHandler(IPC_CHANNELS.ACM_NOTICE_GET_STATE, () =>
     wrap(() => acmNoticeState()),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_NOTICE_DISMISS, () =>
+  registerIpcHandler(IPC_CHANNELS.ACM_NOTICE_DISMISS, () =>
     wrapWrite(() => setAcmNoticeVersion(PRODUCT_VERSION)),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_NOTICE_CLEAR, () =>
+  registerIpcHandler(IPC_CHANNELS.ACM_NOTICE_CLEAR, () =>
     wrapWrite(() => setAcmNoticeVersion(null)),
   );
 
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.ACM_DOCUMENT_CREATE,
     (event, template: unknown, scope: unknown) =>
       wrapIpc(() =>
@@ -816,7 +963,7 @@ function registerAcmPluginHandlers(): void {
         ),
       ),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_OPEN, (event, scope: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.ACM_DOCUMENT_OPEN, (event, scope: unknown) =>
     wrapIpcAsync(async () => {
       const unavailable = acmUnavailable<AcmDocument | null>();
       if (unavailable) return unavailable;
@@ -826,26 +973,30 @@ function registerAcmPluginHandlers(): void {
       );
     }),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_SAVE, (_event, request: unknown) =>
-    wrapIpcAsync(async () => {
-      const unavailable = acmUnavailable<AcmDocument>();
-      if (unavailable) return unavailable;
-      return acmFileService.saveDocument(
-        parseIpc(acmDocumentSaveSchema, request),
-      );
-    }),
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_DOCUMENT_SAVE,
+    (_event, request: unknown) =>
+      wrapIpcAsync(async () => {
+        const unavailable = acmUnavailable<AcmDocument>();
+        if (unavailable) return unavailable;
+        return acmFileService.saveDocument(
+          parseIpc(acmDocumentSaveSchema, request),
+        );
+      }),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_DOCUMENT_SAVE_AS, (event, request: unknown) =>
-    wrapIpcAsync(async () => {
-      const unavailable = acmUnavailable<AcmDocument | null>();
-      if (unavailable) return unavailable;
-      return acmFileService.saveDocumentAs(
-        parseIpc(acmDocumentSaveSchema, request),
-        BrowserWindow.fromWebContents(event.sender),
-      );
-    }),
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_DOCUMENT_SAVE_AS,
+    (event, request: unknown) =>
+      wrapIpcAsync(async () => {
+        const unavailable = acmUnavailable<AcmDocument | null>();
+        if (unavailable) return unavailable;
+        return acmFileService.saveDocumentAs(
+          parseIpc(acmDocumentSaveSchema, request),
+          BrowserWindow.fromWebContents(event.sender),
+        );
+      }),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.ACM_DOCUMENT_RELEASE,
     (_event, documentId: unknown) =>
       wrapIpc(() =>
@@ -854,7 +1005,7 @@ function registerAcmPluginHandlers(): void {
         ),
       ),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.ACM_DOCUMENT_CHECK_EXTERNAL,
     (_event, document: unknown) =>
       wrapIpcAsync(async () => {
@@ -865,10 +1016,10 @@ function registerAcmPluginHandlers(): void {
         );
       }),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_COMPILER_GET_SELECTION, () =>
+  registerIpcHandler(IPC_CHANNELS.ACM_COMPILER_GET_SELECTION, () =>
     wrapIpc(() => withAcm(() => acmCompilerService.getSelection())),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.ACM_COMPILER_SET_SELECTION,
     (_event, selection: unknown) =>
       wrapIpc(() =>
@@ -879,7 +1030,7 @@ function registerAcmPluginHandlers(): void {
         ),
       ),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_COMPILER_SELECT_PATH, (event) =>
+  registerIpcHandler(IPC_CHANNELS.ACM_COMPILER_SELECT_PATH, (event) =>
     wrapIpcAsync(async () => {
       const unavailable = acmUnavailable<CompilerSelection | null>();
       if (unavailable) return unavailable;
@@ -888,7 +1039,7 @@ function registerAcmPluginHandlers(): void {
       );
     }),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_COMPILER_PROBE, () =>
+  registerIpcHandler(IPC_CHANNELS.ACM_COMPILER_PROBE, () =>
     wrapIpcAsync(async () => {
       const unavailable = acmUnavailable<CompilerProbeResult>();
       if (unavailable) return unavailable;
@@ -901,16 +1052,20 @@ function registerAcmPluginHandlers(): void {
       return result;
     }),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_RUNNER_START, (_event, request: unknown) =>
-    wrapIpcAsync(() =>
-      acmLifecycleQueue.runDetached(() => {
-        const unavailable = acmExecutionUnavailable<{ taskId: string }>();
-        if (unavailable) return unavailable;
-        return acmRunnerService.start(parseIpc(acmRunnerStartSchema, request));
-      }),
-    ),
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_RUNNER_START,
+    (_event, request: unknown) =>
+      wrapIpcAsync(() =>
+        acmLifecycleQueue.runDetached(() => {
+          const unavailable = acmExecutionUnavailable<{ taskId: string }>();
+          if (unavailable) return unavailable;
+          return acmRunnerService.start(
+            parseIpc(acmRunnerStartSchema, request),
+          );
+        }),
+      ),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_RUNNER_STOP, () =>
+  registerIpcHandler(IPC_CHANNELS.ACM_RUNNER_STOP, () =>
     wrapIpcAsync(() =>
       acmLifecycleQueue.run(async () => {
         const unavailable = acmExecutionUnavailable<boolean>();
@@ -919,7 +1074,7 @@ function registerAcmPluginHandlers(): void {
       }),
     ),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_DIFF_START, (_event, request: unknown) =>
+  registerIpcHandler(IPC_CHANNELS.ACM_DIFF_START, (_event, request: unknown) =>
     wrapIpcAsync(() =>
       acmLifecycleQueue.runDetached(() => {
         const unavailable = acmExecutionUnavailable<{ taskId: string }>();
@@ -932,7 +1087,7 @@ function registerAcmPluginHandlers(): void {
       }),
     ),
   );
-  ipcMain.handle(IPC_CHANNELS.ACM_DIFF_STOP, () =>
+  registerIpcHandler(IPC_CHANNELS.ACM_DIFF_STOP, () =>
     wrapIpcAsync(() =>
       acmLifecycleQueue.run(async () => {
         const unavailable = acmExecutionUnavailable<boolean>();
@@ -961,6 +1116,7 @@ function registerIpcHandlers(): void {
   registerSettingsHandlers();
   registerOcrComponentHandlers();
   registerAcmPluginHandlers();
+  registerOnboardingHandlers();
 }
 
 async function disposeServices(): Promise<void> {

@@ -809,19 +809,33 @@ export const importBrowserService = ImportBrowserService.getInstance();
 
 let importBrowserIpcRegistered = false;
 
-export function registerImportBrowserIpcHandlers(): void {
+export function registerImportBrowserIpcHandlers(
+  authorize: (event: Electron.IpcMainInvokeEvent) => boolean,
+): void {
   if (importBrowserIpcRegistered) return;
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_OPEN_BROWSER, () =>
-    importBrowserService.openBrowser(),
+  const invoke = <T>(
+    event: Electron.IpcMainInvokeEvent,
+    operation: () => T,
+  ): T | IpcResult<never> => {
+    if (!authorize(event))
+      return {
+        ok: false,
+        error: "未授权的 IPC 调用",
+        errorCode: "IPC_UNAUTHORIZED",
+      };
+    return operation();
+  };
+  ipcMain.handle(IPC_CHANNELS.TIMETABLE_OPEN_BROWSER, (event) =>
+    invoke(event, () => importBrowserService.openBrowser()),
   );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_CLOSE_BROWSER, () =>
-    importBrowserService.closeBrowser(),
+  ipcMain.handle(IPC_CHANNELS.TIMETABLE_CLOSE_BROWSER, (event) =>
+    invoke(event, () => importBrowserService.closeBrowser()),
   );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_EXTRACT_DOM, () =>
-    importBrowserService.extractDom(),
+  ipcMain.handle(IPC_CHANNELS.TIMETABLE_EXTRACT_DOM, (event) =>
+    invoke(event, () => importBrowserService.extractDom()),
   );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_CAPTURE_PAGE, () =>
-    importBrowserService.capturePage(),
+  ipcMain.handle(IPC_CHANNELS.TIMETABLE_CAPTURE_PAGE, (event) =>
+    invoke(event, () => importBrowserService.capturePage()),
   );
   importBrowserIpcRegistered = true;
 }

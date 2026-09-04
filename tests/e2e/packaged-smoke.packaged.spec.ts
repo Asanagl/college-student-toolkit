@@ -16,6 +16,7 @@ import type {
   Lab,
   Schedule,
 } from "../../src/shared/types";
+import { skipOnboarding } from "./onboarding";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
@@ -23,7 +24,7 @@ test.setTimeout(120_000);
 type AppSession = { app: ElectronApplication; page: Page };
 
 const defaultExecutable = path.resolve(
-  "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
+  "release-v0.5.0-msix-local/win-unpacked/大学生工具组.exe",
 );
 
 function packagedExecutable(): string {
@@ -68,6 +69,7 @@ async function launchPackaged(
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
   await expect(page.locator("body")).toContainText("大学生工具组");
+  await skipOnboarding(page);
   return { app, page };
 }
 

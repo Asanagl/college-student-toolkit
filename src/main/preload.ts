@@ -247,6 +247,10 @@ const api: RendererApi = {
     dismissNotice: () => invoke(IPC_CHANNELS.ACM_NOTICE_DISMISS),
     clearNotice: () => invoke(IPC_CHANNELS.ACM_NOTICE_CLEAR),
   },
+  onboarding: {
+    getState: () => invoke(IPC_CHANNELS.ONBOARDING_GET_STATE),
+    complete: () => invoke(IPC_CHANNELS.ONBOARDING_COMPLETE),
+  },
 };
 
 contextBridge.exposeInMainWorld("api", api);

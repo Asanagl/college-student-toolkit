@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
+import { skipOnboarding } from "./onboarding";
 
 test.setTimeout(120_000);
 
@@ -18,7 +19,7 @@ type FixtureServer = { server: Server; origin: string };
 
 const executablePath = path.resolve(
   process.env.PACKAGED_EXECUTABLE?.trim() ||
-    "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
+    "release-v0.5.0-msix-local/win-unpacked/大学生工具组.exe",
 );
 const entryFixturePath = path.resolve(
   "tests/fixtures/import-browser-entry.html",
@@ -73,6 +74,7 @@ async function launchPackaged(profile: string): Promise<AppSession> {
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
   await expect(page).toHaveTitle("大学生工具组");
+  await skipOnboarding(page);
   return { app, page };
 }
 

@@ -2,7 +2,7 @@
 
 大学生 AI 工具组是一个 Windows 桌面应用，用于管理日程、课程表、考试、实验和成绩/GPA，并支持在用户主动操作后从教务系统导入数据。
 
-当前代码版本为 `0.4.0`，正在 `codex/v0.4.0-acm-ide` 分支开发。v0.3.0 的 Microsoft Store v19 上架记录仍保留为历史交付，实际 Store 安装、更新、卸载/重装、v0.2 迁移、OCR 实机验收和真实教务导入边界不变，详见 [`docs/v0.3.0-delivery.md`](docs/v0.3.0-delivery.md)。v0.4.0 的 ACM 工具集范围、接口和门禁见 [`docs/v0.4.0-plan.md`](docs/v0.4.0-plan.md)。
+当前代码版本为 `0.5.0`，正在 `codex/v0.4.0-acm-ide` 分支完成发布前验证。v0.3.0 的 Microsoft Store v19 上架记录仍保留为历史交付；v0.5.0 的本地包、Store 提交和 Windows 实机验收必须分别记录，不能把本地结果当成已发布或已安装。ACM 工具集的架构和边界见 [`docs/v0.4.0-plan.md`](docs/v0.4.0-plan.md)，本版本变更见 [`docs/v0.5.0-release-notes.md`](docs/v0.5.0-release-notes.md)。
 
 ## 功能概览
 
@@ -14,33 +14,35 @@
 - v0.2 数据库迁移、legacy v1 备份导入和 v2 完整备份导入。
 - 备份包含学习数据和可迁移设置，但不包含密码、教务 Cookie、登录会话、浏览器缓存、窗口坐标或 OCR 组件。
 - ACM 临时 IDE：单文件 C++17 编辑、模板、编译/运行、stdin/终端输出和本地 MinGW 探测；没有编译器时仍可编辑和保存。
+- ACM 对拍：在同一页面分别输入标准程序和待测程序，顺序编译/运行，按 token 比较输出并显示差异片段、两侧输出和标准程序失败状态；源码和输入只保存在当前页面会话中。
+- 首次使用引导：新空 profile 启动时显示，可跳过或完成；已有数据的升级用户不会被打断。引导标记只保存在当前设备，不进入备份。
 
 ## 当前交付状态
 
-| 项目                                                        | 状态                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 版本与依赖升级                                              | `0.4.0` 已写入 `package.json` 和锁文件                                                                                                                                                                                                                                                                                                                                                                                                             |
-| v19 受影响单元测试与主进程类型检查                          | 已通过（提醒 10 用例、OCR 12 用例、Node 类型检查）；v0.4.0 完整本地门禁已通过                                                                                                                                                                                                                                                                                                                                                                      |
-| Electron 源码与 packaged E2E                                | 已通过（2026-09-02 当前 v0.4.0 `npm run test:e2e:packaged`：16/16 passed；ACM Runner/Workbench/IPC 专属 12/12，ACM 对拍 + Runner 组合重复 26/26；导入浏览器 fixture 2 passed，CRUD/设置 smoke 1 passed）                                                                                                                                                                                                                                           |
-| 本地生产构建和包前置 smoke                                  | 已通过                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| 依赖安全审计                                                | `npm audit --omit=dev` 已通过                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Windows Release 性能与 30 分钟 soak                         | 已通过（30 次采样、5 次预热、5 分钟 idle、30 分钟/180 周期 soak）                                                                                                                                                                                                                                                                                                                                                                                  |
-| 本地 x64 NSIS RC 和 unpacked 启动 smoke                     | 已生成并通过；仅作备用/回归渠道，不是 Store 正式包                                                                                                                                                                                                                                                                                                                                                                                                 |
-| 本地 x64 MSIX、manifest/native binding 检查和隔离启动 smoke | 已生成并通过；使用 `CN=ms` 测试身份，不可直接提交 Store                                                                                                                                                                                                                                                                                                                                                                                            |
-| 本地 `CN=ms` 测试包指纹                                     | 当前 v0.4.0 本地重打包（2026-09-02）：`267,629,380` bytes；SHA-256 `E910A0B9D933E3C367172373EF7B90BED122B613FC58FBE76806911F709BAD95`；旧 `135,688,701` bytes 指纹仅作历史快照                                                                                                                                                                                                                                                                                                                                  |
-| 当前正式身份 MSIX 提交候选                                  | `release-v0.3.0-msix-store-v19`；Identity Version `0.3.11.0`；`136,149,551` bytes；SHA-256 `2B16F1E2606A4EFB0E75946F42D7081F4A1BFB8A4B742E80D787D48347341D87`；本地验证通过；运行时/备份产品版本仍为 `0.3.0`                                                                                                                                                                                                                                       |
-| Partner Center identity、审核/发布和 Store 页面             | v19 已通过审核并公开上架；Product ID 为 `9NV11V5BK23N`，页面为 `https://apps.microsoft.com/detail/9NV11V5BK23N`；本地候选的 identity/指纹仅作审计记录                                                                                                                                                                                                                                                                                              |
-| Store 一览演示素材                                          | 已生成 5 张隔离演示截图，见 [`docs/store-assets`](docs/store-assets)；上传前仍需发布者确认文案和品牌素材                                                                                                                                                                                                                                                                                                                                           |
-| Store 实际安装、更新、卸载保留数据和重装恢复                | 未执行，需 Store 发布后在 Windows 实机验收                                                                                                                                                                                                                                                                                                                                                                                                         |
-| 真实 OCR Release 资产下载                                   | 固定 Release URL、真实 GitHub CDN 重定向 host/path、大小和双哈希已核对；当前 v0.4.0 packaged 应用内识别性能已通过（p95 `111.15 ms`），Store/实机验收仍未执行                                                                                                                                                                                                                                                                                       |
-| Windows 11 24H2/25H2 干净机及真实教务系统验收               | 未执行，阻断 Store Stable                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| v0.4.0 ACM Workbench、runner 和内置工具链                   | 本地 packaged 验证已通过；服务、UI、runner、IPC、staging、`verify:appx` 和 ACM packaged 16/16 正/负面及 Workbench 交互闭环已通过；Runner 专属重复 24/24、对拍 + Runner 组合重复 26/26；AppX 已包含 x64 native Job Object helper，目标及 `cmd.exe`/`ping.exe` 后代终止测试通过；开发/缺少 helper 的 packaged overlay 保留 `taskkill` fallback；终止未确认会返回 warning 并保留活动任务，迟到退出确认后再清理；完整宿主矩阵和 Store/实机验收仍未完成 |
+| 项目                                                        | 状态                                                                                                                                                                                                         |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 版本与依赖升级                                              | `0.5.0` 已写入 `package.json`、锁文件和 AppX Identity Version `0.5.0.0`                                                                                                                                      |
+| v0.5.0 单元测试与主进程类型检查                             | `npm run typecheck`、`npm run lint`、`npm run format:check`、`npm run test:unit` 均通过；单测 31 个文件 / 271 个测试                                                                                         |
+| Electron 源码与 packaged E2E                                | v0.5.0 本地包 `npm run test:e2e:packaged` 通过，16/16；覆盖 ACM Runner/Workbench/对拍、首次引导、导入安全、主窗口导航边界、备份、CRUD 和 Store 更新渠道                                                      |
+| 本地生产构建和包前置 smoke                                  | `npm run build:electron`、`npm run test:smoke:package`、`npm run test:smoke:appx` 均通过                                                                                                                     |
+| 依赖安全审计                                                | `PASS`：`npm audit --omit=dev` 返回 `found 0 vulnerabilities`；`fast-uri` 已锁定到修复版本 3.1.7                                                                                                             |
+| Windows Release 性能与 30 分钟 soak                         | 已通过（30 次采样、5 次预热、5 分钟 idle、30 分钟/180 周期 soak）                                                                                                                                            |
+| 本地 x64 NSIS RC 和 unpacked 启动 smoke                     | 已生成并通过；仅作备用/回归渠道，不是 Store 正式包                                                                                                                                                           |
+| 本地 x64 MSIX、manifest/native binding 检查和隔离启动 smoke | 已生成并通过；使用 `CN=ms` 测试身份，不可直接提交 Store                                                                                                                                                      |
+| 本地 `CN=ms` 测试包指纹                                     | 最新隔离重包 `release-v0.5.0-msix-local-r7/college-student-toolkit-0.5.0-x64.msix` 已通过 `verify:appx`；包使用 `CN=ms` unsigned 测试身份，仅作结构和隔离 smoke 证据                                         |
+| 当前正式身份 MSIX 提交候选                                  | `release-v0.3.0-msix-store-v19`；Identity Version `0.3.11.0`；`136,149,551` bytes；SHA-256 `2B16F1E2606A4EFB0E75946F42D7081F4A1BFB8A4B742E80D787D48347341D87`；本地验证通过；运行时/备份产品版本仍为 `0.3.0` |
+| Partner Center identity、审核/发布和 Store 页面             | v19 已通过审核并公开上架；Product ID 为 `9NV11V5BK23N`，页面为 `https://apps.microsoft.com/detail/9NV11V5BK23N`；本地候选的 identity/指纹仅作审计记录                                                        |
+| Store 一览演示素材                                          | 已用 v0.5.0 本地包和隔离演示 profile 生成 ACM Workbench、ACM 对拍、首次引导及既有页面素材，见 [`docs/store-assets`](docs/store-assets)；上传前仍需发布者确认文案和品牌素材                                   |
+| Store 实际安装、更新、卸载保留数据和重装恢复                | 未执行，需 Store 发布后在 Windows 实机验收                                                                                                                                                                   |
+| 真实 OCR Release 资产下载                                   | 固定 Release URL、真实 GitHub CDN 重定向 host/path、大小和双哈希的历史核对仍保留；v0.5.0 Store/实机验收尚未执行                                                                                              |
+| Windows 11 24H2/25H2 干净机及真实教务系统验收               | 未执行，阻断 Store Stable                                                                                                                                                                                    |
+| v0.5.0 ACM Workbench、对拍、runner 和首次引导               | 本地源码、x64 MinGW staging、AppX 包结构、隔离启动、packaged E2E 和截图已通过；正式签名/Store/其他机器 Job Object 矩阵仍需分别验收                                                                           |
 
-完整验收清单见 [`docs/v0.3.0-acceptance-checklist.md`](docs/v0.3.0-acceptance-checklist.md)，用户可见变更见 [`docs/v0.3.0-release-notes.md`](docs/v0.3.0-release-notes.md)。
+完整历史验收清单见 [`docs/v0.3.0-acceptance-checklist.md`](docs/v0.3.0-acceptance-checklist.md)，v0.5.0 用户可见变更见 [`docs/v0.5.0-release-notes.md`](docs/v0.5.0-release-notes.md)，Store 文案草案见 [`docs/v0.5.0-store-listing-draft.md`](docs/v0.5.0-store-listing-draft.md)。
 
 ## Windows 用户
 
-正式 Windows 版本应从 Microsoft Store 页面获取。当前已记录 Product ID `9NV11V5BK23N` 和公开页面 [`https://apps.microsoft.com/detail/9NV11V5BK23N`](https://apps.microsoft.com/detail/9NV11V5BK23N)。此前 2026-08-24 的 HTTP `410 Gone` 探测和 Submission 1 草稿状态属于历史记录，不能覆盖用户后来确认的公开上架事实。仓库中的 `release-v0.3.0-msix-local` 是 electron-builder 生成的本地 Store-only 测试包，Publisher 为 `CN=ms`，只用于包结构和隔离启动验证，不能直接提交 Store 或交付给普通用户。
+正式 Windows 版本应从 Microsoft Store 页面获取。当前已记录 Product ID `9NV11V5BK23N` 和公开页面 [`https://apps.microsoft.com/detail/9NV11V5BK23N`](https://apps.microsoft.com/detail/9NV11V5BK23N)。此前 2026-08-24 的 HTTP `410 Gone` 探测和 Submission 1 草稿状态属于历史记录，不能覆盖用户后来确认的公开上架事实。仓库中的 `release-v0.5.0-msix-local*` 是 electron-builder 生成的本地 Store-only 测试包，Publisher 为 `CN=ms`，只用于包结构和隔离启动验证，不能直接提交 Store 或交付给普通用户。
 
 正式 Store 包由 Microsoft Store 管理安装、发布者信任、更新和卸载事务，应用内不会启动 `electron-updater`。NSIS 只保留为本地 RC/备用渠道。当前 Store 已公开上架，但 Store 实际安装、更新、卸载/重装保留数据、v0.2 数据迁移、OCR 实机验收和真实教务系统导入仍未完成，不能仅凭上架状态称为完整 Store Stable。无论使用哪个渠道，覆盖升级前都应先导出 v0.2 原始数据和 legacy v1 备份；v0.3 的 v2 备份不能由旧版 v0.2 读取。
 
@@ -95,7 +97,7 @@ npm run verify:appx
 npm run test:smoke:appx
 ```
 
-v0.4.0 ACM 本地包需要先显式 staging 一份受控 x64 MinGW 闭包；脚本不会读取 PATH、在线下载工具链或修改系统设置：
+v0.5.0 ACM 本地包需要先显式 staging 一份受控 x64 MinGW 闭包；脚本不会读取 PATH、在线下载工具链或修改系统设置：
 
 ```powershell
 $env:ACM_MINGW_SOURCE = "C:\Algo Bootstrap\mingw64"
@@ -106,17 +108,17 @@ npm run verify:appx
 
 当前本地包使用 `CN=ms` 测试身份，验证结果只代表结构、x64 native binding、工具链入口、x64 native Job Object helper 和最低系统版本检查通过，不代表 Store 签名、上架、安装更新或 ACM 实机验收。AppX packaged Runner 使用 `acm-job-runner.exe` 的 kill-on-close 进程树清理；开发环境和缺少 helper 的旧包仍使用 `taskkill /PID /T /F` fallback。
 
-上一轮 v0.3.0 的正式 Store 构建使用 Partner Center 提供的准确 package identity；以下是历史候选的复现入口，不是当前 v0.4.0 产品版本。Partner Center 不接受非零第四段版本，因此该历史候选使用三段 Store 身份版本 `0.3.11`，由清单生成 `0.3.11.0`；其应用运行时和备份 manifest 保持产品版本 `0.3.0`：
+上一轮 v0.3.0 的正式 Store 构建使用 Partner Center 提供的准确 package identity；以下是 v0.5.0 的构建入口，不能复用旧的 v0.3.0 产物或提交。Partner Center 不接受非零第四段版本，三段版本 `0.5.0` 会由清单生成 `0.5.0.0`：
 
 ```powershell
 $env:APPX_IDENTITY_NAME = "<Partner Center Name>"
 $env:APPX_APPLICATION_ID = "<Partner Center Application ID>"
 $env:APPX_PUBLISHER = "<Partner Center Publisher>"
 $env:APPX_PUBLISHER_DISPLAY_NAME = "Asanagi"
-$env:APPX_PACKAGE_VERSION = "0.3.11"
-$env:APPX_OUTPUT_DIR = "release-v0.3.0-msix-store-v19"
+$env:APPX_PACKAGE_VERSION = "0.5.0"
+$env:APPX_OUTPUT_DIR = "release-v0.5.0-msix-store"
 npm run package:store
-$env:APPX_EXPECTED_VERSION = "0.3.11.0"
+$env:APPX_EXPECTED_VERSION = "0.5.0.0"
 $env:APPX_EXPECTED_PUBLISHER_DISPLAY_NAME = "Asanagi"
 npm run verify:appx
 npm run test:smoke:appx

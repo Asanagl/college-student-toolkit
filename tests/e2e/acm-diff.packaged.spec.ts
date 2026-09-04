@@ -8,12 +8,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AcmDiffEvent } from "../../src/shared/types";
+import { skipOnboarding } from "./onboarding";
 
 test.setTimeout(120_000);
 
 const executable = path.resolve(
   process.env.PACKAGED_EXECUTABLE?.trim() ||
-    "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
+    "release-v0.5.0-msix-local/win-unpacked/大学生工具组.exe",
 );
 
 function createProfile(): string {
@@ -34,6 +35,7 @@ async function launch(profile: string): Promise<{
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
   await expect(page.locator("body")).toContainText("大学生工具组");
+  await skipOnboarding(page);
   return { app, page };
 }
 

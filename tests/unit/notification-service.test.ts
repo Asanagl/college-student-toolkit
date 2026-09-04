@@ -53,7 +53,7 @@ import { portableSettingsService } from "../../src/main/services/PortableSetting
 
 const directories: string[] = [];
 const defaults: PortableSettings = {
-  portableSettingsVersion: 1,
+  portableSettingsVersion: 2,
   themeMode: "system",
   timetable: { semesterStart: null },
   dnd: { enabled: false, startTime: "22:00", endTime: "08:00" },
@@ -64,6 +64,7 @@ const defaults: PortableSettings = {
     blurRadius: 0,
     clarity: 100,
   },
+  acm: { enabled: true, noticeDismissedVersion: null },
 };
 
 beforeEach(async () => {

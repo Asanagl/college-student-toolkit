@@ -4,9 +4,31 @@ const os = require("node:os");
 const path = require("node:path");
 
 const executable = path.resolve(
-  "release-v0.3.0-msix-local/win-unpacked/大学生工具组.exe",
+  process.env.PACKAGED_EXECUTABLE?.trim() ||
+    "release-v0.5.0-msix-local/win-unpacked/大学生工具组.exe",
 );
 const outputDir = path.resolve("docs/store-assets");
+
+const WORKBENCH_SOURCE = `#include <iostream>
+
+int main() {
+  int value = 0;
+  if (!(std::cin >> value)) return 1;
+  std::cout << "next: " << value + 1 << "\\n";
+  return 0;
+}
+`;
+
+const REFERENCE_SOURCE = `#include <iostream>
+
+int main() {
+  int value = 0;
+  if (!(std::cin >> value)) return 1;
+  std::cout << value + 1 << "\\n";
+}
+`;
+
+const CANDIDATE_SOURCE = REFERENCE_SOURCE.replace("value + 1", "value + 2");
 
 function unwrap(result) {
   if (!result || result.ok !== true) {
@@ -98,14 +120,93 @@ async function seedDemoData(page) {
 
 async function openSection(page, name, route) {
   await page.locator(".ant-menu-item").filter({ hasText: name }).click();
+  const discard = page
+    .locator(".ant-modal")
+    .filter({ hasText: "离开 ACM 临时 IDE？" })
+    .last();
+  try {
+    await discard.waitFor({ state: "visible", timeout: 2_000 });
+    await discard.getByRole("button", { name: "离开并丢弃" }).click();
+  } catch {
+    // The guard is only shown when the previous ACM page has unsaved edits.
+  }
   await page.waitForURL(new RegExp(`#${route}$`));
   await page.waitForTimeout(350);
+}
+
+async function waitForCompiler(page) {
+  const toolbar = page
+    .locator(".acm-compiler-tools, .acm-diff-toolbar")
+    .first();
+  await toolbar.waitFor({ state: "visible", timeout: 15_000 });
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const text = (await toolbar.textContent()) ?? "";
+    if (/g\+\+/.test(text) && !text.includes("未检测到编译器")) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("等待 ACM 编译器探测完成超时");
+}
+
+async function waitForEnabled(locator) {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (await locator.isEnabled()) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("等待 ACM 操作按钮可用超时");
+}
+
+async function seedWorkbenchDemo(page) {
+  await waitForCompiler(page);
+  const newButton = page.getByRole("button", { name: /新建/ }).first();
+  await newButton.click();
+  await page.getByRole("menuitem", { name: "基础 I/O 模板" }).click();
+  const editor = page.locator(".cm-content").first();
+  await editor.waitFor({ state: "visible" });
+  await editor.fill(WORKBENCH_SOURCE);
+  await page.getByLabel("程序标准输入").fill("41\n");
+  const runButton = page.getByRole("button", { name: "编译并运行" });
+  await waitForEnabled(runButton);
+  await runButton.click();
+  await page
+    .locator(".acm-terminal-output")
+    .getByText(/next: 42/)
+    .waitFor({ state: "visible", timeout: 60_000 });
+}
+
+async function seedDiffDemo(page) {
+  await waitForCompiler(page);
+  const editors = page.locator(".acm-diff-editor-card .cm-content");
+  await editors.nth(0).fill(REFERENCE_SOURCE);
+  await editors.nth(1).fill(CANDIDATE_SOURCE);
+  await page
+    .getByPlaceholder("输入将同时提供给标准程序和待测程序")
+    .fill("41\n");
+  const startButton = page.getByRole("button", { name: "开始对拍" });
+  await waitForEnabled(startButton);
+  await startButton.click();
+  await page
+    .locator(".ant-alert-message")
+    .filter({ hasText: "WA：输出不一致" })
+    .waitFor({ state: "visible", timeout: 60_000 });
 }
 
 async function capture(page, name) {
   const filePath = path.join(outputDir, name);
   await page.screenshot({ path: filePath, type: "png" });
   return filePath;
+}
+
+async function skipOnboarding(page) {
+  const modal = page
+    .locator(".ant-modal")
+    .filter({ hasText: "欢迎使用大学生工具组" })
+    .last();
+  if (await modal.isVisible().catch(() => false)) {
+    await modal.getByRole("button", { name: "跳过引导" }).click();
+    await modal.waitFor({ state: "hidden" });
+  }
 }
 
 async function main() {
@@ -123,8 +224,15 @@ async function main() {
     const page = await app.firstWindow();
     await page.waitForLoadState("domcontentloaded");
     await page.setViewportSize({ width: 1366, height: 768 });
-    await seedDemoData(page);
     const files = [];
+    await page
+      .locator(".ant-modal")
+      .filter({ hasText: "欢迎使用大学生工具组" })
+      .last()
+      .waitFor({ state: "visible", timeout: 15_000 });
+    files.push(await capture(page, "zh-cn-desktop-08-onboarding.png"));
+    await skipOnboarding(page);
+    await seedDemoData(page);
     await openSection(page, "课程表", "/timetable");
     files.push(await capture(page, "zh-cn-desktop-01-timetable.png"));
     await openSection(page, "日程", "/schedule");
@@ -133,6 +241,13 @@ async function main() {
     files.push(await capture(page, "zh-cn-desktop-03-exams.png"));
     await openSection(page, "成绩显示", "/grade");
     files.push(await capture(page, "zh-cn-desktop-04-grades.png"));
+    await openSection(page, "ACM 临时 IDE", "/acm");
+    await seedWorkbenchDemo(page);
+    files.push(await capture(page, "zh-cn-desktop-06-acm-workbench.png"));
+    await openSection(page, "ACM 对拍", "/acm-diff");
+    await seedDiffDemo(page);
+    await page.locator(".acm-diff-difference").scrollIntoViewIfNeeded();
+    files.push(await capture(page, "zh-cn-desktop-07-acm-diff.png"));
     await page.getByRole("button", { name: /跟随系统/ }).click();
     await page.getByRole("menuitem", { name: "设置" }).click();
     const settings = page

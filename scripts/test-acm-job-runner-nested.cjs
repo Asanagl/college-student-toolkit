@@ -11,7 +11,7 @@ const buildHelper = path.join(
   "acm-job-runner",
   "acm-job-runner.exe",
 );
-const defaultAppxOutput = "release-v0.4.0-msix-local";
+const defaultAppxOutput = "release-v0.5.0-msix-local";
 
 const outerJobProbe = String.raw`
 $ErrorActionPreference = "Stop"

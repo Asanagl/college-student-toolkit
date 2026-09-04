@@ -9,11 +9,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RunnerEvent, RunnerStage } from "../../src/shared/types";
+import { skipOnboarding } from "./onboarding";
 
 test.setTimeout(120_000);
 
 const defaultExecutable = path.resolve(
-  "release-v0.4.0-msix-local/win-unpacked/大学生工具组.exe",
+  "release-v0.5.0-msix-local/win-unpacked/大学生工具组.exe",
 );
 
 type PageWithRunnerEvents = Page & {
@@ -85,6 +86,7 @@ async function launchPackaged(profile: string) {
     const page = await app.firstWindow();
     await page.waitForLoadState("domcontentloaded");
     await expect(page).toHaveTitle("大学生工具组");
+    await skipOnboarding(page);
     const runtime = await app.evaluate(({ app: electronApp }) => ({
       packaged: electronApp.isPackaged,
       resourcesPath: process.resourcesPath,

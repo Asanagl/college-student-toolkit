@@ -101,6 +101,22 @@ describe("AcmCompilerService", () => {
     });
   });
 
+  it("normalizes a valid compiler path before persisting it", async () => {
+    const service = new AcmCompilerService();
+    await service.init();
+
+    const result = service.setSelection({
+      mode: "user",
+      path: "C:\\tools\\nested\\..\\g++.exe",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { mode: "user", path: path.resolve("C:\\tools\\g++.exe") },
+    });
+    await service.dispose();
+  });
+
   it("reports an unavailable explicit compiler without throwing", async () => {
     const service = new AcmCompilerService();
     await service.init();

@@ -21,9 +21,12 @@ vi.mock("electron", () => ({
 }));
 
 import { DataTransferService } from "../../src/main/services/DataTransferService";
-import type { PortableSettings } from "../../src/shared/types";
+import type {
+  LegacyPortableSettings,
+  PortableSettings,
+} from "../../src/shared/types";
 
-const settings: PortableSettings = {
+const settings: LegacyPortableSettings = {
   portableSettingsVersion: 1,
   themeMode: "dark",
   timetable: { semesterStart: "2026-08-17" },
@@ -72,10 +75,10 @@ class FakeDataService {
 }
 
 class FakeSettings {
-  value = structuredClone(settings);
+  value: PortableSettings | LegacyPortableSettings = structuredClone(settings);
 
   get(): PortableSettings {
-    return structuredClone(this.value);
+    return structuredClone(this.value) as PortableSettings;
   }
 
   replace(next: PortableSettings): PortableSettings {
@@ -207,6 +210,10 @@ describe("Backup v2 transfer", () => {
       ).count,
     ).toBe(1);
     imported.close();
+    expect(sourceSettings.get()).toMatchObject({
+      portableSettingsVersion: 2,
+      acm: { enabled: true, noticeDismissedVersion: null },
+    });
   });
 
   it("rejects Zip Slip and duplicate entries before staging", async () => {

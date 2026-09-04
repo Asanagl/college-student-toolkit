@@ -8,7 +8,7 @@ export const RELEASE_CONFIG = {
   portableSettingsVersion: 2,
   pluginApiVersion: 1,
   windowsMinVersion: "10.0.22621.0",
-  msixIdentityVersion: "0.4.0.0",
+  msixIdentityVersion: "0.5.0.0",
 } as const;
 
 export type ReleaseConfig = typeof RELEASE_CONFIG;

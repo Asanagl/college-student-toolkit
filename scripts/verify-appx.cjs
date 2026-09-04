@@ -28,7 +28,7 @@ function resolveArtifact() {
   if (supplied) return path.resolve(root, supplied);
   const output = path.join(
     root,
-    process.env.APPX_OUTPUT_DIR || "release-v0.4.0-msix-local",
+    process.env.APPX_OUTPUT_DIR || "release-v0.5.0-msix-local",
   );
   const candidates = fs.existsSync(output)
     ? fs.readdirSync(output).filter((name) => /\.(appx|msix)$/i.test(name))

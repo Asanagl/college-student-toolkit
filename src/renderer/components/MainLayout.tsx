@@ -32,6 +32,7 @@ import {
 } from "react-router-dom";
 import type { ThemeMode } from "../../shared/types";
 import SettingsModal from "./SettingsModal";
+import OnboardingModal from "./OnboardingModal";
 import {
   confirmAcmNavigation,
   isAcmNavigationGuardActive,
@@ -64,14 +65,35 @@ export default function MainLayout() {
   const location = useLocation();
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
 
   // 启动时从主进程读取已持久化的主题偏好
   useEffect(() => {
-    window.api.theme.get().then((result) => {
-      if (result.ok && result.data) {
-        setThemeMode(result.data);
-      }
-    });
+    let alive = true;
+    void window.api.theme
+      .get()
+      .then((result) => {
+        if (alive && result.ok && result.data) setThemeMode(result.data);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void window.api.onboarding
+      .getState()
+      .then((result) => {
+        if (alive && result.ok && result.data?.required) {
+          setOnboardingOpen(true);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // 根据当前路径计算选中的菜单项，避免菜单高亮与路由不同步
@@ -120,7 +142,7 @@ export default function MainLayout() {
     }
     const mode = key as ThemeMode;
     setThemeMode(mode);
-    window.api.theme.set(mode);
+    void window.api.theme.set(mode).catch(() => undefined);
   };
 
   // 标题栏右侧主题切换按钮图标：跟随系统用桌面图标，亮色用空心灯泡，暗黑用实心灯泡
@@ -198,6 +220,10 @@ export default function MainLayout() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+      <OnboardingModal
+        open={onboardingOpen}
+        onComplete={() => setOnboardingOpen(false)}
       />
     </Layout>
   );

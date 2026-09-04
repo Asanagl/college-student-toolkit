@@ -73,6 +73,30 @@ body.acrylic-mode #root {
   pointer-events: none;
 }
 
+.onboarding-step-content {
+  display: grid;
+  min-height: 150px;
+  place-items: center;
+  gap: 10px;
+  padding: 20px 28px;
+  text-align: center;
+}
+
+.onboarding-step-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 24px;
+}
+
+.onboarding-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 /* 底色层：垫在背景图之下，提供跟随主题的不透明基准色 */
 .appearance-base {
   z-index: -3;
@@ -435,6 +459,10 @@ body.acrylic-mode #root {
 
 .acm-terminal-line.info {
   color: var(--acm-editor-foreground);
+}
+
+.acm-terminal-line.warning {
+  color: var(--acm-warning);
 }
 
 .acm-task-id {

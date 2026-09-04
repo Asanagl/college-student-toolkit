@@ -8,9 +8,12 @@
 - `zh-cn-desktop-02-schedule.png`：月历、日程和提醒；
 - `zh-cn-desktop-03-exams.png`：考试安排；
 - `zh-cn-desktop-04-grades.png`：成绩和 GPA；
-- `zh-cn-desktop-05-settings.png`：关于与更新，显示 Microsoft Store 管理更新。
+- `zh-cn-desktop-05-settings.png`：关于与更新，显示 Microsoft Store 管理更新；
+- `zh-cn-desktop-06-acm-workbench.png`：ACM 临时 IDE（单文件 C++ 编辑/编译运行）；
+- `zh-cn-desktop-07-acm-diff.png`：ACM 对拍（标准程序 / 待测程序）；
+- `zh-cn-desktop-08-onboarding.png`：首次使用引导（新空 profile 的欢迎页）。
 
-Partner Center 的 Store 一览至少需要一张桌面截图，建议上传前四张；第五张可用于展示 Store 更新边界。上传前由发布者确认演示文案、品牌母版、语言和版权信息。截图只是本地 RC 的 UI 素材，不证明 Store 安装或审核通过。
+Partner Center 的 Store 一览至少需要一张桌面截图，建议上传课程表、日程、ACM Workbench 和 ACM 对拍；设置页和引导页可作为补充。上传前由发布者确认演示文案、品牌母版、语言和版权信息。截图只是本地 v0.5.0 RC 的 UI 素材，不证明 Store 安装或审核通过。
 
 重新生成：
 

@@ -667,6 +667,134 @@ describe("AcmRunnerService", () => {
     );
     await service.dispose();
   });
+
+  it("returns the execution result before retrying a transient cleanup failure", async () => {
+    const tempRoot = createTempRoot();
+    let removeAttempts = 0;
+    const service = new AcmRunnerService({
+      compiler: compiler(),
+      helper: new AcmRunnerHelper(
+        factoryFor({
+          compileExitCode: 0,
+          compileStderr: "",
+          runOutput: "answer\n",
+          runStderr: "",
+          holdRun: false,
+        }),
+        "win32",
+      ),
+      platform: "win32",
+      tempRoot,
+      removePath: (target) => {
+        removeAttempts += 1;
+        if (removeAttempts === 1) throw new Error("temporary lock");
+        fs.rmSync(target, { recursive: true, force: true });
+      },
+    });
+    const events: RunnerEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.init();
+    expect((await service.start(request())).ok).toBe(true);
+    await waitFor(
+      events,
+      (event) => event.stage === "run-finished" && event.status === "completed",
+    );
+    const resultIndex = events.findIndex(
+      (event) => event.stage === "run-finished" && event.status === "completed",
+    );
+    await waitFor(
+      events,
+      (event) => event.cleanupWarning?.includes("临时目录清理失败") === true,
+    );
+    const warningIndex = events.findIndex(
+      (event) => event.cleanupWarning?.includes("临时目录清理失败") === true,
+    );
+    expect(resultIndex).toBeGreaterThanOrEqual(0);
+    expect(warningIndex).toBeGreaterThan(resultIndex);
+    await waitUntil(() => fs.readdirSync(tempRoot).length === 0, 2_000);
+    expect(removeAttempts).toBeGreaterThanOrEqual(2);
+    await waitFor(events, (event) => event.cleanupConfirmed === true);
+    await service.dispose();
+  });
+
+  it("reports exhausted cleanup retries without changing the execution result", async () => {
+    const tempRoot = createTempRoot();
+    const service = new AcmRunnerService({
+      compiler: compiler(),
+      helper: new AcmRunnerHelper(
+        factoryFor({
+          compileExitCode: 0,
+          compileStderr: "",
+          runOutput: "answer\n",
+          runStderr: "",
+          holdRun: false,
+        }),
+        "win32",
+      ),
+      platform: "win32",
+      tempRoot,
+      cleanupRetries: 1,
+      removePath: () => {
+        throw new Error("temporary lock");
+      },
+    });
+    const events: RunnerEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.init();
+    await expect(service.start(request())).resolves.toMatchObject({ ok: true });
+    await waitFor(
+      events,
+      (event) => event.stage === "run-finished" && event.status === "completed",
+    );
+    expect(events.at(-1)).toMatchObject({
+      stage: "run-finished",
+      status: "completed",
+    });
+    await waitFor(
+      events,
+      (event) => event.cleanupWarning?.includes("清理重试已耗尽") === true,
+    );
+    expect(service.getPendingCleanupRetryCount()).toBe(0);
+    expect(fs.readdirSync(tempRoot)).not.toHaveLength(0);
+    await service.dispose();
+  });
+
+  it("keeps reparse-point cleanup conservative without leaving the runner busy", async () => {
+    const service = createService({}, {});
+    const internals = service as unknown as {
+      containsReparsePoint: (directory: string) => boolean;
+    };
+    const original = internals.containsReparsePoint;
+    internals.containsReparsePoint = () => true;
+    const events: RunnerEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    try {
+      await service.init();
+      await expect(service.start(request())).resolves.toMatchObject({
+        ok: true,
+      });
+      await waitFor(
+        events,
+        (event) => event.cleanupWarning?.includes("未清理资源") === true,
+      );
+      internals.containsReparsePoint = original;
+      expect(service.getPendingCleanupRetryCount()).toBe(0);
+      await expect(
+        service.start(request({ mode: "compile" })),
+      ).resolves.toMatchObject({
+        ok: true,
+        data: { taskId: expect.any(String) },
+      });
+      await waitFor(
+        events,
+        (event) =>
+          event.stage === "compile-finished" && event.status === "completed",
+      );
+    } finally {
+      internals.containsReparsePoint = original;
+      await service.dispose();
+    }
+  });
 });
 
 describe("AcmRunnerHelper", () => {

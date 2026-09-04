@@ -27,7 +27,7 @@ import {
  * 上午 4 节（第3-4节间大课间 20 分钟），下午 4 节，晚上 4 节，末节 break_after=0。
  * reminder_offset 统一默认 10 分钟，is_lab 默认 false。
  */
-const DEFAULT_PERIODS: PeriodConfig[] = [
+export const DEFAULT_PERIODS: readonly PeriodConfig[] = [
   {
     index: 1,
     startTime: "08:00",

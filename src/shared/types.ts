@@ -37,6 +37,7 @@ export type IpcErrorCode =
   | "CRITICAL_SERVICE_UNAVAILABLE"
   | "DATABASE_MIGRATION_FAILED"
   | "DATABASE_INITIALIZATION_FAILED"
+  | "IPC_UNAUTHORIZED"
   | "UPDATE_MANAGED_BY_STORE"
   | "ACM_UNSUPPORTED"
   | "ACM_DISABLED"
@@ -592,6 +593,9 @@ export interface RunnerEvent {
   /** 终止未确认时保留原阶段结果，并附带可观测的失败原因。 */
   terminationError?: string;
   cleanupBlocked?: boolean;
+  /** 临时可执行文件或目录清理失败的非阻断警告。 */
+  cleanupWarning?: string;
+  cleanupWarnings?: string[];
   /** 迟到的 exit/close 已确认，主进程已完成本任务的清理并释放 busy。 */
   cleanupConfirmed?: boolean;
   durationMs?: number;
@@ -681,6 +685,12 @@ export interface AcmNoticeState {
   visible: boolean;
   currentVersion: string;
   dismissedVersion: string | null;
+}
+
+/** 首次使用引导状态；该状态只保存在当前设备，不进入备份。 */
+export interface OnboardingState {
+  required: boolean;
+  completed: boolean;
 }
 
 // ==================== IPC 通道常量 ====================
@@ -805,6 +815,8 @@ export const IPC_CHANNELS = {
   ACM_NOTICE_GET_STATE: "acm:notice:getState",
   ACM_NOTICE_DISMISS: "acm:notice:dismiss",
   ACM_NOTICE_CLEAR: "acm:notice:clear",
+  ONBOARDING_GET_STATE: "onboarding:getState",
+  ONBOARDING_COMPLETE: "onboarding:complete",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
@@ -988,6 +1000,10 @@ export interface RendererApi {
     getNoticeState: () => Promise<IpcResult<AcmNoticeState>>;
     dismissNotice: () => Promise<IpcResult<AcmNoticeState>>;
     clearNotice: () => Promise<IpcResult<AcmNoticeState>>;
+  };
+  onboarding: {
+    getState: () => Promise<IpcResult<OnboardingState>>;
+    complete: () => Promise<IpcResult<OnboardingState>>;
   };
 }
 

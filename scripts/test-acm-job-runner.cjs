@@ -5,7 +5,7 @@ const path = require("node:path");
 const { spawn, execFileSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
-const defaultAppxOutput = "release-v0.4.0-msix-local";
+const defaultAppxOutput = "release-v0.5.0-msix-local";
 const helper = resolveHelper();
 const breakawayProbe = path.join(
   root,

@@ -120,6 +120,7 @@ function buildSaveRequest(document: AcmDocument, force: boolean) {
 }
 
 function eventClass(event: RunnerEvent): string {
+  if (event.cleanupWarning || event.cleanupWarnings?.length) return "warning";
   if (event.status === "data" && event.stream === "stderr") return "error";
   if (event.status === "failed" || event.status === "timeout") return "error";
   if (event.status === "completed") return "success";
@@ -128,6 +129,11 @@ function eventClass(event: RunnerEvent): string {
 
 function eventText(event: RunnerEvent): string {
   if (event.status === "data") return event.text ?? "";
+  const cleanup = event.cleanupWarnings?.length
+    ? `，${event.cleanupWarnings.join("；")}`
+    : event.cleanupWarning
+      ? `，${event.cleanupWarning}`
+      : "";
   const duration = event.durationMs == null ? "" : ` (${event.durationMs} ms)`;
   const exitCode = event.exitCode == null ? "" : `，退出码 ${event.exitCode}`;
   const errorCode = event.errorCode == null ? "" : `，${event.errorCode}`;
@@ -137,7 +143,7 @@ function eventText(event: RunnerEvent): string {
       ? "，资源清理暂缓"
       : "";
   const confirmed = event.cleanupConfirmed ? "，清理已确认" : "";
-  return `[${RUNNER_STATUS_LABELS[event.status]}]${exitCode}${errorCode}${termination}${confirmed}${duration}`;
+  return `[${RUNNER_STATUS_LABELS[event.status]}]${exitCode}${errorCode}${termination}${confirmed}${cleanup}${duration}`;
 }
 
 function eventBytes(event: RunnerEvent): number {
@@ -709,9 +715,20 @@ export default function AcmWorkbenchPage() {
         }
         const currentTaskId = runnerTaskRef.current;
         const currentDocumentId = runnerDocumentIdRef.current;
+        const hasCleanupWarning = Boolean(
+          event.cleanupWarning || event.cleanupWarnings?.length,
+        );
         const isCurrentEvent = currentTaskId
           ? event.taskId === currentTaskId
           : runnerBusyRef.current && event.documentId === currentDocumentId;
+        const isLateCleanupWarning =
+          hasCleanupWarning && event.documentId === activeIdRef.current;
+        if (isLateCleanupWarning) {
+          showWarnings([
+            ...(event.cleanupWarnings ?? []),
+            ...(event.cleanupWarning ? [event.cleanupWarning] : []),
+          ]);
+        }
         if (!isCurrentEvent) return;
         if (event.stage === "compile-started") setRunnerPhase("compile");
         if (event.stage === "run-started") setRunnerPhase("run");

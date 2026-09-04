@@ -47,6 +47,16 @@ describe("ACM Workbench 状态 helper", () => {
         "run",
       ),
     ).toBe("finished");
+    expect(
+      runnerEventLifecycle(
+        event({
+          stage: "run-finished",
+          cleanupWarning: "临时目录清理失败",
+          cleanupWarnings: ["临时目录清理失败"],
+        }),
+        "run",
+      ),
+    ).toBe("finished");
   });
 
   it("按 UTF-8 字节和事件数限制终端 ring buffer", () => {

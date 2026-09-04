@@ -16,6 +16,7 @@ import type {
 import { DataService } from "./DataService";
 import { NotificationService } from "./NotificationService";
 import { TimetableService } from "./TimetableService";
+import { writeTextFileAtomically } from "./AtomicFile";
 
 const TICK_WINDOW_MS = 60_000;
 const SCAN_INTERVAL_MS = 60_000;
@@ -538,10 +539,10 @@ export class ReminderScheduler {
 
   private writeState(): void {
     if (!this.statePath) return;
-    fs.mkdirSync(path.dirname(this.statePath), { recursive: true });
-    const temp = `${this.statePath}.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(this.state, null, 2), "utf8");
-    fs.renameSync(temp, this.statePath);
+    writeTextFileAtomically(
+      this.statePath,
+      JSON.stringify(this.state, null, 2),
+    );
   }
 
   private pruneState(now: Date): void {

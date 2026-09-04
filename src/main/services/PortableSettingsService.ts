@@ -9,6 +9,7 @@ import type {
   PortableSettings,
 } from "../../shared/types";
 import { isSafeImageFileName } from "./ImageValidation";
+import { writeTextFileAtomically } from "./AtomicFile";
 
 const DEFAULT_SETTINGS: PortableSettings = {
   portableSettingsVersion: 2,
@@ -24,7 +25,7 @@ const DEFAULT_SETTINGS: PortableSettings = {
   },
   acm: { enabled: true, noticeDismissedVersion: null },
 };
-
+const MAX_SETTINGS_FILE_BYTES = 1 * 1024 * 1024;
 const calendarDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -131,6 +132,14 @@ export class PortableSettingsService {
     );
   }
 
+  /** 恢复当前设备的默认可迁移设置；不触碰数据库和机器专属文件。 */
+  resetToDefaults(): PortableSettings {
+    const defaults = cloneSettings(DEFAULT_SETTINGS);
+    this.writeToDisk(defaults);
+    this.settings = defaults;
+    return this.get();
+  }
+
   update(patch: Partial<PortableSettings>): PortableSettings {
     const current = this.settings;
     const next: PortableSettings = {
@@ -175,15 +184,17 @@ export class PortableSettingsService {
   }
 
   private readFromDisk(): PortableSettings {
-    if (!fs.existsSync(this.getFilePath())) {
+    const target = this.getFilePath();
+    if (!fs.existsSync(target)) {
       const migrated = this.readLegacySettings();
       this.writeToDisk(migrated);
       return migrated;
     }
     try {
-      const parsed: unknown = JSON.parse(
-        fs.readFileSync(this.getFilePath(), "utf8"),
-      );
+      const stat = fs.lstatSync(target);
+      if (!stat.isFile() || stat.size > MAX_SETTINGS_FILE_BYTES)
+        throw new Error("便携设置文件超过 1 MiB 限制");
+      const parsed: unknown = JSON.parse(fs.readFileSync(target, "utf8"));
       if (isSettings(parsed)) return this.normalize(parsed);
       const migrated = migrateLegacySettings(parsed);
       if (migrated) {
@@ -193,9 +204,9 @@ export class PortableSettingsService {
       }
       throw new Error("设置结构不完整");
     } catch (error) {
-      if (fs.existsSync(this.getFilePath())) {
+      if (fs.existsSync(target)) {
         const suffix = `.invalid.${Date.now()}`;
-        fs.renameSync(this.getFilePath(), `${this.getFilePath()}${suffix}`);
+        fs.renameSync(target, `${target}${suffix}`);
       }
       console.warn(`[PortableSettingsService] 设置已隔离：${String(error)}`);
       const defaults = cloneSettings(DEFAULT_SETTINGS);
@@ -298,11 +309,7 @@ export class PortableSettingsService {
   }
 
   private writeToDisk(value: PortableSettings): void {
-    const target = this.getFilePath();
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const temp = `${target}.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(value, null, 2), "utf8");
-    fs.renameSync(temp, target);
+    writeTextFileAtomically(this.getFilePath(), JSON.stringify(value, null, 2));
   }
 }
 

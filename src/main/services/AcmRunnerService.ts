@@ -36,6 +36,10 @@ const DEFAULT_TEMP_ROOT = path.join(os.tmpdir(), "college-student-toolkit-acm");
 const MAX_TERMINATION_ATTEMPTS = 2;
 const TERMINATION_RETRY_DELAY_MS = 50;
 const TERMINATION_ATTEMPT_TIMEOUT_MS = 3_500;
+const CLEANUP_RETRIES = 3;
+const MAX_CLEANUP_RETRIES = 8;
+const MAX_PENDING_CLEANUP_RETRIES = 8;
+const CLEANUP_RETRY_DELAY_MS = 250;
 
 const requestSchema = z.object({
   documentId: z.string().trim().min(1).max(128),
@@ -58,6 +62,9 @@ export interface AcmRunnerServiceOptions {
   staleTempTtlMs?: number;
   limits?: Partial<RunnerLimits>;
   writeFile?: RunnerTextWriter;
+  cleanupRetries?: number;
+  maxPendingCleanupRetries?: number;
+  removePath?: (target: string) => void;
 }
 
 type RunnerConstructor = AcmRunnerServiceOptions | AcmRunnerCompiler;
@@ -90,6 +97,9 @@ interface RunnerTask {
   done: Promise<void> | null;
   cleanupConfirmationEmitted: boolean;
   terminationAttempt: Promise<TerminationResult> | null;
+  cleanupWarnings: string[];
+  pendingCleanupTargets: Set<string>;
+  cleanupUnresolved: boolean;
 }
 
 interface TerminationResult {
@@ -105,6 +115,8 @@ interface ProcessOutcome {
   terminationConfirmed?: boolean;
   terminationError?: string;
   cleanupBlocked?: boolean;
+  cleanupWarning?: string;
+  cleanupWarnings?: string[];
   durationMs: number;
 }
 
@@ -171,8 +183,10 @@ function isReparsePoint(
       comparablePath(fs.realpathSync.native(filePath)) !==
       comparablePath(filePath)
     );
-  } catch {
-    return true;
+  } catch (error) {
+    // A process may remove a generated file between the lstat and cleanup
+    // checks. Missing output is already safe to treat as cleaned.
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
   }
 }
 
@@ -185,7 +199,11 @@ export class AcmRunnerService {
   private readonly instanceId = randomUUID();
   private readonly limits: RunnerLimits;
   private readonly writeFile: RunnerTextWriter;
+  private readonly cleanupRetries: number;
+  private readonly maxPendingCleanupRetries: number;
+  private readonly removePath: (target: string) => void;
   private readonly listeners = new Set<(event: RunnerEvent) => void>();
+  private readonly pendingCleanupRetries = new Map<string, Promise<boolean>>();
   private active: RunnerTask | null = null;
   private initialized = false;
 
@@ -209,6 +227,28 @@ export class AcmRunnerService {
       options.writeFile ??
       ((target, data, writeOptions) =>
         fs.writeFileSync(target, data, writeOptions));
+    this.cleanupRetries = Math.min(
+      MAX_CLEANUP_RETRIES,
+      Math.max(0, Math.floor(options.cleanupRetries ?? CLEANUP_RETRIES)),
+    );
+    this.maxPendingCleanupRetries = Math.max(
+      1,
+      Math.min(
+        MAX_PENDING_CLEANUP_RETRIES,
+        Math.floor(
+          options.maxPendingCleanupRetries ?? MAX_PENDING_CLEANUP_RETRIES,
+        ),
+      ),
+    );
+    this.removePath =
+      options.removePath ??
+      ((target) =>
+        fs.rmSync(target, {
+          recursive: true,
+          force: true,
+          maxRetries: 1,
+          retryDelay: 50,
+        }));
   }
 
   async init(): Promise<void> {
@@ -257,6 +297,9 @@ export class AcmRunnerService {
       done: null,
       cleanupConfirmationEmitted: false,
       terminationAttempt: null,
+      cleanupWarnings: [],
+      pendingCleanupTargets: new Set(),
+      cleanupUnresolved: false,
     };
     this.active = task;
     try {
@@ -325,6 +368,10 @@ export class AcmRunnerService {
     return Boolean(this.active?.terminationPending && this.active.child);
   }
 
+  getPendingCleanupRetryCount(): number {
+    return this.pendingCleanupRetries.size;
+  }
+
   async dispose(): Promise<void> {
     const task = this.active;
     if (task) {
@@ -338,6 +385,7 @@ export class AcmRunnerService {
       console.warn(
         "[acm-runner] 应用退出时子进程仍未确认退出，外部进程可能残留",
       );
+    await Promise.allSettled([...this.pendingCleanupRetries.values()]);
     this.initialized = false;
     this.listeners.clear();
   }
@@ -708,6 +756,9 @@ export class AcmRunnerService {
       exitCode: null,
       errorCode: known?.code ?? "ACM_RUNNER_FAILED",
       error: error instanceof Error ? error.message : String(error),
+      ...(this.active?.cleanupWarnings.length
+        ? { cleanupWarnings: [...this.active.cleanupWarnings] }
+        : {}),
       durationMs: Math.max(0, Date.now() - startedAt),
     };
   }
@@ -726,6 +777,8 @@ export class AcmRunnerService {
       errorCode: outcome.errorCode,
       terminationError: outcome.terminationError,
       cleanupBlocked: outcome.cleanupBlocked,
+      cleanupWarning: outcome.cleanupWarning,
+      cleanupWarnings: outcome.cleanupWarnings,
       durationMs: outcome.durationMs,
     });
   }
@@ -847,6 +900,7 @@ export class AcmRunnerService {
 
   private emitCleanupConfirmed(task: RunnerTask): void {
     if (task.cleanupConfirmationEmitted) return;
+    if (task.cleanupUnresolved || task.pendingCleanupTargets.size > 0) return;
     task.cleanupConfirmationEmitted = true;
     this.emit({
       taskId: task.id,
@@ -854,6 +908,12 @@ export class AcmRunnerService {
       stage: stageFor(task.phase === "run" ? "run" : "compile", true),
       status: "completed",
       cleanupConfirmed: true,
+      ...(task.cleanupWarnings.length
+        ? {
+            cleanupWarning: task.cleanupWarnings.at(-1),
+            cleanupWarnings: [...task.cleanupWarnings],
+          }
+        : {}),
     });
   }
 
@@ -924,7 +984,7 @@ export class AcmRunnerService {
           continue;
         const owner = this.readOwnerMetadata(target);
         if (!owner || !this.isExpiredOwner(owner)) continue;
-        if (this.containsReparsePoint(target)) continue;
+        if (!this.isSafeCleanupTarget(target)) continue;
         fs.rmSync(target, {
           recursive: true,
           force: true,
@@ -1081,30 +1141,114 @@ export class AcmRunnerService {
     }
     const directory = task.tempDir;
     try {
-      if (this.containsReparsePoint(directory)) {
-        console.warn(
-          `[acm-runner] 临时目录包含未清理资源，保留供恢复: ${directory}`,
-        );
-        return;
-      }
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          fs.rmSync(directory, {
-            recursive: true,
-            force: true,
-            maxRetries: 2,
-            retryDelay: 50,
-          });
-          if (!fs.existsSync(directory)) break;
-        } catch {
-          if (attempt === 1) break;
-        }
-      }
-      if (fs.existsSync(directory))
-        console.warn(`[acm-runner] 临时目录清理将在下次启动重试: ${directory}`);
+      await this.cleanupPath(task, directory);
     } finally {
       task.tempDir = null;
       if (this.active === task) this.active = null;
+    }
+  }
+
+  private async cleanupPath(task: RunnerTask, target: string): Promise<void> {
+    if (!this.isSafeCleanupTarget(target)) {
+      this.recordCleanupWarning(
+        task,
+        `临时目录包含未清理资源，保留供恢复：${target}`,
+      );
+      task.cleanupUnresolved = true;
+      this.emitCleanupWarning(task);
+      return;
+    }
+    try {
+      this.removePath(target);
+      if (!fs.existsSync(target)) return;
+    } catch {
+      // Windows may briefly hold an executable while the process close event settles.
+    }
+    this.recordCleanupWarning(task, `临时目录清理失败：${target}`);
+    task.cleanupUnresolved = true;
+    this.emitCleanupWarning(task);
+    this.scheduleCleanupRetry(task, target);
+  }
+
+  private recordCleanupWarning(task: RunnerTask, warning: string): void {
+    if (!task.cleanupWarnings.includes(warning))
+      task.cleanupWarnings.push(warning);
+  }
+
+  private emitCleanupWarning(task: RunnerTask): void {
+    if (!task.executionFinished) return;
+    this.emit({
+      taskId: task.id,
+      documentId: task.request.documentId,
+      stage: stageFor(task.phase === "run" ? "run" : "compile", true),
+      status: "completed",
+      cleanupWarning: task.cleanupWarnings.at(-1),
+      cleanupWarnings: [...task.cleanupWarnings],
+    });
+  }
+
+  private scheduleCleanupRetry(task: RunnerTask, target: string): void {
+    if (this.cleanupRetries === 0 || this.pendingCleanupRetries.has(target))
+      return;
+    if (this.pendingCleanupRetries.size >= this.maxPendingCleanupRetries) {
+      this.recordCleanupWarning(
+        task,
+        `清理重试队列已满，下次启动将继续清理：${target}`,
+      );
+      this.emitCleanupWarning(task);
+      return;
+    }
+    task.pendingCleanupTargets.add(target);
+    const retry = this.retryCleanupPath(target);
+    this.pendingCleanupRetries.set(target, retry);
+    void retry.then((cleaned) => {
+      task.pendingCleanupTargets.delete(target);
+      if (this.pendingCleanupRetries.get(target) === retry)
+        this.pendingCleanupRetries.delete(target);
+      if (cleaned) {
+        if (task.pendingCleanupTargets.size === 0)
+          task.cleanupUnresolved = false;
+        this.emitCleanupConfirmed(task);
+        return;
+      }
+      this.recordCleanupWarning(
+        task,
+        `清理重试已耗尽，下次启动将继续清理：${target}`,
+      );
+      this.emitCleanupWarning(task);
+    });
+  }
+
+  private async retryCleanupPath(target: string): Promise<boolean> {
+    for (let attempt = 1; attempt <= this.cleanupRetries; attempt += 1) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, attempt * CLEANUP_RETRY_DELAY_MS),
+      );
+      if (!this.isSafeCleanupTarget(target)) return false;
+      try {
+        this.removePath(target);
+        if (!fs.existsSync(target)) return true;
+      } catch {
+        // Leave the owner marker for next-start stale cleanup if all retries fail.
+      }
+    }
+    return false;
+  }
+
+  private isWithinRoot(target: string): boolean {
+    const root = comparablePath(this.tempRoot);
+    const candidate = comparablePath(target);
+    return candidate !== root && candidate.startsWith(`${root}${path.sep}`);
+  }
+
+  private isSafeCleanupTarget(target: string): boolean {
+    if (!this.isWithinRoot(target) || isReparsePoint(target, this.platform))
+      return false;
+    try {
+      const stat = fs.lstatSync(target);
+      return !stat.isDirectory() || !this.containsReparsePoint(target);
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT";
     }
   }
 
