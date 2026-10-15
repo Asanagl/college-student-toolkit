@@ -1,15 +1,16 @@
 // 通知服务：基于 Electron Notification 实现本地提醒，并管理免打扰时段与通知历史。
 // 实现阶段：Phase 1
-import { Notification } from 'electron';
-import * as path from 'node:path';
-import { randomUUID } from 'node:crypto';
-import Store from 'electron-store';
+import { Notification } from "electron";
+import * as path from "node:path";
+import { randomUUID } from "node:crypto";
+import Store from "electron-store";
 import type {
   DndConfig,
   IpcResult,
   NotificationPayload,
   NotificationRecord,
-} from '../../shared/types';
+} from "../../shared/types";
+import { portableSettingsService } from "./PortableSettingsService";
 
 /** electron-store 持久化的字段 */
 interface NotificationStoreSchema {
@@ -23,8 +24,8 @@ const HISTORY_LIMIT = 100;
 /** 默认 DnD 配置：关闭，时段 22:00-08:00（跨天） */
 const DEFAULT_DND: DndConfig = {
   enabled: false,
-  startTime: '22:00',
-  endTime: '08:00',
+  startTime: "22:00",
+  endTime: "08:00",
 };
 
 export class NotificationService {
@@ -48,20 +49,25 @@ export class NotificationService {
     }
     // electron-store 在实例化时即读取磁盘配置，并合并 defaults
     this.store = new Store<NotificationStoreSchema>({
-      name: 'notification',
+      name: "notification",
       defaults: {
         dnd: DEFAULT_DND,
         notificationHistory: [],
       },
     });
-    this.dnd = this.store.get('dnd', DEFAULT_DND);
+    const portable = portableSettingsService.get();
+    this.dnd = portable.dnd;
+    this.store.set({
+      dnd: portable.dnd,
+      notificationHistory: portable.notificationHistory,
+    });
     this.initialized = true;
   }
 
   /** 发送一条桌面通知；命中 DnD 时段则仅记录历史不弹出 */
   async send(payload: NotificationPayload): Promise<IpcResult<boolean>> {
     if (!this.store) {
-      return { ok: false, error: 'NotificationService 未初始化' };
+      return { ok: false, error: "NotificationService 未初始化" };
     }
     const inDnd = this.isInDndNow(this.dnd, new Date());
     const record: NotificationRecord = {
@@ -71,6 +77,7 @@ export class NotificationService {
       source: payload.source,
       timestamp: new Date().toISOString(),
       delivered: !inDnd,
+      summarized: false,
     };
     this.appendHistory(record);
 
@@ -83,7 +90,7 @@ export class NotificationService {
     if (!Notification.isSupported()) {
       return { ok: true, data: false };
     }
-    const iconPath = path.join(__dirname, '../../resources/icon.png');
+    const iconPath = path.join(__dirname, "../../resources/icon.png");
     const notification = new Notification({
       title: payload.title,
       body: payload.body,
@@ -96,17 +103,18 @@ export class NotificationService {
   /** 更新免打扰配置并持久化 */
   async setDnd(config: DndConfig): Promise<IpcResult<boolean>> {
     if (!this.store) {
-      return { ok: false, error: 'NotificationService 未初始化' };
+      return { ok: false, error: "NotificationService 未初始化" };
     }
     this.dnd = config;
-    this.store.set('dnd', config);
+    this.store.set("dnd", config);
+    portableSettingsService.update({ dnd: config });
     return { ok: true, data: true };
   }
 
   /** 读取当前免打扰配置 */
   async getDnd(): Promise<IpcResult<DndConfig>> {
     if (!this.store) {
-      return { ok: false, error: 'NotificationService 未初始化' };
+      return { ok: false, error: "NotificationService 未初始化" };
     }
     return { ok: true, data: this.dnd };
   }
@@ -114,22 +122,50 @@ export class NotificationService {
   /** 返回通知历史（新的在前） */
   async getHistory(): Promise<IpcResult<NotificationRecord[]>> {
     if (!this.store) {
-      return { ok: false, error: 'NotificationService 未初始化' };
+      return { ok: false, error: "NotificationService 未初始化" };
     }
-    return { ok: true, data: this.store.get('notificationHistory', []) };
+    return { ok: true, data: this.store.get("notificationHistory", []) };
   }
 
   /** 清空通知历史 */
   async clearHistory(): Promise<IpcResult<boolean>> {
     if (!this.store) {
-      return { ok: false, error: 'NotificationService 未初始化' };
+      return { ok: false, error: "NotificationService 未初始化" };
     }
-    this.store.set('notificationHistory', []);
+    this.store.set("notificationHistory", []);
+    portableSettingsService.update({ notificationHistory: [] });
+    return { ok: true, data: true };
+  }
+
+  async flushDndSummary(now = new Date()): Promise<IpcResult<boolean>> {
+    if (!this.store)
+      return { ok: false, error: "NotificationService 未初始化" };
+    if (this.isInDndNow(this.dnd, now)) return { ok: true, data: false };
+    const history = this.store.get("notificationHistory", []);
+    const suppressed = history.filter(
+      (record) => !record.delivered && !record.summarized,
+    );
+    if (suppressed.length === 0) return { ok: true, data: false };
+    const updated = history.map((record) =>
+      suppressed.some((item) => item.id === record.id)
+        ? { ...record, summarized: true }
+        : record,
+    );
+    this.store.set("notificationHistory", updated);
+    portableSettingsService.update({ notificationHistory: updated });
+    if (!Notification.isSupported()) return { ok: true, data: false };
+    const notification = new Notification({
+      title: "免打扰汇总",
+      body: `免打扰期间有 ${suppressed.length} 条提醒`,
+      icon: path.join(__dirname, "../../resources/icon.png"),
+    });
+    notification.show();
     return { ok: true, data: true };
   }
 
   async dispose(): Promise<void> {
     // electron-store 在 set 时已写盘，无需额外释放
+    this.store = null;
     this.initialized = false;
   }
 
@@ -138,13 +174,23 @@ export class NotificationService {
     if (!this.store) {
       return;
     }
-    const history = this.store.get('notificationHistory', []);
+    const history = this.store.get("notificationHistory", []);
     history.unshift(record);
     // 仅保留最近 HISTORY_LIMIT 条，避免无限增长
     if (history.length > HISTORY_LIMIT) {
       history.length = HISTORY_LIMIT;
     }
-    this.store.set('notificationHistory', history);
+    this.store.set("notificationHistory", history);
+    portableSettingsService.update({ notificationHistory: history });
+  }
+
+  applyPortableSettings(): void {
+    const portable = portableSettingsService.get();
+    this.dnd = portable.dnd;
+    this.store?.set({
+      dnd: portable.dnd,
+      notificationHistory: portable.notificationHistory,
+    });
   }
 
   /** 判断给定时间是否落在 DnD 时段内，支持跨天（如 22:00-08:00） */

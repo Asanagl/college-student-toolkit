@@ -6,13 +6,13 @@
 //        --external:electron --external:better-sqlite3 --external:electron-store ^
 //        --external:archiver --external:unzip-stream --outfile=dist-test/test-phase1.cjs
 //   2. node scripts/run-test.cjs
-const Module = require('module');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
+const Module = require("module");
+const path = require("path");
+const fs = require("fs");
+const os = require("os");
 
 // 测试用的 userData 目录（模拟 app.getPath('userData')）
-const testUserData = path.join(__dirname, '..', 'dist-test', 'test-userdata');
+const testUserData = path.join(__dirname, "..", "dist-test", "test-userdata");
 fs.mkdirSync(testUserData, { recursive: true });
 
 // electron mock：提供 app / Notification / dialog 等 API 的最小实现
@@ -20,12 +20,12 @@ fs.mkdirSync(testUserData, { recursive: true });
 const electronMock = {
   app: {
     getPath(name) {
-      if (name === 'userData') return testUserData;
-      if (name === 'temp') return os.tmpdir();
+      if (name === "userData") return testUserData;
+      if (name === "temp") return os.tmpdir();
       return testUserData;
     },
     getVersion() {
-      return '0.1.0-test';
+      return "0.1.0-test";
     },
     whenReady() {
       return Promise.resolve();
@@ -54,7 +54,7 @@ const electronMock = {
   },
   dialog: {
     showSaveDialog() {
-      return Promise.resolve({ canceled: true, filePath: '' });
+      return Promise.resolve({ canceled: true, filePath: "" });
     },
     showOpenDialog() {
       return Promise.resolve({ canceled: true, filePaths: [] });
@@ -67,11 +67,11 @@ const electronMock = {
 // 拦截 require('electron')，返回 mock 对象而非真实 electron
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
-  if (request === 'electron') {
+  if (request === "electron") {
     return electronMock;
   }
   return originalLoad.call(this, request, parent, isMain);
 };
 
 // 加载并运行 esbuild 编译后的测试脚本
-require('../dist-test/test-phase1.cjs');
+require("../dist-test/test-phase1.cjs");

@@ -43,6 +43,10 @@ export class UrpParser extends ParserBase {
       for (const cell of cells) {
         const $cell = $(cell);
         const text = this.cleanText($cell.text());
+        if (this.isHeaderLabel(text)) {
+          colIndex++;
+          continue;
+        }
         // 节次标签
         if (/^第?\d+$/.test(text) || /^第[一二三四五六七八九十\d]+节/.test(text)) {
           const periods = this.parsePeriods(text);
@@ -53,7 +57,7 @@ export class UrpParser extends ParserBase {
           }
         }
         colIndex++;
-        const weekday = colIndex - 1;
+        const weekday = colIndex - 2;
         if (weekday < 1 || weekday > 7) continue;
         if (!text) continue;
         // URP 单元格通常按换行或 <br> 分隔多门课程
@@ -72,10 +76,7 @@ export class UrpParser extends ParserBase {
   }
 
   private parseBlock(text: string, weekday: number, fallbackPeriod: number): ParsedCourse | null {
-    const lines = text
-      .split(/\n|，|,| {2,}/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const lines = this.splitCourseFields(text);
     if (lines.length === 0) return null;
     const course: ParsedCourse = { weekday, color: pickColor(lines[0]) };
     course.name = lines[0];

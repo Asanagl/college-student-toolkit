@@ -5,9 +5,9 @@ import { ParserBase } from './ParserBase';
 import { QingguoParser } from './QingguoParser';
 import { UrpParser } from './UrpParser';
 import { ZhengfangParser } from './ZhengfangParser';
-import type { ParsedCourse } from './types';
+import type { ParsedCourse, ParseResult } from './types';
 
-export type { ParsedCourse, Parser } from './types';
+export type { ParsedCourse, Parser, ParseResult } from './types';
 export { ParserBase } from './ParserBase';
 
 const PARSERS: ParserBase[] = [
@@ -47,6 +47,10 @@ class GenericTableParser extends ParserBase {
       for (const cell of cells) {
         const $cell = $(cell);
         const text = this.cleanText($cell.text());
+        if (this.isHeaderLabel(text)) {
+          colIndex++;
+          continue;
+        }
         if (/^第?\d+$/.test(text) || /^第[一二三四五六七八九十\d]+节/.test(text)) {
           const periods = this.parsePeriods(text);
           if (periods) {
@@ -56,14 +60,11 @@ class GenericTableParser extends ParserBase {
           }
         }
         colIndex++;
-        const weekday = colIndex - 1;
+        const weekday = colIndex - 2;
         if (weekday < 1 || weekday > 7) continue;
         if (!text || text.length < 2) continue;
         // 启发式：单元格内第一段为课程名
-        const lines = text
-          .split(/\n|，|,| {2,}/)
-          .map((s) => s.trim())
-          .filter(Boolean);
+        const lines = this.splitCourseFields(text);
         if (lines.length === 0) continue;
         const course: ParsedCourse = {
           name: lines[0],
@@ -73,6 +74,10 @@ class GenericTableParser extends ParserBase {
         };
         for (let i = 1; i < lines.length; i++) {
           const line = lines[i];
+          if (!course.location && /楼|室|号|栋|层/.test(line)) {
+            course.location = line;
+            continue;
+          }
           const weeks = this.parseWeeks(line);
           if (weeks && course.startWeek === undefined) {
             course.startWeek = weeks[0];
@@ -102,16 +107,17 @@ class GenericTableParser extends ParserBase {
 }
 
 /**
- * 用所有注册的解析器解析 HTML，返回课程列表。
+ * 用所有注册的解析器解析 HTML，返回课程列表与被跳过的无时间安排课程。
  * 优先用 detect 命中的专用解析器，全部未命中时回退到 GenericTableParser。
  */
-export function parseDomWithAllParsers(html: string): ParsedCourse[] {
-  if (!html) return [];
+export function parseDomWithMeta(html: string): ParseResult {
+  const empty: ParseResult = { courses: [], skippedUnscheduled: [] };
+  if (!html) return empty;
   for (const parser of PARSERS) {
     try {
       if (parser.detect(html)) {
-        const result = parser.parse(html);
-        if (result.length > 0) return result;
+        const result = parser.parseWithMeta(html);
+        if (result.courses.length > 0) return result;
       }
     } catch (err) {
       // 单个解析器失败不影响其他解析器尝试
@@ -121,9 +127,19 @@ export function parseDomWithAllParsers(html: string): ParsedCourse[] {
   // 兜底：通用 table 解析
   try {
     const generic = new GenericTableParser();
-    if (generic.detect(html)) return generic.parse(html);
+    if (generic.detect(html)) {
+      return { courses: generic.parse(html), skippedUnscheduled: [] };
+    }
   } catch (err) {
     console.error(`[parsers] 通用解析失败: ${(err as Error).message}`);
   }
-  return [];
+  return empty;
+}
+
+/**
+ * 用所有注册的解析器解析 HTML，返回课程列表。
+ * 优先用 detect 命中的专用解析器，全部未命中时回退到 GenericTableParser。
+ */
+export function parseDomWithAllParsers(html: string): ParsedCourse[] {
+  return parseDomWithMeta(html).courses;
 }

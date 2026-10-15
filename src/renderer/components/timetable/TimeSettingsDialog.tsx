@@ -23,7 +23,6 @@ export default function TimeSettingsDialog({ open, onClose }: TimeSettingsDialog
   useEffect(() => {
     if (!open) return;
     void loadPeriods();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const loadPeriods = async () => {
@@ -110,7 +109,6 @@ export default function TimeSettingsDialog({ open, onClose }: TimeSettingsDialog
 
 /** 单行节次配置：节次序号只读，其余字段可编辑 */
 interface PeriodRowProps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   field: any;
 }
 

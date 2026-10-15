@@ -1,14 +1,19 @@
 // 日程板块页面：日历视图 + 日程列表 + CRUD 对话框。
 // 职责：管理全局日程数据、选中日期与对话框开关状态，向下分发数据与回调。
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Card, message, Spin, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import type { Schedule } from '../../shared/types';
+import { findCrossBoardConflicts } from '../../shared/conflicts';
 import CalendarView, { getSchedulesOnDate } from '../components/schedule/CalendarView';
 import ScheduleList from '../components/schedule/ScheduleList';
 import ScheduleDialog from '../components/schedule/ScheduleDialog';
+import {
+  SEMESTER_START_EVENT,
+  useConflictData,
+} from '../services/useConflictData';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 export default function SchedulePage() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -35,6 +40,33 @@ export default function SchedulePage() {
   useEffect(() => {
     loadSchedules();
   }, [loadSchedules]);
+
+  // 跨板块撞课：日程 vs 课程（semesterStart 未设置时自动为空，不显示标记）
+  const conflictData = useConflictData();
+  const scheduleConflicts = useMemo(
+    () =>
+      findCrossBoardConflicts({
+        courses: conflictData.courses,
+        semesterStart: conflictData.semesterStart,
+        periods: conflictData.periods,
+        exams: [],
+        labs: [],
+        schedules,
+      }).schedules,
+    [
+      conflictData.courses,
+      conflictData.semesterStart,
+      conflictData.periods,
+      schedules,
+    ],
+  );
+
+  // 学期开始日期在设置弹窗修改后本页不重挂载，订阅变更事件重载撞课数据
+  useEffect(() => {
+    const onChanged = () => void conflictData.reload();
+    window.addEventListener(SEMESTER_START_EVENT, onChanged);
+    return () => window.removeEventListener(SEMESTER_START_EVENT, onChanged);
+  }, [conflictData.reload]);
 
   // 选中日期的日程（已按开始时间排序）
   const schedulesForSelectedDate = getSchedulesOnDate(schedules, selectedDate);
@@ -75,6 +107,11 @@ export default function SchedulePage() {
           添加日程
         </Button>
       </div>
+      {conflictData.error && (
+        <Text type="warning" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+          撞课数据加载失败，撞课标记不可用：{conflictData.error}
+        </Text>
+      )}
       <Spin spinning={loading}>
         <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
           {/* 左侧日历占主要空间 */}
@@ -90,6 +127,7 @@ export default function SchedulePage() {
             <ScheduleList
               date={selectedDate}
               schedules={schedulesForSelectedDate}
+              conflicts={scheduleConflicts}
               onAdd={handleAdd}
               onEdit={handleEdit}
             />

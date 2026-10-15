@@ -121,7 +121,7 @@ export class GenericLabParser extends LabParserBase {
     for (const cell of cells) {
       const text = this.cleanText($(cell).text());
       if (!text) continue;
-      if (!lab.name && /^[\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,40}$/.test(text) && !/\d{4}[-年/.]/.test(text)) {
+      if (!lab.name && /^[\u4e00-\u9fa5A-Za-z0-9（）()·-]{2,40}$/.test(text) && !/\d{4}[-年/.]/.test(text)) {
         lab.name = text;
         continue;
       }

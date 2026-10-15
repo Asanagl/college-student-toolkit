@@ -1,10 +1,10 @@
 // 数据服务：负责 SQLite 数据库初始化、表结构创建、默认数据播种，
 // 并持有各表的 Repository 实例供主进程调用。
 // 实现阶段：Phase 1
-import { app } from 'electron';
-import * as path from 'node:path';
-import Database from 'better-sqlite3';
-import type { PeriodConfig } from '../../shared/types';
+import { app } from "electron";
+import * as path from "node:path";
+import Database from "better-sqlite3";
+import type { PeriodConfig } from "../../shared/types";
 import {
   CourseRepository,
   ExamRepository,
@@ -13,27 +13,117 @@ import {
   LabRepository,
   PeriodConfigRepository,
   ScheduleRepository,
-} from './repositories';
-import { DataTransferService } from './DataTransferService';
+} from "./repositories";
+import { DataTransferService } from "./DataTransferService";
+import { portableSettingsService } from "./PortableSettingsService";
+import {
+  CURRENT_DEFAULT_GPA_FORMULA,
+  DatabaseInitializationError,
+  DatabaseMigrator,
+} from "./DatabaseMigrator";
 
 /**
  * 默认 12 节课时间配置，参考中国大学常规作息：
  * 上午 4 节（第3-4节间大课间 20 分钟），下午 4 节，晚上 4 节，末节 break_after=0。
  * reminder_offset 统一默认 10 分钟，is_lab 默认 false。
  */
-const DEFAULT_PERIODS: PeriodConfig[] = [
-  { index: 1, startTime: '08:00', endTime: '08:45', breakAfter: 10, isLab: false, reminderOffset: 10 },
-  { index: 2, startTime: '08:55', endTime: '09:40', breakAfter: 10, isLab: false, reminderOffset: 10 },
-  { index: 3, startTime: '09:50', endTime: '10:35', breakAfter: 20, isLab: false, reminderOffset: 10 },
-  { index: 4, startTime: '10:55', endTime: '11:40', breakAfter: 110, isLab: false, reminderOffset: 10 },
-  { index: 5, startTime: '13:30', endTime: '14:15', breakAfter: 10, isLab: false, reminderOffset: 10 },
-  { index: 6, startTime: '14:25', endTime: '15:10', breakAfter: 10, isLab: false, reminderOffset: 10 },
-  { index: 7, startTime: '15:20', endTime: '16:05', breakAfter: 10, isLab: false, reminderOffset: 10 },
-  { index: 8, startTime: '16:15', endTime: '17:00', breakAfter: 90, isLab: false, reminderOffset: 10 },
-  { index: 9, startTime: '18:30', endTime: '19:15', breakAfter: 10, isLab: false, reminderOffset: 10 },
-  { index: 10, startTime: '19:25', endTime: '20:10', breakAfter: 10, isLab: false, reminderOffset: 10 },
-  { index: 11, startTime: '20:20', endTime: '21:05', breakAfter: 10, isLab: false, reminderOffset: 10 },
-  { index: 12, startTime: '21:15', endTime: '22:00', breakAfter: 0, isLab: false, reminderOffset: 10 },
+export const DEFAULT_PERIODS: readonly PeriodConfig[] = [
+  {
+    index: 1,
+    startTime: "08:00",
+    endTime: "08:45",
+    breakAfter: 10,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 2,
+    startTime: "08:55",
+    endTime: "09:40",
+    breakAfter: 10,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 3,
+    startTime: "09:50",
+    endTime: "10:35",
+    breakAfter: 20,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 4,
+    startTime: "10:55",
+    endTime: "11:40",
+    breakAfter: 110,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 5,
+    startTime: "13:30",
+    endTime: "14:15",
+    breakAfter: 10,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 6,
+    startTime: "14:25",
+    endTime: "15:10",
+    breakAfter: 10,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 7,
+    startTime: "15:20",
+    endTime: "16:05",
+    breakAfter: 10,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 8,
+    startTime: "16:15",
+    endTime: "17:00",
+    breakAfter: 90,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 9,
+    startTime: "18:30",
+    endTime: "19:15",
+    breakAfter: 10,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 10,
+    startTime: "19:25",
+    endTime: "20:10",
+    breakAfter: 10,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 11,
+    startTime: "20:20",
+    endTime: "21:05",
+    breakAfter: 10,
+    isLab: false,
+    reminderOffset: 10,
+  },
+  {
+    index: 12,
+    startTime: "21:15",
+    endTime: "22:00",
+    breakAfter: 0,
+    isLab: false,
+    reminderOffset: 10,
+  },
 ];
 
 export class DataService {
@@ -64,7 +154,7 @@ export class DataService {
 
   /** 数据库文件路径：userData 目录下的 data.db */
   getDbPath(): string {
-    return path.join(app.getPath('userData'), 'data.db');
+    return path.join(app.getPath("userData"), "data.db");
   }
 
   /** 初始化数据库连接、表结构、默认数据与仓库实例 */
@@ -72,10 +162,29 @@ export class DataService {
     if (this.initialized) {
       return;
     }
-    this.openDatabase();
-    this.seedDefaults();
-    this.transfer = new DataTransferService(this.getDbPath(), this);
-    this.initialized = true;
+    try {
+      this.transfer = new DataTransferService(
+        this.getDbPath(),
+        this,
+        portableSettingsService,
+      );
+      await this.transfer.recoverOnStartup();
+      this.openDatabase();
+      this.seedDefaults();
+      this.initialized = true;
+    } catch (error) {
+      this.transfer = null;
+      this.closeDatabase();
+      if (error instanceof DatabaseInitializationError) {
+        throw error;
+      }
+      throw new DatabaseInitializationError(
+        "数据服务初始化失败，已停止使用数据库",
+        {
+          cause: error,
+        },
+      );
+    }
   }
 
   /** 打开数据库连接并创建表与仓库实例（可在导入数据后重新调用） */
@@ -83,26 +192,72 @@ export class DataService {
     if (this.db) {
       return;
     }
-    this.db = new Database(this.getDbPath());
-    // WAL 模式提升并发读写性能，且在崩溃时更不易损坏
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.createTables();
-    this.initRepositories();
+    let connection: Database.Database | null = null;
+    try {
+      connection = new Database(this.getDbPath());
+      this.db = connection;
+      // WAL 模式提升并发读写性能，且在崩溃时更不易损坏。
+      connection.pragma("journal_mode = WAL");
+      connection.pragma("foreign_keys = ON");
+      DatabaseMigrator.ensureCurrent(connection, () => this.createTables());
+      this.initRepositories();
+    } catch (error) {
+      try {
+        connection?.close();
+      } finally {
+        this.db = null;
+      }
+      if (error instanceof DatabaseInitializationError) {
+        throw error;
+      }
+      throw new DatabaseInitializationError(
+        "数据库打开或迁移失败，未创建替代空库",
+        {
+          cause: error,
+        },
+      );
+    }
   }
 
   /** 关闭数据库连接（导入导出时需要先释放文件锁） */
   closeDatabase(): void {
     if (this.db) {
+      try {
+        this.db.pragma("wal_checkpoint(TRUNCATE)");
+      } catch {
+        // 关闭阶段若 checkpoint 失败，better-sqlite3 仍会负责释放连接。
+      }
       this.db.close();
       this.db = null;
     }
   }
 
+  reopenAfterTransfer(): void {
+    this.openDatabase();
+    this.seedDefaults();
+  }
+
+  getRecordCounts() {
+    if (!this.db) throw new DatabaseInitializationError("数据库未初始化");
+    const count = (table: string) =>
+      (this.db as Database.Database)
+        .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+        .get() as { count: number };
+    return {
+      schedules: count("schedule_items").count,
+      courses: count("courses").count,
+      exams: count("exams").count,
+      labs: count("labs").count,
+      grades: count("grades").count,
+      formulas: count("gpa_formula").count,
+      periods: count("period_config").count,
+    };
+  }
+
   /** 创建 7 张表，使用 IF NOT EXISTS 保证幂等 */
   private createTables(): void {
     if (!this.db) {
-      throw new Error('数据库未初始化，无法创建表');
+      throw new Error("数据库未初始化，无法创建表");
     }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS schedule_items (
@@ -199,7 +354,7 @@ export class DataService {
   /** 实例化各表仓库 */
   private initRepositories(): void {
     if (!this.db) {
-      throw new Error('数据库未初始化，无法创建仓库');
+      throw new Error("数据库未初始化，无法创建仓库");
     }
     this.schedules = new ScheduleRepository(this.db);
     this.courses = new CourseRepository(this.db);
@@ -213,24 +368,26 @@ export class DataService {
   /** 首次启动时插入默认 GPA 公式与节次配置；已有数据则跳过 */
   private seedDefaults(): void {
     if (!this.db) {
-      throw new Error('数据库未初始化，无法播种默认数据');
+      throw new Error("数据库未初始化，无法播种默认数据");
     }
     // 默认 GPA 公式：仅当不存在 id='default' 时插入
     const formulaCount = this.db
-      .prepare('SELECT COUNT(*) AS c FROM gpa_formula WHERE id = ?')
-      .get('default') as { c: number };
+      .prepare("SELECT COUNT(*) AS c FROM gpa_formula WHERE id = ?")
+      .get("default") as { c: number };
     if (formulaCount.c === 0) {
       const now = new Date().toISOString();
       this.db
         .prepare(
           `INSERT INTO gpa_formula (id, formula, is_default, name, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run('default', 'SUM(credit * grade_point) / SUM(credit)', 1, '默认公式', now, now);
+        .run("default", CURRENT_DEFAULT_GPA_FORMULA, 1, "默认公式", now, now);
     }
 
     // 默认 12 节课：仅当表为空时插入
-    const periodCount = this.db.prepare('SELECT COUNT(*) AS c FROM period_config').get() as {
+    const periodCount = this.db
+      .prepare("SELECT COUNT(*) AS c FROM period_config")
+      .get() as {
       c: number;
     };
     if (periodCount.c === 0) {
@@ -243,22 +400,51 @@ export class DataService {
   /** 导出数据到 ZIP 文件（委托给 DataTransferService） */
   async exportToZip(filePath: string): Promise<void> {
     if (!this.transfer) {
-      throw new Error('DataService 未初始化，无法导出');
+      throw new Error("DataService 未初始化，无法导出");
     }
     return this.transfer.exportToZip(filePath);
+  }
+
+  async exportBackup(parent: import("electron").BrowserWindow | null = null) {
+    if (!this.transfer) throw new Error("DataService 未初始化，无法导出");
+    return this.transfer.exportBackup(parent);
+  }
+
+  async prepareImport(
+    ownerId: number,
+    parent: import("electron").BrowserWindow | null = null,
+  ) {
+    if (!this.transfer) throw new Error("DataService 未初始化，无法预检导入");
+    return this.transfer.prepareImport(ownerId, parent);
+  }
+
+  async commitImport(ownerId: number, token: string) {
+    if (!this.transfer) throw new Error("DataService 未初始化，无法提交导入");
+    return this.transfer.commitImport(ownerId, token);
+  }
+
+  async cancelImport(ownerId: number, token: string) {
+    if (!this.transfer) throw new Error("DataService 未初始化，无法取消导入");
+    return this.transfer.cancelImport(ownerId, token);
   }
 
   /** 从 ZIP 文件导入数据（委托给 DataTransferService） */
   async importFromZip(filePath: string): Promise<void> {
     if (!this.transfer) {
-      throw new Error('DataService 未初始化，无法导入');
+      throw new Error("DataService 未初始化，无法导入");
     }
     return this.transfer.importFromZip(filePath);
+  }
+
+  /** 恢复/导出正在替换或关闭数据库时，主进程应阻止新的写入 IPC。 */
+  isTransferBusy(): boolean {
+    return this.transfer?.isBusy() ?? false;
   }
 
   /** 关闭数据库连接，供 app 退出时调用 */
   async dispose(): Promise<void> {
     this.closeDatabase();
+    this.transfer?.dispose();
     this.transfer = null;
     this.initialized = false;
   }

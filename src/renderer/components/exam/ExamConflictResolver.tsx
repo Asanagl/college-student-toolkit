@@ -13,6 +13,7 @@ interface ExamConflictResolverProps {
   open: boolean;
   domExams: ParsedExam[];
   ocrExams: ParsedExam[];
+  submitting?: boolean;
   onConfirm: (exams: ParsedExam[]) => void;
   onCancel: () => void;
 }
@@ -47,6 +48,7 @@ export default function ExamConflictResolver({
   open,
   domExams,
   ocrExams,
+  submitting = false,
   onConfirm,
   onCancel,
 }: ExamConflictResolverProps) {
@@ -152,7 +154,6 @@ export default function ExamConflictResolver({
         ),
       },
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [slots]
   );
 
@@ -163,10 +164,10 @@ export default function ExamConflictResolver({
       onCancel={onCancel}
       width={960}
       footer={[
-        <Button key="cancel" onClick={onCancel}>
+        <Button key="cancel" onClick={onCancel} disabled={submitting}>
           取消
         </Button>,
-        <Button key="confirm" type="primary" onClick={handleConfirm}>
+        <Button key="confirm" type="primary" onClick={handleConfirm} loading={submitting} disabled={submitting}>
           确认导入
         </Button>,
       ]}

@@ -1,345 +1,1208 @@
-// 主进程入口
-// 职责：创建 BrowserWindow、初始化服务、注册 IPC handler、退出清理
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
-import * as path from 'node:path';
-import * as url from 'node:url';
-import { IPC_CHANNELS, type IpcResult, type ThemeMode, type ResolvedTheme, type MaterialMode } from '../shared/types';
-import { dataService } from './services/DataService';
-import { notificationService } from './services/NotificationService';
-import { scheduleService } from './services/ScheduleService';
-import { timetableService } from './services/TimetableService';
-import { examService } from './services/ExamService';
-import { labService } from './services/LabService';
-import { gradeService } from './services/GradeService';
-import { updateService } from './services/UpdateService';
-import { windowService } from './services/WindowService';
-import { themeService } from './services/ThemeService';
-import { appearanceService } from './services/AppearanceService';
-import { importBrowserService, registerImportBrowserIpcHandlers } from './services/ImportBrowserService';
-import { ocrService } from './services/OcrService';
-import { parseDomWithAllParsers } from './services/parsers';
-import { parseDomForExams } from './services/parsers/exam';
-import { parseOcrToExams } from './services/ExamOcrParser';
-import { parseDomForLabs } from './services/parsers/lab';
-import { parseOcrToLabs } from './services/LabOcrParser';
+// 主进程入口：启动关键服务、注册经过 schema 校验的 IPC，并管理单实例与受限资源协议。
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  powerMonitor,
+  protocol,
+  type WebContents,
+} from "electron";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+import {
+  IPC_CHANNELS,
+  type AcmDocument,
+  type AcmDocumentExternalState,
+  type AcmDocumentScope,
+  type AcmPluginStatus,
+  type AcmDiffEvent,
+  type AcmDiffStartRequest,
+  type AcmNoticeState,
+  type CompilerProbeResult,
+  type CompilerSelection,
+  type Course,
+  type Exam,
+  type GpaFormula,
+  type Grade,
+  type IpcErrorCode,
+  type IpcResult,
+  type Lab,
+  type MaterialMode,
+  type OnboardingState,
+  type PeriodConfig,
+  type RunnerEvent,
+  type Schedule,
+} from "../shared/types";
+import { resolveOnboardingState } from "../shared/onboarding";
+import { PRODUCT_VERSION } from "../shared/version";
+import { dataService, DEFAULT_PERIODS } from "./services/DataService";
+import { CURRENT_DEFAULT_GPA_FORMULA } from "./services/DatabaseMigrator";
+import { portableSettingsService } from "./services/PortableSettingsService";
+import { notificationService } from "./services/NotificationService";
+import { timetableService } from "./services/TimetableService";
+import { reminderScheduler } from "./services/ReminderScheduler";
+import { updateService } from "./services/UpdateService";
+import { windowService } from "./services/WindowService";
+import { themeService } from "./services/ThemeService";
+import { appearanceService } from "./services/AppearanceService";
+import {
+  importBrowserService,
+  registerImportBrowserIpcHandlers,
+} from "./services/ImportBrowserService";
+import { ocrComponentService } from "./services/OcrComponentService";
+import { ocrService } from "./services/OcrService";
+import { acmPluginService } from "./services/AcmPluginService";
+import { acmCompilerService } from "./services/AcmCompilerService";
+import { acmFileService } from "./services/AcmFileService";
+import { canUseAcmDocumentScope } from "./services/AcmDocumentPolicy";
+import { acmLifecycleQueue } from "./services/AcmLifecycleQueue";
+import { acmRunnerService } from "./services/AcmRunnerService";
+import { acmDifferService } from "./services/AcmDifferService";
+import { writeTextFileAtomically } from "./services/AtomicFile";
+import { parseDomWithMeta } from "./services/parsers";
+import { parseDomForExams } from "./services/parsers/exam";
+import { parseOcrToExams } from "./services/ExamOcrParser";
+import { parseDomForLabs } from "./services/parsers/lab";
+import { parseOcrToLabs } from "./services/LabOcrParser";
+import {
+  assertImageSignature,
+  isSafeImageFileName,
+  MAX_BACKGROUND_IMAGE_BYTES,
+} from "./services/ImageValidation";
+import {
+  claritySchema,
+  courseAddSchema,
+  coursePatchSchema,
+  dndSchema,
+  examAddSchema,
+  examPatchSchema,
+  formulaSchema,
+  gradeAddSchema,
+  gradePageQuerySchema,
+  gradePatchSchema,
+  htmlSchema,
+  imageBase64Schema,
+  labAddSchema,
+  labPatchSchema,
+  materialModeSchema,
+  parseIpc,
+  periodConfigSchema,
+  scheduleAddSchema,
+  schedulePatchSchema,
+  semesterStartSchema,
+  themeModeSchema,
+  tokenSchema,
+  blurSchema,
+  IpcValidationError,
+  formulaIdSchema,
+  notificationPayloadSchema,
+  acmTemplateSchema,
+  acmDocumentScopeSchema,
+  acmDocumentSaveSchema,
+  acmDocumentReleaseSchema,
+  acmExternalDocumentSchema,
+  acmCompilerSelectionSchema,
+  acmRunnerStartSchema,
+  acmDiffStartSchema,
+} from "./validation";
 
-// 所有需要在启动时初始化的服务
-// 顺序：窗口/主题服务在前（窗口创建依赖状态恢复），数据层随后，业务服务最后
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "app-background",
+    privileges: { standard: true, secure: true, supportFetchAPI: true },
+  },
+]);
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+
 const services = [
+  portableSettingsService,
+  acmCompilerService,
+  acmFileService,
+  acmRunnerService,
+  acmDifferService,
+  acmPluginService,
   windowService,
   themeService,
   appearanceService,
   dataService,
   notificationService,
-  scheduleService,
   timetableService,
-  examService,
-  labService,
-  gradeService,
+  reminderScheduler,
   updateService,
   importBrowserService,
+  ocrComponentService,
   ocrService,
 ];
 
-/**
- * 创建主窗口并加载页面。
- * 窗口标题栏/托盘/快捷键/右键菜单/状态持久化均由 WindowService 统一管理。
- */
 function createMainWindow(): void {
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
   windowService.createMainWindow((win) => {
-    const devUrl = process.env.VITE_DEV_SERVER_URL;
-    if (devUrl) {
-      win.loadURL(devUrl);
-      win.webContents.openDevTools();
-    } else {
-      win.loadFile(path.join(__dirname, '../../dist/index.html'));
-    }
-  });
+    if (devUrl) void win.loadURL(devUrl);
+    else void win.loadFile(path.join(__dirname, "../../dist/index.html"));
+  }, devUrl);
+  appearanceService.applyMaterial();
 }
 
-/**
- * 同步调用的统一错误包装：repository 方法均为同步，捕获异常转为 IpcResult。
- * 这样渲染进程拿到的都是 { ok, data?, error? } 结构，无需关心是否抛错。
- */
+function errorCode(error: unknown): IpcErrorCode | undefined {
+  if (error instanceof IpcValidationError) return error.code;
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === "string" ? (code as IpcErrorCode) : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function wrap<T>(fn: () => T): IpcResult<T> {
   try {
     return { ok: true, data: fn() };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message };
+  } catch (error) {
+    return {
+      ok: false,
+      error: errorMessage(error),
+      errorCode: errorCode(error),
+    };
   }
 }
 
-/** 异步调用的统一错误包装，用于导入导出等 Promise 场景 */
+function wrapIpc<T>(fn: () => IpcResult<T>): IpcResult<T> {
+  try {
+    return fn();
+  } catch (error) {
+    return {
+      ok: false,
+      error: errorMessage(error),
+      errorCode: errorCode(error),
+    };
+  }
+}
+
 async function wrapAsync<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
   try {
     return { ok: true, data: await fn() };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message };
+  } catch (error) {
+    return {
+      ok: false,
+      error: errorMessage(error),
+      errorCode: errorCode(error),
+    };
   }
 }
 
-// 注册所有 IPC handler，绑定到对应服务
-// Phase 1：数据 CRUD 直接走 DataService 的 repositories；业务 service 在 Phase 2-6 接入
-function registerIpcHandlers(): void {
-  // ===== 日程 =====
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_LIST, () => wrap(() => dataService.schedules.list()));
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_ADD, (_e, item) => wrap(() => dataService.schedules.add(item)));
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_UPDATE, (_e, id, patch) =>
-    wrap(() => dataService.schedules.update(id, patch))
-  );
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_REMOVE, (_e, id) => wrap(() => dataService.schedules.remove(id)));
-
-  // ===== 课程表（对应 courses 表）=====
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_LIST, () => wrap(() => dataService.courses.list()));
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_ADD, (_e, item) => wrap(() => dataService.courses.add(item)));
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_UPDATE, (_e, id, patch) =>
-    wrap(() => dataService.courses.update(id, patch))
-  );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_REMOVE, (_e, id) => wrap(() => dataService.courses.remove(id)));
-
-  // ===== 节次配置（对应 period_config 表）=====
-  ipcMain.handle(IPC_CHANNELS.PERIOD_CONFIG_GET, () => wrap(() => dataService.periodConfig.getAll()));
-  ipcMain.handle(IPC_CHANNELS.PERIOD_CONFIG_SAVE, (_e, config) =>
-    wrap(() => {
-      dataService.periodConfig.saveAll(config);
-      return true;
-    })
-  );
-
-  // ===== 课程表导入：嵌入式浏览器 + DOM/OCR 解析 =====
-  // openBrowser/closeBrowser/extractDom/capturePage 委托给 ImportBrowserService
-  registerImportBrowserIpcHandlers();
-  // parseDom：在主进程用 cheerio 解析 HTML，避免渲染进程引入大依赖
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_PARSE_DOM, (_e, html: string) =>
-    wrap(() => parseDomWithAllParsers(html))
-  );
-  // runOcr：将 base64 转 Buffer 调用 OcrService，再解析文本为课程列表
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_RUN_OCR, async (_e, imageBase64: string) => {
-    try {
-      const buffer = Buffer.from(imageBase64, 'base64');
-      const text = await ocrService.recognize(buffer);
-      const courses = ocrService.parseOcrToCourses(text);
-      return { ok: true, data: courses };
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  });
-
-  // ===== 考试 =====
-  ipcMain.handle(IPC_CHANNELS.EXAM_LIST, () => wrap(() => dataService.exams.list()));
-  ipcMain.handle(IPC_CHANNELS.EXAM_ADD, (_e, item) => wrap(() => dataService.exams.add(item)));
-  ipcMain.handle(IPC_CHANNELS.EXAM_UPDATE, (_e, id, patch) => wrap(() => dataService.exams.update(id, patch)));
-  ipcMain.handle(IPC_CHANNELS.EXAM_REMOVE, (_e, id) => wrap(() => dataService.exams.remove(id)));
-  // 考试导入：DOM 解析与 OCR 解析
-  ipcMain.handle(IPC_CHANNELS.EXAM_PARSE_DOM, (_e, html: string) =>
-    wrap(() => parseDomForExams(html))
-  );
-  ipcMain.handle(IPC_CHANNELS.EXAM_RUN_OCR, async (_e, imageBase64: string) => {
-    try {
-      const buffer = Buffer.from(imageBase64, 'base64');
-      const text = await ocrService.recognize(buffer);
-      const exams = parseOcrToExams(text);
-      return { ok: true, data: exams };
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  });
-
-  // ===== 实验 =====
-  ipcMain.handle(IPC_CHANNELS.LAB_LIST, () => wrap(() => dataService.labs.list()));
-  ipcMain.handle(IPC_CHANNELS.LAB_ADD, (_e, item) => wrap(() => dataService.labs.add(item)));
-  ipcMain.handle(IPC_CHANNELS.LAB_UPDATE, (_e, id, patch) => wrap(() => dataService.labs.update(id, patch)));
-  ipcMain.handle(IPC_CHANNELS.LAB_REMOVE, (_e, id) => wrap(() => dataService.labs.remove(id)));
-  // 实验导入：DOM 解析与 OCR 解析
-  ipcMain.handle(IPC_CHANNELS.LAB_PARSE_DOM, (_e, html: string) =>
-    wrap(() => parseDomForLabs(html))
-  );
-  ipcMain.handle(IPC_CHANNELS.LAB_RUN_OCR, async (_e, imageBase64: string) => {
-    try {
-      const buffer = Buffer.from(imageBase64, 'base64');
-      const text = await ocrService.recognize(buffer);
-      const labs = parseOcrToLabs(text);
-      return { ok: true, data: labs };
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  });
-
-  // ===== 成绩 =====
-  ipcMain.handle(IPC_CHANNELS.GRADE_LIST, () => wrap(() => dataService.grades.list()));
-  ipcMain.handle(IPC_CHANNELS.GRADE_ADD, (_e, item) => wrap(() => dataService.grades.add(item)));
-  ipcMain.handle(IPC_CHANNELS.GRADE_UPDATE, (_e, id, patch) => wrap(() => dataService.grades.update(id, patch)));
-  ipcMain.handle(IPC_CHANNELS.GRADE_REMOVE, (_e, id) => wrap(() => dataService.grades.remove(id)));
-
-  // ===== GPA 公式 =====
-  ipcMain.handle(IPC_CHANNELS.FORMULA_GET, (_e, id) => wrap(() => dataService.formulas.getById(id)));
-  ipcMain.handle(IPC_CHANNELS.FORMULA_SAVE, (_e, formula) => wrap(() => dataService.formulas.save(formula)));
-  ipcMain.handle(IPC_CHANNELS.FORMULA_LIST, () => wrap(() => dataService.formulas.list()));
-
-  // ===== 通知 =====
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_SEND, (_e, payload) => notificationService.send(payload));
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_SET_DND, (_e, config) => notificationService.setDnd(config));
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_GET_DND, () => notificationService.getDnd());
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_GET_HISTORY, () => notificationService.getHistory());
-  ipcMain.handle(IPC_CHANNELS.NOTIFY_CLEAR_HISTORY, () => notificationService.clearHistory());
-
-  // ===== 数据导入导出 =====
-  // 先通过 dialog 选择文件路径，再交由 DataService 执行打包/解压
-  ipcMain.handle(IPC_CHANNELS.DATA_PICK_EXPORT_PATH, async () => {
-    const result = await dialog.showSaveDialog({
-      title: '选择导出位置',
-      defaultPath: 'toolkit-backup.zip',
-      filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }],
-    });
-    return { ok: true, data: result.canceled ? null : result.filePath };
-  });
-
-  ipcMain.handle(IPC_CHANNELS.DATA_PICK_IMPORT_PATH, async () => {
-    const result = await dialog.showOpenDialog({
-      title: '选择备份文件',
-      properties: ['openFile'],
-      filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }],
-    });
+async function wrapIpcAsync<T>(
+  fn: () => Promise<IpcResult<T>>,
+): Promise<IpcResult<T>> {
+  try {
+    return await fn();
+  } catch (error) {
     return {
-      ok: true,
-      data: result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0],
+      ok: false,
+      error: errorMessage(error),
+      errorCode: errorCode(error),
     };
-  });
+  }
+}
 
-  ipcMain.handle(IPC_CHANNELS.DATA_EXPORT, (_e, filePath: string) =>
-    wrapAsync(async () => {
-      await dataService.exportToZip(filePath);
-      return true;
-    })
-  );
-  ipcMain.handle(IPC_CHANNELS.DATA_IMPORT, (_e, filePath: string) =>
-    wrapAsync(async () => {
-      await dataService.importFromZip(filePath);
-      return true;
-    })
-  );
+function backupBusyResult<T>(): IpcResult<T> {
+  return {
+    ok: false,
+    error: "备份或恢复正在进行，请稍后重试",
+    errorCode: "BACKUP_BUSY",
+  };
+}
 
-  // ===== 更新（Phase 7 实现）=====
-  ipcMain.handle(IPC_CHANNELS.UPDATE_CHECK, () => updateService.checkManual());
-  ipcMain.handle(IPC_CHANNELS.UPDATE_INSTALL, () => updateService.installUpdate());
+function wrapWrite<T>(fn: () => T): IpcResult<T> {
+  if (dataService.isTransferBusy()) return backupBusyResult<T>();
+  return wrap(fn);
+}
 
-  // ===== 窗口控制（自定义标题栏按钮）=====
-  ipcMain.handle(IPC_CHANNELS.WINDOW_MINIMIZE, () => {
-    windowService.getMainWindow()?.minimize();
-    return { ok: true, data: true };
-  });
-  ipcMain.handle(IPC_CHANNELS.WINDOW_MAXIMIZE, () => {
-    const win = windowService.getMainWindow();
-    if (!win) return { ok: true, data: false };
-    if (win.isMaximized()) {
-      win.unmaximize();
-    } else {
-      win.maximize();
-    }
-    return { ok: true, data: true };
-  });
-  ipcMain.handle(IPC_CHANNELS.WINDOW_CLOSE, () => {
-    windowService.getMainWindow()?.close();
-    return { ok: true, data: true };
-  });
-  ipcMain.handle(IPC_CHANNELS.WINDOW_IS_MAXIMIZED, () => ({
-    ok: true,
-    data: windowService.getMainWindow()?.isMaximized() ?? false,
-  }));
-  // 最大化状态变更通知由 WindowService 在窗口创建时挂载（见 createMainWindow）
+function wrapWriteIpc<T>(fn: () => IpcResult<T>): IpcResult<T> {
+  if (dataService.isTransferBusy()) return backupBusyResult<T>();
+  return wrapIpc(fn);
+}
 
-  // ===== 主题（跟随系统 + 手动切换）=====
-  ipcMain.handle(IPC_CHANNELS.THEME_GET, () => ({
-    ok: true,
-    data: themeService.getMode() as ThemeMode,
-  }));
-  ipcMain.handle(IPC_CHANNELS.THEME_SET, (_e, mode: ThemeMode) => {
-    themeService.setMode(mode);
-    return { ok: true, data: true };
-  });
-  ipcMain.handle(IPC_CHANNELS.THEME_GET_RESOLVED, () => ({
-    ok: true,
-    data: themeService.getResolved() as ResolvedTheme,
-  }));
+async function wrapWriteAsync<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
+  if (dataService.isTransferBusy()) return backupBusyResult<T>();
+  return wrapAsync(fn);
+}
 
-  // ===== 外观（材质 + 背景图 + 模糊/清晰度）=====
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_GET, () => ({
-    ok: true,
-    data: appearanceService.getConfig(),
-  }));
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_SET_MATERIAL, (_e, mode: MaterialMode) => {
-    appearanceService.setMaterial(mode);
-    return { ok: true, data: true };
-  });
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_UPLOAD_BG, async (_e, filePath: string) => {
-    try {
-      const fileName = await appearanceService.uploadBackgroundImage(filePath);
-      return { ok: true, data: fileName };
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  });
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_CLEAR_BG, async () => {
-    await appearanceService.clearBackgroundImage();
-    return { ok: true, data: true };
-  });
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_SET_BLUR, (_e, value: number) => {
-    appearanceService.setBlurRadius(value);
-    return { ok: true, data: true };
-  });
-  ipcMain.handle(IPC_CHANNELS.APPEARANCE_SET_CLARITY, (_e, value: number) => {
-    appearanceService.setClarity(value);
-    return { ok: true, data: true };
+async function wrapWriteIpcAsync<T>(
+  fn: () => Promise<IpcResult<T>>,
+): Promise<IpcResult<T>> {
+  if (dataService.isTransferBusy()) return backupBusyResult<T>();
+  return wrapIpcAsync(fn);
+}
+
+function unauthorizedIpcResult<T>(): IpcResult<T> {
+  return {
+    ok: false,
+    error: "未授权的 IPC 调用",
+    errorCode: "IPC_UNAUTHORIZED",
+  };
+}
+
+/** 所有主应用 IPC 共用同一 sender/frame/origin 边界，避免远程页面借用 preload。 */
+function registerIpcHandler<T extends unknown[]>(
+  channel: string,
+  handler: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown,
+): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!windowService.isTrustedMainFrameEvent(event))
+      return unauthorizedIpcResult();
+    return handler(event, ...(args as T));
   });
 }
 
-// 应用退出时按依赖逆序释放资源
+function refreshReminders(): void {
+  void reminderScheduler
+    .recompute()
+    .catch((error: unknown) =>
+      console.error(`[main] 提醒重算失败: ${errorMessage(error)}`),
+    );
+}
+
+function registerReminderSystemEvents(): void {
+  powerMonitor.on("resume", refreshReminders);
+  powerMonitor.on("on-ac", refreshReminders);
+  powerMonitor.on("on-battery", refreshReminders);
+}
+
+function getDefaultGradeFormula(): GpaFormula {
+  return (
+    dataService.formulas.getById("default") ??
+    dataService.formulas.list()[0] ?? {
+      id: "default",
+      name: "默认公式",
+      formula: "SUM(credit * gradePoint) / SUM(credit)",
+      isDefault: true,
+      createdAt: "",
+      updatedAt: "",
+    }
+  );
+}
+
+function registerCrudHandlers(): void {
+  registerIpcHandler(IPC_CHANNELS.SCHEDULE_LIST, () =>
+    wrap(() => dataService.schedules.list()),
+  );
+  registerIpcHandler(IPC_CHANNELS.SCHEDULE_ADD, (_event, item: unknown) => {
+    const result = wrapWrite(() =>
+      dataService.schedules.add(
+        parseIpc(scheduleAddSchema, item) as Omit<
+          Schedule,
+          "id" | "createdAt" | "updatedAt"
+        >,
+      ),
+    );
+    if (result.ok) refreshReminders();
+    return result;
+  });
+  registerIpcHandler(
+    IPC_CHANNELS.SCHEDULE_UPDATE,
+    (_event, id: unknown, patch: unknown) => {
+      const result = wrapWrite(() =>
+        dataService.schedules.update(
+          parseIpc(tokenSchema, id),
+          parseIpc(schedulePatchSchema, patch) as Partial<Schedule>,
+        ),
+      );
+      if (result.ok) refreshReminders();
+      return result;
+    },
+  );
+  registerIpcHandler(IPC_CHANNELS.SCHEDULE_REMOVE, (_event, id: unknown) => {
+    const result = wrapWrite(() =>
+      dataService.schedules.remove(parseIpc(tokenSchema, id)),
+    );
+    if (result.ok) refreshReminders();
+    return result;
+  });
+
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_LIST, () =>
+    wrap(() => dataService.courses.list()),
+  );
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_ADD, (_event, item: unknown) => {
+    const result = wrapWrite(() =>
+      dataService.courses.add(
+        parseIpc(courseAddSchema, item) as Omit<
+          Course,
+          "id" | "createdAt" | "updatedAt"
+        >,
+      ),
+    );
+    if (result.ok) refreshReminders();
+    return result;
+  });
+  registerIpcHandler(
+    IPC_CHANNELS.TIMETABLE_UPDATE,
+    (_event, id: unknown, patch: unknown) => {
+      const result = wrapWrite(() =>
+        dataService.courses.update(
+          parseIpc(tokenSchema, id),
+          parseIpc(coursePatchSchema, patch) as Partial<Course>,
+        ),
+      );
+      if (result.ok) refreshReminders();
+      return result;
+    },
+  );
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_REMOVE, (_event, id: unknown) => {
+    const result = wrapWrite(() =>
+      dataService.courses.remove(parseIpc(tokenSchema, id)),
+    );
+    if (result.ok) refreshReminders();
+    return result;
+  });
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_GET_PREFERENCES, () =>
+    timetableService.getPreferences(),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.TIMETABLE_SET_SEMESTER_START,
+    (_event, value: unknown) => {
+      const result = wrapWrite(() =>
+        timetableService.setSemesterStart(parseIpc(semesterStartSchema, value)),
+      );
+      if (result.ok) refreshReminders();
+      return result;
+    },
+  );
+
+  registerIpcHandler(IPC_CHANNELS.PERIOD_CONFIG_GET, () =>
+    wrap(() => dataService.periodConfig.getAll()),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.PERIOD_CONFIG_SAVE,
+    (_event, config: unknown) => {
+      const result = wrapWrite(() => {
+        dataService.periodConfig.saveAll(
+          parseIpc(periodConfigSchema, config) as PeriodConfig[],
+        );
+        return true;
+      });
+      if (result.ok) refreshReminders();
+      return result;
+    },
+  );
+
+  registerEntityHandlers();
+}
+
+function registerEntityHandlers(): void {
+  registerIpcHandler(IPC_CHANNELS.EXAM_LIST, () =>
+    wrap(() => dataService.exams.list()),
+  );
+  registerIpcHandler(IPC_CHANNELS.EXAM_ADD, (_event, item: unknown) => {
+    const result = wrapWrite(() =>
+      dataService.exams.add(
+        parseIpc(examAddSchema, item) as Omit<
+          Exam,
+          "id" | "createdAt" | "updatedAt"
+        >,
+      ),
+    );
+    if (result.ok) refreshReminders();
+    return result;
+  });
+  registerIpcHandler(
+    IPC_CHANNELS.EXAM_UPDATE,
+    (_event, id: unknown, patch: unknown) => {
+      const result = wrapWrite(() =>
+        dataService.exams.update(
+          parseIpc(tokenSchema, id),
+          parseIpc(examPatchSchema, patch) as Partial<Exam>,
+        ),
+      );
+      if (result.ok) refreshReminders();
+      return result;
+    },
+  );
+  registerIpcHandler(IPC_CHANNELS.EXAM_REMOVE, (_event, id: unknown) => {
+    const result = wrapWrite(() =>
+      dataService.exams.remove(parseIpc(tokenSchema, id)),
+    );
+    if (result.ok) refreshReminders();
+    return result;
+  });
+  registerIpcHandler(IPC_CHANNELS.LAB_LIST, () =>
+    wrap(() => dataService.labs.list()),
+  );
+  registerIpcHandler(IPC_CHANNELS.LAB_ADD, (_event, item: unknown) => {
+    const result = wrapWrite(() =>
+      dataService.labs.add(
+        parseIpc(labAddSchema, item) as Omit<
+          Lab,
+          "id" | "createdAt" | "updatedAt"
+        >,
+      ),
+    );
+    if (result.ok) refreshReminders();
+    return result;
+  });
+  registerIpcHandler(
+    IPC_CHANNELS.LAB_UPDATE,
+    (_event, id: unknown, patch: unknown) => {
+      const result = wrapWrite(() =>
+        dataService.labs.update(
+          parseIpc(tokenSchema, id),
+          parseIpc(labPatchSchema, patch) as Partial<Lab>,
+        ),
+      );
+      if (result.ok) refreshReminders();
+      return result;
+    },
+  );
+  registerIpcHandler(IPC_CHANNELS.LAB_REMOVE, (_event, id: unknown) => {
+    const result = wrapWrite(() =>
+      dataService.labs.remove(parseIpc(tokenSchema, id)),
+    );
+    if (result.ok) refreshReminders();
+    return result;
+  });
+  registerIpcHandler(IPC_CHANNELS.GRADE_LIST, () =>
+    wrap(() => dataService.grades.list()),
+  );
+  registerIpcHandler(IPC_CHANNELS.GRADE_PAGE, (_event, query: unknown) =>
+    wrap(() =>
+      dataService.grades.listPage(parseIpc(gradePageQuerySchema, query)),
+    ),
+  );
+  registerIpcHandler(IPC_CHANNELS.GRADE_DASHBOARD, () =>
+    wrap(() => dataService.grades.getDashboard(getDefaultGradeFormula())),
+  );
+  registerIpcHandler(IPC_CHANNELS.GRADE_ADD, (_event, item: unknown) =>
+    wrapWrite(() =>
+      dataService.grades.add(
+        parseIpc(gradeAddSchema, item) as Omit<
+          Grade,
+          "id" | "createdAt" | "updatedAt"
+        >,
+      ),
+    ),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.GRADE_UPDATE,
+    (_event, id: unknown, patch: unknown) =>
+      wrapWrite(() =>
+        dataService.grades.update(
+          parseIpc(tokenSchema, id),
+          parseIpc(gradePatchSchema, patch) as Partial<Grade>,
+        ),
+      ),
+  );
+  registerIpcHandler(IPC_CHANNELS.GRADE_REMOVE, (_event, id: unknown) =>
+    wrapWrite(() => dataService.grades.remove(parseIpc(tokenSchema, id))),
+  );
+  registerIpcHandler(IPC_CHANNELS.FORMULA_GET, (_event, id: unknown) =>
+    wrap(() => dataService.formulas.getById(parseIpc(formulaIdSchema, id))),
+  );
+  registerIpcHandler(IPC_CHANNELS.FORMULA_LIST, () =>
+    wrap(() => dataService.formulas.list()),
+  );
+  registerIpcHandler(IPC_CHANNELS.FORMULA_SAVE, (_event, formula: unknown) =>
+    wrapWrite(() =>
+      dataService.formulas.save(
+        parseIpc(formulaSchema, formula) as Omit<
+          GpaFormula,
+          "createdAt" | "updatedAt"
+        > & { id?: string },
+      ),
+    ),
+  );
+}
+
+function registerImportHandlers(): void {
+  registerImportBrowserIpcHandlers((event) =>
+    windowService.isTrustedMainFrameEvent(event),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.TIMETABLE_PARSE_DOM,
+    (_event, html: unknown) =>
+      wrap(() => parseDomWithMeta(parseIpc(htmlSchema, html))),
+  );
+  registerIpcHandler(IPC_CHANNELS.EXAM_PARSE_DOM, (_event, html: unknown) =>
+    wrap(() => parseDomForExams(parseIpc(htmlSchema, html))),
+  );
+  registerIpcHandler(IPC_CHANNELS.LAB_PARSE_DOM, (_event, html: unknown) =>
+    wrap(() => parseDomForLabs(parseIpc(htmlSchema, html))),
+  );
+  registerIpcHandler(IPC_CHANNELS.TIMETABLE_RUN_OCR, (_event, image: unknown) =>
+    runOcr(image, "course"),
+  );
+  registerIpcHandler(IPC_CHANNELS.EXAM_RUN_OCR, (_event, image: unknown) =>
+    runOcr(image, "exam"),
+  );
+  registerIpcHandler(IPC_CHANNELS.LAB_RUN_OCR, (_event, image: unknown) =>
+    runOcr(image, "lab"),
+  );
+}
+
+async function runOcr(
+  image: unknown,
+  kind: "course" | "exam" | "lab",
+): Promise<IpcResult<unknown>> {
+  return wrapAsync(async () => {
+    const imageBase64 = parseIpc(imageBase64Schema, image);
+    const text = await ocrService.recognize(Buffer.from(imageBase64, "base64"));
+    if (kind === "course") return ocrService.parseOcrToCourses(text);
+    if (kind === "exam") return parseOcrToExams(text);
+    return parseOcrToLabs(text);
+  });
+}
+
+function registerNotificationHandlers(): void {
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_SEND, (_event, payload: unknown) =>
+    wrapWriteIpcAsync(() =>
+      notificationService.send(parseIpc(notificationPayloadSchema, payload)),
+    ),
+  );
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_SET_DND, (_event, config: unknown) =>
+    wrapWriteIpcAsync(() =>
+      notificationService.setDnd(parseIpc(dndSchema, config)),
+    ),
+  );
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_GET_DND, () =>
+    wrapIpcAsync(() => notificationService.getDnd()),
+  );
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_GET_HISTORY, () =>
+    wrapIpcAsync(() => notificationService.getHistory()),
+  );
+  registerIpcHandler(IPC_CHANNELS.NOTIFY_CLEAR_HISTORY, () =>
+    wrapWriteIpcAsync(() => notificationService.clearHistory()),
+  );
+}
+
+function registerDataHandlers(): void {
+  registerIpcHandler(IPC_CHANNELS.DATA_EXPORT_BACKUP, (event) =>
+    wrapIpcAsync(() =>
+      dataService.exportBackup(BrowserWindow.fromWebContents(event.sender)),
+    ),
+  );
+  registerIpcHandler(IPC_CHANNELS.DATA_PREPARE_IMPORT, (event) =>
+    wrapIpcAsync(() =>
+      dataService.prepareImport(
+        event.sender.id,
+        BrowserWindow.fromWebContents(event.sender),
+      ),
+    ),
+  );
+  registerIpcHandler(IPC_CHANNELS.DATA_COMMIT_IMPORT, (event, token: unknown) =>
+    wrapIpcAsync(async () => {
+      const result = await dataService.commitImport(
+        event.sender.id,
+        parseIpc(tokenSchema, token),
+      );
+      if (result.ok) {
+        themeService.applyPortableSettings();
+        timetableService.applyPortableSettings();
+        notificationService.applyPortableSettings();
+        appearanceService.applyPortableSettings();
+        await reminderScheduler.recompute();
+        broadcastRestoreCompleted();
+      }
+      return result;
+    }),
+  );
+  registerIpcHandler(IPC_CHANNELS.DATA_CANCEL_IMPORT, (event, token: unknown) =>
+    wrapIpcAsync(() =>
+      dataService.cancelImport(event.sender.id, parseIpc(tokenSchema, token)),
+    ),
+  );
+}
+
+function broadcastRestoreCompleted(): void {
+  for (const win of BrowserWindow.getAllWindows())
+    win.webContents.send(IPC_CHANNELS.DATA_RESTORE_COMPLETED);
+}
+
+function registerSettingsHandlers(): void {
+  registerIpcHandler(IPC_CHANNELS.THEME_GET, () =>
+    wrap(() => themeService.getMode()),
+  );
+  registerIpcHandler(IPC_CHANNELS.THEME_SET, (_event, mode: unknown) =>
+    wrapWrite(() => {
+      themeService.setMode(parseIpc(themeModeSchema, mode));
+      return true;
+    }),
+  );
+  registerIpcHandler(IPC_CHANNELS.THEME_GET_RESOLVED, () =>
+    wrap(() => themeService.getResolved()),
+  );
+  registerIpcHandler(IPC_CHANNELS.APPEARANCE_GET, () =>
+    wrap(() => appearanceService.getConfig()),
+  );
+  registerIpcHandler(IPC_CHANNELS.APPEARANCE_CHOOSE_BG, () =>
+    wrapWriteAsync(() => appearanceService.chooseBackgroundImage()),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.APPEARANCE_SET_MATERIAL,
+    (_event, mode: unknown) =>
+      wrapWrite(() => {
+        appearanceService.setMaterial(
+          parseIpc(materialModeSchema, mode) as MaterialMode,
+        );
+        return true;
+      }),
+  );
+  registerIpcHandler(IPC_CHANNELS.APPEARANCE_CLEAR_BG, () =>
+    wrapWriteAsync(async () => {
+      await appearanceService.clearBackgroundImage();
+      return true;
+    }),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.APPEARANCE_SET_BLUR,
+    (_event, value: unknown) =>
+      wrapWrite(() => {
+        appearanceService.setBlurRadius(parseIpc(blurSchema, value));
+        return true;
+      }),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.APPEARANCE_SET_CLARITY,
+    (_event, value: unknown) =>
+      wrapWrite(() => {
+        appearanceService.setClarity(parseIpc(claritySchema, value));
+        return true;
+      }),
+  );
+  registerIpcHandler(IPC_CHANNELS.UPDATE_CHECK, () =>
+    wrapIpcAsync(() => updateService.checkManual()),
+  );
+  registerIpcHandler(IPC_CHANNELS.UPDATE_INSTALL, () =>
+    wrapWriteIpcAsync(() => updateService.installUpdate()),
+  );
+  registerIpcHandler(IPC_CHANNELS.UPDATE_GET_CURRENT_VERSION, () =>
+    wrap(() => PRODUCT_VERSION),
+  );
+  registerIpcHandler(IPC_CHANNELS.UPDATE_GET_CHANNEL, () =>
+    wrap(() => updateService.getChannel()),
+  );
+}
+
+function onboardingStatePath(): string {
+  return path.join(app.getPath("userData"), "onboarding-state.json");
+}
+
+function samePeriodConfig(left: PeriodConfig, right: PeriodConfig): boolean {
+  return (
+    left.index === right.index &&
+    left.startTime === right.startTime &&
+    left.endTime === right.endTime &&
+    left.breakAfter === right.breakAfter &&
+    left.isLab === right.isLab &&
+    left.reminderOffset === right.reminderOffset
+  );
+}
+
+function hasNonDefaultDatabaseSettings(): boolean {
+  const counts = dataService.getRecordCounts();
+  if (
+    counts.schedules > 0 ||
+    counts.courses > 0 ||
+    counts.exams > 0 ||
+    counts.labs > 0 ||
+    counts.grades > 0
+  )
+    return true;
+  const defaultFormula = dataService.formulas.getById("default");
+  if (
+    !defaultFormula ||
+    defaultFormula.formula.trim() !== CURRENT_DEFAULT_GPA_FORMULA ||
+    !defaultFormula.isDefault ||
+    counts.formulas !== 1
+  )
+    return true;
+  const periods = dataService.periodConfig.getAll();
+  return (
+    periods.length !== DEFAULT_PERIODS.length ||
+    periods.some(
+      (period, index) => !samePeriodConfig(period, DEFAULT_PERIODS[index]),
+    )
+  );
+}
+
+function hasNonDefaultPortableSettings(): boolean {
+  const settings = portableSettingsService.get();
+  return Boolean(
+    settings.themeMode !== "system" ||
+      settings.timetable.semesterStart ||
+      settings.dnd.enabled ||
+      settings.notificationHistory.length ||
+      settings.appearance.material !== "none" ||
+      settings.appearance.backgroundImage ||
+      settings.appearance.blurRadius !== 0 ||
+      settings.appearance.clarity !== 100 ||
+      !settings.acm.enabled ||
+      settings.acm.noticeDismissedVersion,
+  );
+}
+
+function hasCustomCompilerSelection(): boolean {
+  const selection = acmCompilerService.getSelection();
+  return Boolean(
+    selection.ok &&
+      selection.data &&
+      (selection.data.mode === "user" || Boolean(selection.data.path)),
+  );
+}
+
+function hasExistingUserData(): boolean {
+  try {
+    return (
+      hasNonDefaultDatabaseSettings() ||
+      hasNonDefaultPortableSettings() ||
+      hasCustomCompilerSelection()
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readOnboardingState(): OnboardingState {
+  let marker: boolean | undefined;
+  try {
+    const raw: unknown = JSON.parse(
+      fs.readFileSync(onboardingStatePath(), "utf8"),
+    );
+    if (
+      raw &&
+      typeof raw === "object" &&
+      "completed" in raw &&
+      typeof raw.completed === "boolean"
+    ) {
+      marker = raw.completed;
+    }
+  } catch {
+    // Missing or malformed local marker means the welcome page is required.
+  }
+  return resolveOnboardingState(marker, hasExistingUserData());
+}
+
+function writeOnboardingState(completed: boolean): OnboardingState {
+  const target = onboardingStatePath();
+  writeTextFileAtomically(target, JSON.stringify({ completed }));
+  return { required: !completed, completed };
+}
+
+function registerOnboardingHandlers(): void {
+  registerIpcHandler(IPC_CHANNELS.ONBOARDING_GET_STATE, () =>
+    wrap(() => readOnboardingState()),
+  );
+  registerIpcHandler(IPC_CHANNELS.ONBOARDING_COMPLETE, () =>
+    wrapWrite(() => writeOnboardingState(true)),
+  );
+}
+
+function registerOcrComponentHandlers(): void {
+  registerIpcHandler(IPC_CHANNELS.OCR_COMPONENT_GET_STATUS, () =>
+    wrapIpc(() => ocrComponentService.getStatus()),
+  );
+  registerIpcHandler(IPC_CHANNELS.OCR_COMPONENT_INSTALL, () =>
+    wrapWriteIpcAsync(async () => {
+      const result = await ocrComponentService.install();
+      if (result.ok) await ocrService.invalidateWorker();
+      return result;
+    }),
+  );
+  registerIpcHandler(IPC_CHANNELS.OCR_COMPONENT_CANCEL_INSTALL, () =>
+    wrapWriteIpc(() => ocrComponentService.cancelInstall()),
+  );
+  registerIpcHandler(IPC_CHANNELS.OCR_COMPONENT_REMOVE, () =>
+    wrapWriteIpcAsync(async () => {
+      const result = ocrComponentService.remove();
+      if (result.ok) await ocrService.invalidateWorker();
+      return result;
+    }),
+  );
+}
+
+function acmUnavailable<T>(): IpcResult<T> | null {
+  const status = acmPluginService.getStatus();
+  if (!status.ok || !status.data) {
+    return {
+      ok: false,
+      error: status.error ?? "ACM 插件状态不可用",
+      errorCode: status.errorCode ?? "ACM_PLUGIN_INVALID",
+    };
+  }
+  if (status.data.state === "unsupported")
+    return {
+      ok: false,
+      error: "ACM 工具仅支持 Windows 11 x64",
+      errorCode: "ACM_UNSUPPORTED",
+    };
+  if (status.data.state === "disabled")
+    return { ok: false, error: "ACM 插件已禁用", errorCode: "ACM_DISABLED" };
+  if (status.data.state === "initializing")
+    return {
+      ok: false,
+      error: "ACM 插件仍在初始化，请稍后重试",
+      errorCode: "ACM_PLUGIN_INVALID",
+    };
+  if (status.data.state === "error")
+    return {
+      ok: false,
+      error: status.data.error ?? "ACM 插件初始化失败",
+      errorCode: status.data.errorCode ?? "ACM_PLUGIN_INVALID",
+    };
+  return null;
+}
+
+function withAcm<T>(fn: () => IpcResult<T>): IpcResult<T> {
+  return acmUnavailable<T>() ?? fn();
+}
+
+function acmExecutionUnavailable<T>(): IpcResult<T> | null {
+  if (acmPluginService.isEnabled()) return acmUnavailable<T>();
+  return (
+    acmUnavailable<T>() ?? {
+      ok: false,
+      error: "ACM 插件当前不可用",
+      errorCode: "ACM_DISABLED",
+    }
+  );
+}
+
+function acmNoticeState(): AcmNoticeState {
+  const dismissedVersion =
+    portableSettingsService.getAcmNoticeDismissedVersion();
+  const status = acmPluginService.getStatus();
+  const pluginMustShow =
+    !status.ok ||
+    !status.data ||
+    ["disabled", "unsupported", "error"].includes(status.data.state);
+  return {
+    visible: pluginMustShow || dismissedVersion !== PRODUCT_VERSION,
+    currentVersion: PRODUCT_VERSION,
+    dismissedVersion,
+  };
+}
+
+function setAcmNoticeVersion(version: string | null): AcmNoticeState {
+  portableSettingsService.setAcmNoticeDismissedVersion(version);
+  return acmNoticeState();
+}
+
+function parseDocumentScope(
+  sender: WebContents,
+  value: unknown,
+): AcmDocumentScope {
+  const scope = parseIpc(acmDocumentScopeSchema, value) ?? "workbench";
+  if (!canUseAcmDocumentScope(scope, sender.getURL()))
+    throw new IpcValidationError("对拍源码只能在 ACM 对拍页面中打开");
+  return scope;
+}
+
+function registerAcmPluginHandlers(): void {
+  registerIpcHandler(IPC_CHANNELS.ACM_GET_STATUS, () =>
+    wrapIpc(() => acmPluginService.getStatus()),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_SET_ENABLED, (_event, enabled: unknown) =>
+    wrapWriteIpcAsync<AcmPluginStatus>(() =>
+      acmLifecycleQueue.run(async () => {
+        if (typeof enabled !== "boolean")
+          return {
+            ok: false,
+            error: "ACM 插件开关必须是布尔值",
+            errorCode: "VALIDATION_FAILED" as const,
+          };
+        const current = acmPluginService.getStatus();
+        if (!current.ok || !current.data) return current;
+        if (current.data.state === "initializing")
+          return {
+            ok: false,
+            error: "ACM 插件仍在初始化，请稍后重试",
+            errorCode: "ACM_PLUGIN_INVALID" as const,
+          };
+        if (!enabled) {
+          const stopped = await acmRunnerService.stop();
+          if (!stopped.ok)
+            return {
+              ok: false,
+              error: stopped.error,
+              errorCode: stopped.errorCode,
+            };
+          const stoppedDiff = await acmDifferService.stop();
+          if (!stoppedDiff.ok)
+            return {
+              ok: false,
+              error: stoppedDiff.error,
+              errorCode: stoppedDiff.errorCode,
+            };
+        }
+        return acmPluginService.setEnabled(enabled);
+      }),
+    ),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_RETRY, () =>
+    wrapIpcAsync(() => acmLifecycleQueue.run(() => acmPluginService.retry())),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_NOTICE_GET_STATE, () =>
+    wrap(() => acmNoticeState()),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_NOTICE_DISMISS, () =>
+    wrapWrite(() => setAcmNoticeVersion(PRODUCT_VERSION)),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_NOTICE_CLEAR, () =>
+    wrapWrite(() => setAcmNoticeVersion(null)),
+  );
+
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_DOCUMENT_CREATE,
+    (event, template: unknown, scope: unknown) =>
+      wrapIpc(() =>
+        withAcm(() =>
+          acmFileService.createDocument(
+            parseIpc(acmTemplateSchema, template),
+            parseDocumentScope(event.sender, scope),
+          ),
+        ),
+      ),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_DOCUMENT_OPEN, (event, scope: unknown) =>
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<AcmDocument | null>();
+      if (unavailable) return unavailable;
+      return acmFileService.openDocument(
+        BrowserWindow.fromWebContents(event.sender),
+        parseDocumentScope(event.sender, scope),
+      );
+    }),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_DOCUMENT_SAVE,
+    (_event, request: unknown) =>
+      wrapIpcAsync(async () => {
+        const unavailable = acmUnavailable<AcmDocument>();
+        if (unavailable) return unavailable;
+        return acmFileService.saveDocument(
+          parseIpc(acmDocumentSaveSchema, request),
+        );
+      }),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_DOCUMENT_SAVE_AS,
+    (event, request: unknown) =>
+      wrapIpcAsync(async () => {
+        const unavailable = acmUnavailable<AcmDocument | null>();
+        if (unavailable) return unavailable;
+        return acmFileService.saveDocumentAs(
+          parseIpc(acmDocumentSaveSchema, request),
+          BrowserWindow.fromWebContents(event.sender),
+        );
+      }),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_DOCUMENT_RELEASE,
+    (_event, documentId: unknown) =>
+      wrapIpc(() =>
+        acmFileService.releaseDocument(
+          parseIpc(acmDocumentReleaseSchema, documentId),
+        ),
+      ),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_DOCUMENT_CHECK_EXTERNAL,
+    (_event, document: unknown) =>
+      wrapIpcAsync(async () => {
+        const unavailable = acmUnavailable<AcmDocumentExternalState>();
+        if (unavailable) return unavailable;
+        return acmFileService.checkExternal(
+          parseIpc(acmExternalDocumentSchema, document),
+        );
+      }),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_COMPILER_GET_SELECTION, () =>
+    wrapIpc(() => withAcm(() => acmCompilerService.getSelection())),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_COMPILER_SET_SELECTION,
+    (_event, selection: unknown) =>
+      wrapIpc(() =>
+        withAcm(() =>
+          acmCompilerService.setSelection(
+            parseIpc(acmCompilerSelectionSchema, selection),
+          ),
+        ),
+      ),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_COMPILER_SELECT_PATH, (event) =>
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<CompilerSelection | null>();
+      if (unavailable) return unavailable;
+      return acmCompilerService.selectCompilerPath(
+        BrowserWindow.fromWebContents(event.sender),
+      );
+    }),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_COMPILER_PROBE, () =>
+    wrapIpcAsync(async () => {
+      const unavailable = acmUnavailable<CompilerProbeResult>();
+      if (unavailable) return unavailable;
+      const result = await acmCompilerService.probe();
+      if (result.ok && result.data)
+        acmPluginService.setCompilerHealth(
+          result.data.available,
+          result.data.reason,
+        );
+      return result;
+    }),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.ACM_RUNNER_START,
+    (_event, request: unknown) =>
+      wrapIpcAsync(() =>
+        acmLifecycleQueue.runDetached(() => {
+          const unavailable = acmExecutionUnavailable<{ taskId: string }>();
+          if (unavailable) return unavailable;
+          return acmRunnerService.start(
+            parseIpc(acmRunnerStartSchema, request),
+          );
+        }),
+      ),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_RUNNER_STOP, () =>
+    wrapIpcAsync(() =>
+      acmLifecycleQueue.run(async () => {
+        const unavailable = acmExecutionUnavailable<boolean>();
+        if (unavailable) return unavailable;
+        return acmRunnerService.stop();
+      }),
+    ),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_DIFF_START, (_event, request: unknown) =>
+    wrapIpcAsync(() =>
+      acmLifecycleQueue.runDetached(() => {
+        const unavailable = acmExecutionUnavailable<{ taskId: string }>();
+        if (unavailable) return unavailable;
+        const parsed = parseIpc(
+          acmDiffStartSchema,
+          request,
+        ) as AcmDiffStartRequest;
+        return acmDifferService.start(parsed);
+      }),
+    ),
+  );
+  registerIpcHandler(IPC_CHANNELS.ACM_DIFF_STOP, () =>
+    wrapIpcAsync(() =>
+      acmLifecycleQueue.run(async () => {
+        const unavailable = acmExecutionUnavailable<boolean>();
+        if (unavailable) return unavailable;
+        return acmDifferService.stop();
+      }),
+    ),
+  );
+  acmRunnerService.onEvent((event: RunnerEvent) => {
+    const win = windowService.getMainWindow();
+    if (win && !win.isDestroyed())
+      win.webContents.send(IPC_CHANNELS.ACM_RUNNER_EVENT, event);
+  });
+  acmDifferService.onEvent((event: AcmDiffEvent) => {
+    const win = windowService.getMainWindow();
+    if (win && !win.isDestroyed())
+      win.webContents.send(IPC_CHANNELS.ACM_DIFF_EVENT, event);
+  });
+}
+
+function registerIpcHandlers(): void {
+  registerCrudHandlers();
+  registerImportHandlers();
+  registerNotificationHandlers();
+  registerDataHandlers();
+  registerSettingsHandlers();
+  registerOcrComponentHandlers();
+  registerAcmPluginHandlers();
+  registerOnboardingHandlers();
+}
+
 async function disposeServices(): Promise<void> {
   for (const service of [...services].reverse()) {
     try {
       await service.dispose();
-    } catch {
-      // 释放阶段忽略单点错误，继续清理其他服务
+    } catch (error) {
+      console.error(`[main] 释放服务失败: ${errorMessage(error)}`);
     }
   }
 }
 
+app.on("second-instance", () => windowService.showMainWindow());
+
 app.whenReady().then(async () => {
-  // 服务初始化失败不阻断窗口创建，但记录到控制台
+  if (!hasSingleInstanceLock) return;
+  protocol.handle("app-background", (request) => {
+    try {
+      const fileName = decodeURIComponent(
+        new URL(request.url).pathname,
+      ).replace(/^\/+/, "");
+      if (!isSafeImageFileName(fileName))
+        return new Response("Not found", { status: 404 });
+      const filePath = path.join(
+        app.getPath("userData"),
+        "backgrounds",
+        fileName,
+      );
+      const stat = fs.lstatSync(filePath);
+      if (!stat.isFile() || stat.size > MAX_BACKGROUND_IMAGE_BYTES)
+        return new Response("Not found", { status: 404 });
+      assertImageSignature(fs.readFileSync(filePath), path.extname(fileName));
+      return net.fetch(pathToFileURL(filePath).toString());
+    } catch {
+      return new Response("Bad request", { status: 400 });
+    }
+  });
+  let criticalFailure: Error | null = null;
   for (const service of services) {
     try {
       await service.init();
-    } catch (err) {
-      console.error(`[main] 服务初始化失败: ${(err as Error).message}`);
+    } catch (error) {
+      const value = error instanceof Error ? error : new Error(String(error));
+      console.error(`[main] 服务初始化失败: ${value.message}`);
+      if (service === dataService || service === portableSettingsService) {
+        criticalFailure = value;
+        break;
+      }
     }
   }
-
-  registerIpcHandlers();
-  createMainWindow();
-
-  app.on('activate', () => {
-    // macOS 下点击 Dock 图标时若没有窗口则重建
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow();
-    }
+  if (criticalFailure) {
+    const logPath = path.join(app.getPath("logs"), "main.log");
+    dialog.showErrorBox(
+      "大学生工具组无法启动",
+      `本地关键服务初始化失败，应用未继续运行。\n\n${criticalFailure.message}\n\n日志位置：${logPath}`,
+    );
+    await disposeServices();
+    app.exit(1);
+    return;
+  }
+  try {
+    registerIpcHandlers();
+    registerReminderSystemEvents();
+    createMainWindow();
+  } catch (error) {
+    dialog.showErrorBox("大学生工具组无法启动", errorMessage(error));
+    await disposeServices();
+    app.exit(1);
+  }
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });
 });
 
-app.on('window-all-closed', () => {
-  // macOS 保留 Dock 行为；其他平台窗口全部关闭时退出
-  // 注意：关闭按钮被 WindowService 拦截为隐藏到托盘，此事件仅在真正退出时触发
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
 });
-
-app.on('before-quit', async (event) => {
-  // 标记应用正在退出，使 WindowService 的 close 拦截不再 preventDefault
+app.on("before-quit", async (event) => {
   windowService.markQuitting();
   event.preventDefault();
   await disposeServices();
+  const unconfirmed =
+    acmRunnerService.hasUnconfirmedChild() ||
+    acmDifferService.hasUnconfirmedChild();
+  if (unconfirmed)
+    console.warn("[main] ACM 子进程退出未确认，应用退出后外部进程可能残留");
   app.exit(0);
 });
-
-// 防止文件协议被解析为相对路径
-void url;

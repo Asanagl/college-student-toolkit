@@ -125,7 +125,7 @@ export class GenericExamParser extends ExamParserBase {
     for (const cell of cells) {
       const text = this.cleanText($(cell).text());
       if (!text) continue;
-      if (!exam.courseName && /^[\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,30}$/.test(text) && !/\d{4}[-年/.]/.test(text)) {
+      if (!exam.courseName && /^[\u4e00-\u9fa5A-Za-z0-9（）()·-]{2,30}$/.test(text) && !/\d{4}[-年/.]/.test(text)) {
         exam.courseName = text;
         continue;
       }

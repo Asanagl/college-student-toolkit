@@ -1,8 +1,8 @@
 // 外观设置弹窗
 // 职责：提供材质模式切换、背景图上传、模糊度/清晰度调节的 UI
 // 状态由主进程 AppearanceService 持久化，本组件通过 IPC 同步配置变更
-import { useState, useEffect } from 'react';
-import { Modal, Radio, Upload, Button, Slider, Space, Typography, message, Tag } from 'antd';
+import { useState, useEffect, useRef } from 'react';
+import { Modal, Radio, Button, Slider, Space, Typography, message, Tag } from 'antd';
 import { UploadOutlined, DeleteOutlined, PictureOutlined } from '@ant-design/icons';
 import type { AppearanceConfig, MaterialMode } from '../../shared/types';
 
@@ -13,27 +13,39 @@ interface Props {
   onClose: () => void;
 }
 
-/**
- * Electron 在 File 对象上扩展了 path 属性（指向磁盘文件绝对路径）。
- * 浏览器标准 File 无此属性，需通过类型断言访问。
- */
-interface ElectronFile extends File {
-  path: string;
-}
-
 export default function AppearanceSettingsModal({ open, onClose }: Props) {
   const [config, setConfig] = useState<AppearanceConfig | null>(null);
   const [uploading, setUploading] = useState(false);
+  // 滑块本地值：拖动期间以本地值为准，避免每格都走 IPC 落盘
+  const [blur, setBlur] = useState(0);
+  const [clarity, setClarity] = useState(100);
+  // 拖动中标记：此时远端广播不得回灌滑块，否则手感会被"拽回去"
+  const draggingRef = useRef(false);
 
-  // 启动时获取当前外观配置，并订阅广播
+  // 打开时获取当前外观配置，并订阅广播
   useEffect(() => {
     if (!open) return;
+    // 本组件由 MainLayout 常驻渲染不会卸载，弹窗快速开关时 get() 回包可能迟到，
+    // 用 alive 标记丢弃过期回包，避免覆盖新一轮的状态
+    let alive = true;
+    const applyConfig = (next: AppearanceConfig) => {
+      if (!alive) return;
+      setConfig(next);
+      if (!draggingRef.current) {
+        setBlur(next.blurRadius);
+        setClarity(next.clarity);
+      }
+    };
     window.api.appearance.get().then((result) => {
       if (result.ok && result.data) {
-        setConfig(result.data);
+        applyConfig(result.data);
       }
     });
-    window.api.appearance.onChange((next) => setConfig(next));
+    const off = window.api.appearance.onChange(applyConfig);
+    return () => {
+      alive = false;
+      off();
+    };
   }, [open]);
 
   // 切换材质模式
@@ -44,26 +56,19 @@ export default function AppearanceSettingsModal({ open, onClose }: Props) {
     }
   };
 
-  // 上传背景图：拦截 antd Upload 的 beforeUpload，用 File.path 调用主进程
-  const handleBeforeUpload = async (file: File): Promise<boolean> => {
-    const electronFile = file as ElectronFile;
-    if (!electronFile.path) {
-      message.error('无法获取文件路径，请重试');
-      return false;
-    }
+  // 上传背景图：由主进程弹出文件对话框，渲染层不接触任意本地路径。
+  const handleChooseBackground = async (): Promise<void> => {
     setUploading(true);
     try {
-      const result = await window.api.appearance.uploadBackground(electronFile.path);
+      const result = await window.api.appearance.chooseBackground();
       if (!result.ok) {
-        message.error(`上传失败: ${result.error}`);
+        message.error(`上传失败: ${result.error ?? '未知错误'}`);
       } else {
-        message.success('背景图已应用');
+        if (result.data) message.success('背景图已应用');
       }
     } finally {
       setUploading(false);
     }
-    // 返回 false 阻止 antd Upload 的默认上传行为
-    return false;
   };
 
   // 清除背景图
@@ -76,14 +81,32 @@ export default function AppearanceSettingsModal({ open, onClose }: Props) {
     }
   };
 
-  // 模糊度滑块变化（实时调用主进程）
+  // 拖动中只更新本地值：每格都发 IPC 会触发主进程同步写盘 + 全应用重渲染，明显卡顿
   const handleBlurChange = (value: number) => {
-    window.api.appearance.setBlur(value);
+    draggingRef.current = true;
+    setBlur(value);
   };
 
-  // 清晰度滑块变化（实时调用主进程）
+  // 松手时才落盘一次
+  const handleBlurComplete = async (value: number) => {
+    draggingRef.current = false;
+    const res = await window.api.appearance.setBlur(value);
+    if (!res.ok) {
+      message.error(res.error ?? '设置模糊度失败');
+    }
+  };
+
   const handleClarityChange = (value: number) => {
-    window.api.appearance.setClarity(value);
+    draggingRef.current = true;
+    setClarity(value);
+  };
+
+  const handleClarityComplete = async (value: number) => {
+    draggingRef.current = false;
+    const res = await window.api.appearance.setClarity(value);
+    if (!res.ok) {
+      message.error(res.error ?? '设置清晰度失败');
+    }
   };
 
   const hasBackground = !!config?.backgroundImage;
@@ -137,16 +160,9 @@ export default function AppearanceSettingsModal({ open, onClose }: Props) {
           </Paragraph>
           <Space direction="vertical" style={{ width: '100%' }}>
             <Space>
-              <Upload
-                accept=".jpg,.jpeg,.png,.webp,.bmp,.gif"
-                showUploadList={false}
-                beforeUpload={handleBeforeUpload}
-                disabled={uploading}
-              >
-                <Button icon={<UploadOutlined />} loading={uploading}>
+              <Button icon={<UploadOutlined />} loading={uploading} onClick={() => void handleChooseBackground()}>
                   选择图片
-                </Button>
-              </Upload>
+              </Button>
               {hasBackground && (
                 <Button icon={<DeleteOutlined />} danger onClick={handleClearBackground}>
                   清除背景
@@ -193,14 +209,15 @@ export default function AppearanceSettingsModal({ open, onClose }: Props) {
           <>
             <div>
               <Paragraph strong style={{ marginBottom: 8 }}>
-                模糊度: {config?.blurRadius ?? 0}px
+                模糊度: {blur}px
               </Paragraph>
               <Slider
                 min={0}
                 max={50}
                 step={1}
-                value={config?.blurRadius ?? 0}
+                value={blur}
                 onChange={handleBlurChange}
+                onChangeComplete={handleBlurComplete}
               />
               <Text type="secondary" style={{ fontSize: 12 }}>
                 数值越大背景图越模糊
@@ -208,14 +225,15 @@ export default function AppearanceSettingsModal({ open, onClose }: Props) {
             </div>
             <div>
               <Paragraph strong style={{ marginBottom: 8 }}>
-                清晰度: {config?.clarity ?? 100}%
+                清晰度: {clarity}%
               </Paragraph>
               <Slider
                 min={0}
                 max={100}
                 step={1}
-                value={config?.clarity ?? 100}
+                value={clarity}
                 onChange={handleClarityChange}
+                onChangeComplete={handleClarityComplete}
               />
               <Text type="secondary" style={{ fontSize: 12 }}>
                 控制背景图透明度，100% 完全不透明

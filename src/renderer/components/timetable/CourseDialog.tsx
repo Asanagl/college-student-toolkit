@@ -2,7 +2,7 @@
 // 字段：课程名（必填）、教师、地点、起止周、星期、起止节、颜色（预设色板 8 种）。
 // 编辑模式预填表单；保存时调用 onOk 回传 Omit<Course, keyof BaseEntity>。
 import { useEffect } from 'react';
-import { Button, ColorPicker, Form, Input, InputNumber, Modal, Select, message } from 'antd';
+import { Button, ColorPicker, Form, Input, InputNumber, Modal, Popconfirm, Select, message } from 'antd';
 import type { Course, Weekday } from '../../../shared/types';
 
 interface CourseDialogProps {
@@ -11,6 +11,8 @@ interface CourseDialogProps {
   course?: Course;
   onOk: (data: Omit<Course, 'id' | 'createdAt' | 'updatedAt'>) => void;
   onCancel: () => void;
+  /** 编辑模式的删除回调；未传时不显示删除入口。由父组件负责调用 IPC 与刷新列表 */
+  onDelete?: (id: string) => void;
 }
 
 interface FormValues {
@@ -41,7 +43,7 @@ const WEEKDAY_OPTIONS = [
   { label: '周日', value: 7 as Weekday },
 ];
 
-export default function CourseDialog({ open, course, onOk, onCancel }: CourseDialogProps) {
+export default function CourseDialog({ open, course, onOk, onCancel, onDelete }: CourseDialogProps) {
   const [form] = Form.useForm<FormValues>();
   const isEdit = !!course;
 
@@ -104,12 +106,33 @@ export default function CourseDialog({ open, course, onOk, onCancel }: CourseDia
     }
   };
 
+  const handleDelete = () => {
+    if (!course) return;
+    onDelete?.(course.id);
+  };
+
   return (
     <Modal
       open={open}
       title={isEdit ? '编辑课程' : '新增课程'}
       onCancel={onCancel}
       footer={[
+        // 删除入口放左下角与取消/保存拉开距离，并用 Popconfirm 二次确认，避免误触丢数据
+        isEdit && onDelete ? (
+          <Popconfirm
+            key="delete"
+            title="确认删除该课程？"
+            description="删除后无法恢复"
+            onConfirm={handleDelete}
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+          >
+            <Button danger style={{ float: 'left' }}>
+              删除
+            </Button>
+          </Popconfirm>
+        ) : null,
         <Button key="cancel" onClick={onCancel}>
           取消
         </Button>,

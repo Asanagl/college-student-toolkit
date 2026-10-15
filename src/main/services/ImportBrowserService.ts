@@ -1,121 +1,121 @@
-// 嵌入式浏览器服务：创建 modal BrowserWindow 供用户登录教务系统，
-// 提取页面 DOM 与截图供解析器使用。
-// 实现阶段：Phase 3
-import { BrowserWindow, ipcMain, type WebContents, type WebFrameMain } from 'electron';
-import * as path from 'node:path';
-import type { IpcResult } from '../../shared/types';
-import { IPC_CHANNELS } from '../../shared/types';
+// 教务导入服务：本地工具栏与远程教务页面严格隔离。
+// 远程页面使用 WebContentsView + 临时 partition，关闭导入窗口即销毁会话。
+import {
+  BrowserWindow,
+  WebContentsView,
+  dialog,
+  ipcMain,
+  session,
+} from "electron";
+import * as path from "node:path";
+import { IPC_CHANNELS, type IpcResult } from "../../shared/types";
+import { pickBestDocumentHtml } from "./domExtraction";
 
-/**
- * 子窗口工具栏 HTML：URL 输入框、刷新/后退按钮、"开始识别"按钮。
- * 通过 data: URL 加载，工具栏内通过 window.importBrowser 与主进程通信。
- */
-const TOOLBAR_HTML = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>课程表导入 - 教务系统</title>
+const TOOLBAR_HEIGHT = 88;
+const MAX_DOM_BYTES = 8 * 1024 * 1024;
+const MAX_SCREENSHOT_BYTES = 20 * 1024 * 1024;
+const ACTION_CHANNEL = "import-browser:action";
+
+/** 工具栏页面只负责按钮和地址输入，不承载远程页面。 */
+const TOOLBAR_HTML = `<!doctype html>
+<html><head><meta charset="utf-8"><title>教务系统导入</title>
 <style>
-  * { box-sizing: border-box; }
-  body { margin: 0; padding: 0; font-family: 'Microsoft YaHei UI', sans-serif; background: #f0f2f5; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-  #topbar { position: relative; z-index: 10; flex-shrink: 0; }
-  .toolbar-bar {
-    display: flex; gap: 8px; padding: 10px 14px; align-items: center;
-    background: rgba(255, 255, 255, 0.65);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.4);
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
-  }
-  .toolbar-bar input {
-    flex: 1; padding: 6px 12px; border: 1px solid rgba(217, 217, 217, 0.6);
-    border-radius: 8px; font-size: 13px; background: rgba(255, 255, 255, 0.7);
-    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-    transition: all 0.2s ease; outline: none;
-  }
-  .toolbar-bar input:focus { border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.1); }
-  .toolbar-bar button {
-    padding: 6px 12px; border: 1px solid rgba(217, 217, 217, 0.5);
-    background: rgba(255, 255, 255, 0.6); border-radius: 8px; cursor: pointer;
-    font-size: 13px; color: #333; transition: all 0.2s ease;
-    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  }
-  .toolbar-bar button:hover { background: rgba(255, 255, 255, 0.85); transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08); }
-  .toolbar-bar button:active { transform: translateY(0); }
-  .toolbar-bar button.primary {
-    background: linear-gradient(135deg, #1677ff, #4096ff);
-    color: #fff; border: none; font-weight: 500;
-    box-shadow: 0 2px 8px rgba(22, 119, 255, 0.3);
-  }
-  .toolbar-bar button.primary:hover { box-shadow: 0 4px 14px rgba(22, 119, 255, 0.4); transform: translateY(-1px); }
-  .tip-bar {
-    padding: 6px 14px; color: #5a6b7e; font-size: 12px;
-    background: rgba(22, 119, 255, 0.06);
-    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-    border-bottom: 1px solid rgba(22, 119, 255, 0.1);
-  }
-  iframe { flex: 1; border: none; width: 100%; }
-</style>
-</head>
-<body>
-  <div id="topbar">
-    <div class="toolbar-bar">
-      <button title="后退" onclick="window.importBrowser.sendAction('back')">←</button>
-      <button title="前进" onclick="window.importBrowser.sendAction('forward')">→</button>
-      <button title="刷新" onclick="window.importBrowser.sendAction('refresh')">⟳</button>
-      <input id="url" placeholder="在此输入教务系统网址并回车访问" />
-      <button onclick="navigate()">前往</button>
-      <button class="primary" onclick="startExtract()">开始识别</button>
-    </div>
-    <div class="tip-bar">提示：登录教务系统并打开课表页面后，点击"开始识别"自动提取课程</div>
-  </div>
-  <iframe id="frame" src="about:blank"></iframe>
-  <script>
-    const urlInput = document.getElementById('url');
-    function navigate() {
-      const url = urlInput.value.trim();
-      if (!url) return;
-      window.importBrowser.sendAction({ type: 'navigate', url });
-    }
-    function startExtract() {
-      window.importBrowser.sendAction({ type: 'extract' });
-    }
-    urlInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') navigate();
-    });
-    window.importBrowser.onAction(function (action) {
-      if (action && action.type === 'urlChanged') {
-        urlInput.value = action.url || '';
-      }
-    });
-  </script>
-</body>
-</html>`;
+*{box-sizing:border-box}body{margin:0;font-family:"Microsoft YaHei UI",sans-serif;background:#f0f2f5}
+.bar{display:flex;gap:8px;align-items:center;padding:10px 14px;background:#fff;border-bottom:1px solid #d9d9d9;height:48px}
+input{flex:1;min-width:100px;padding:6px 12px;border:1px solid #d9d9d9;border-radius:6px}
+button{padding:6px 12px;border:1px solid #d9d9d9;border-radius:6px;background:#fff;cursor:pointer}
+button.primary{background:#1677ff;color:#fff;border-color:#1677ff}.tip{height:40px;padding:6px 14px;color:#5a6b7e;font-size:12px;background:#f5f9ff}
+</style></head><body><div class="bar">
+<button title="后退" onclick="send('back')">←</button><button title="前进" onclick="send('forward')">→</button>
+<button title="刷新" onclick="send('refresh')">⟳</button><input id="url" placeholder="输入教务系统网址并回车">
+<button onclick="go()">前往</button><button class="primary" onclick="send('extract')">开始识别</button>
+</div><div class="tip">仅允许 HTTPS；HTTP 仅在本次明确确认后使用。导入窗口关闭后不会保存 Cookie、缓存或页面内容。</div>
+<script>const input=document.getElementById('url');function send(action){window.importBrowser.sendAction(action)}
+function go(){const value=input.value.trim();if(value)send({type:'navigate',url:value})}
+input.addEventListener('keydown',e=>{if(e.key==='Enter')go()});window.importBrowser.onAction(action=>{
+if(action&&action.type==='urlChanged')input.value=action.url||''})</script></body></html>`;
 
-/** 工具栏 preload 暴露的接口 */
+interface ToolbarAction {
+  type?: string;
+  url?: string;
+}
+
 interface ImportBrowserWindowApi {
-  onAction: (callback: (action: unknown) => void) => void;
+  onAction: (callback: (action: unknown) => void) => () => void;
   sendAction: (action: unknown) => void;
 }
 
-declare global {
-  interface Window {
-    importBrowser?: ImportBrowserWindowApi;
+type CleanupResult = IpcResult<boolean>;
+
+interface BrowserGeneration {
+  id: number;
+  win: BrowserWindow;
+  view: WebContentsView;
+  remoteSession: Electron.Session;
+  approvedHttpUrl: string | null;
+  approvedHttpNavigationId: number | null;
+  navigationId: number;
+  navigationQueue: Promise<void>;
+  completion: Promise<CleanupResult>;
+  resolveCompletion: (result: CleanupResult) => void;
+  completionSettled: boolean;
+  cleanupPromise: Promise<CleanupResult> | null;
+  cleanupCompleted: boolean;
+  cleanupResult: CleanupResult | null;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseAction(value: unknown): ToolbarAction | null {
+  if (typeof value === "string") return { type: value };
+  if (!isPlainObject(value)) return null;
+  if (typeof value.type !== "string") return null;
+  if (value.type === "navigate" && typeof value.url !== "string") return null;
+  return { type: value.type, url: value.url as string | undefined };
+}
+
+/** 统一校验远程地址，避免 file/javascript/data/UNC 和自定义协议逃逸。 */
+export function validateImportUrl(raw: string): URL | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 2048) {
+    return null;
   }
+  if (raw.includes("\\") || /^[a-zA-Z]:[\\/]/.test(raw)) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return null;
+  }
+  if (!parsed.hostname || parsed.username || parsed.password) return null;
+  return parsed;
 }
 
 export class ImportBrowserService {
   private static instance: ImportBrowserService | null = null;
   private initialized = false;
-  /** 子窗口实例；为 null 表示当前未打开 */
   private browserWin: BrowserWindow | null = null;
-  /** 嵌入 iframe 的 webContents，由 attachIframeWebContents 注入 */
-  private targetWebContents: WebContents | null = null;
-  /** 缓存最近一次提取的 DOM 与截图，浏览器关闭后 extractDom/capturePage 仍可读取 */
+  private remoteView: WebContentsView | null = null;
+  private remoteSession: Electron.Session | null = null;
+  private activeGeneration: BrowserGeneration | null = null;
+  private generationCounter = 0;
+  private cleanupPromise: Promise<CleanupResult> | null = null;
+  private disposePromise: Promise<void> | null = null;
+  private disposing = false;
+  private failedCleanupGeneration: BrowserGeneration | null = null;
+  private cleanupFailure: CleanupResult | null = null;
   private cachedDom: string | null = null;
   private cachedScreenshotBase64: string | null = null;
-  /** openBrowser() 的 resolve；子窗口关闭时调用 */
-  private openResolver: ((value: IpcResult<boolean>) => void) | null = null;
+  private toolbarActionHandler:
+    | ((
+        event: Electron.IpcMainEvent,
+        rawAction: unknown,
+      ) => void | Promise<void>)
+    | null = null;
 
   private constructor() {}
 
@@ -127,272 +127,724 @@ export class ImportBrowserService {
   }
 
   async init(): Promise<void> {
+    if (this.disposePromise) await this.disposePromise;
     if (this.initialized) return;
-    this.registerIpcHandlers();
+    this.disposing = false;
+    this.toolbarActionHandler = (event, rawAction) => {
+      const generation = this.activeGeneration;
+      if (!generation || event.sender !== generation.win.webContents) return;
+      const action = parseAction(rawAction);
+      if (action) return this.handleToolbarAction(generation, action);
+    };
+    ipcMain.on(ACTION_CHANNEL, this.toolbarActionHandler);
     this.initialized = true;
   }
 
-  /** 注册子窗口工具栏的 action 通道（不走 shared IPC_CHANNELS） */
-  private registerIpcHandlers(): void {
-    // 工具栏 → 主进程：处理导航/刷新/识别等动作
-    ipcMain.on('import-browser:action', (_e, action: unknown) => {
-      void this.handleToolbarAction(action);
-    });
-  }
-
-  /** 处理工具栏发来的 action */
-  private async handleToolbarAction(action: unknown): Promise<void> {
-    if (!this.browserWin || !this.targetWebContents) return;
-    const a = action as { type: string; url?: string };
-    try {
-      switch (a.type) {
-        case 'back':
-          this.executeInIframe('history.back()');
-          break;
-        case 'forward':
-          this.executeInIframe('history.forward()');
-          break;
-        case 'refresh':
-          this.executeInIframe('location.reload()');
-          break;
-        case 'navigate':
-          if (a.url) {
-            // 在 iframe 内导航，工具栏保持可见（不替换整个窗口）
-            this.browserWin.webContents.executeJavaScript(`
-              (function () {
-                var f = document.getElementById('frame');
-                if (f) { f.src = ${JSON.stringify(a.url)}; }
-              })();
-            `).catch((err: unknown) => {
-              console.error(`[ImportBrowserService] iframe 导航失败: ${(err as Error).message}`);
-            });
-            this.notifyUrlChanged(a.url);
-          }
-          break;
-        case 'extract':
-          await this.performExtraction();
-          break;
-        default:
-          break;
-      }
-    } catch (err) {
-      console.error(`[ImportBrowserService] action 处理失败: ${(err as Error).message}`);
-    }
-  }
-
-  /** 执行 DOM 提取 + 截图，缓存后关闭子窗口 */
-  private async performExtraction(): Promise<void> {
-    if (!this.targetWebContents || !this.browserWin) return;
-    // 优先在 iframe 子 frame 上提取 DOM；无子 frame 时降级到主 frame
-    const iframeFrame = this.findIframeFrame();
-    try {
-      if (iframeFrame) {
-        this.cachedDom = (await iframeFrame.executeJavaScript(
-          'document.documentElement.outerHTML'
-        )) as string;
-      } else {
-        // 降级：iframe 仍为 about:blank，提取主 frame（工具栏 HTML）
-        this.cachedDom = (await this.targetWebContents.executeJavaScript(
-          'document.documentElement.outerHTML'
-        )) as string;
-      }
-    } catch (err) {
-      console.error(`[ImportBrowserService] DOM 提取失败: ${(err as Error).message}`);
-    }
-    // 截图前隐藏顶栏，避免工具栏文字干扰 OCR
-    try {
-      await this.targetWebContents.executeJavaScript(`
-        var bar = document.getElementById('topbar');
-        if (bar) bar.style.display = 'none';
-      `);
-      const image = await this.targetWebContents.capturePage();
-      this.cachedScreenshotBase64 = image.toPNG().toString('base64');
-    } catch (err) {
-      console.error(`[ImportBrowserService] 截图失败: ${(err as Error).message}`);
-    } finally {
-      // 恢复顶栏显示（虽然窗口即将关闭，保持一致性）
-      try {
-        await this.targetWebContents.executeJavaScript(`
-          var bar = document.getElementById('topbar');
-          if (bar) bar.style.display = '';
-        `);
-      } catch {
-        // 忽略恢复失败
-      }
-      if (this.browserWin && !this.browserWin.isDestroyed()) {
-        this.browserWin.close();
-      }
-    }
-  }
-
-  /**
-   * 查找 iframe 对应的子 frame。
-   * 返回第一个 URL 非 about:blank 且非 data: 的子 frame；无则返回 null。
-   */
-  private findIframeFrame(): WebFrameMain | null {
-    if (!this.targetWebContents) return null;
-    const frames = this.targetWebContents.mainFrame.frames;
+  private isCurrentGeneration(generation: BrowserGeneration): boolean {
     return (
-      frames.find(
-        (f) => f.url && f.url !== 'about:blank' && !f.url.startsWith('data:')
-      ) ?? null
+      this.activeGeneration === generation &&
+      !generation.win.isDestroyed() &&
+      !generation.view.webContents.isDestroyed()
     );
   }
 
-  /** 在 iframe 子 frame 上执行 JavaScript；无子 frame 时静默跳过 */
-  private executeInIframe(code: string): void {
-    const frame = this.findIframeFrame();
-    if (frame) {
-      frame.executeJavaScript(code).catch((err: unknown) => {
-        console.error(`[ImportBrowserService] iframe 执行失败: ${(err as Error).message}`);
+  private startNavigation(generation: BrowserGeneration): number {
+    generation.navigationId += 1;
+    this.clearHttpApproval(generation);
+    return generation.navigationId;
+  }
+
+  private clearHttpApproval(generation: BrowserGeneration): void {
+    generation.approvedHttpUrl = null;
+    generation.approvedHttpNavigationId = null;
+  }
+
+  private setHttpApproval(
+    generation: BrowserGeneration,
+    target: URL,
+    navigationId: number,
+  ): void {
+    generation.approvedHttpUrl = target.toString();
+    generation.approvedHttpNavigationId = navigationId;
+  }
+
+  private isActiveNavigation(
+    generation: BrowserGeneration,
+    navigationId: number,
+  ): boolean {
+    return (
+      this.isCurrentGeneration(generation) &&
+      generation.navigationId === navigationId
+    );
+  }
+
+  /** 工具栏事件可能在同一轮渲染中连续到达，按顺序执行才能避免旧 loadURL 覆盖新地址。 */
+  private enqueueNavigation(
+    generation: BrowserGeneration,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const task = generation.navigationQueue
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.isCurrentGeneration(generation)) await operation();
       });
+    generation.navigationQueue = task;
+    return task;
+  }
+
+  private enqueueToolbarNavigation(
+    generation: BrowserGeneration,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    // 新意图要立即使旧请求失效，而不是等排队轮到它时才失效。
+    this.startNavigation(generation);
+    return this.enqueueNavigation(generation, operation);
+  }
+
+  private closingResult(): CleanupResult {
+    return { ok: false, error: "导入服务正在关闭，请稍后再试" };
+  }
+
+  private async handleToolbarAction(
+    generation: BrowserGeneration,
+    action: ToolbarAction,
+  ): Promise<void> {
+    if (!this.isCurrentGeneration(generation)) return;
+    try {
+      if (action.type === "back") {
+        await this.enqueueToolbarNavigation(generation, () =>
+          this.navigateHistory(generation, -1),
+        );
+        return;
+      }
+      if (action.type === "forward") {
+        await this.enqueueToolbarNavigation(generation, () =>
+          this.navigateHistory(generation, 1),
+        );
+        return;
+      }
+      if (action.type === "refresh") {
+        await this.enqueueToolbarNavigation(generation, () =>
+          this.reload(generation),
+        );
+        return;
+      }
+      if (action.type === "extract") {
+        await generation.navigationQueue;
+        await this.performExtraction(generation);
+        return;
+      }
+      if (action.type === "navigate" && action.url) {
+        await this.enqueueToolbarNavigation(generation, () =>
+          this.navigate(generation, action.url as string),
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[ImportBrowserService] action failed: ${(error as Error).message}`,
+      );
     }
   }
 
-  /**
-   * 打开嵌入式浏览器子窗口。
-   * promise 在子窗口关闭后 resolve（用户点击"开始识别"或手动关闭）。
-   */
-  async openBrowser(): Promise<IpcResult<boolean>> {
-    if (this.browserWin) {
-      this.browserWin.focus();
-      return { ok: true, data: true };
+  private async navigate(
+    generation: BrowserGeneration,
+    rawUrl: string,
+  ): Promise<void> {
+    const parsed = validateImportUrl(rawUrl);
+    if (!parsed || !this.isCurrentGeneration(generation)) {
+      await this.showWarning(
+        generation,
+        "地址不安全",
+        "只允许有效的 HTTPS 或 HTTP 地址；不支持文件、脚本或自定义协议。",
+      );
+      return;
     }
-    this.cachedDom = null;
-    this.cachedScreenshotBase64 = null;
+    await this.loadAfterApproval(generation, parsed);
+  }
+
+  private async showWarning(
+    generation: BrowserGeneration,
+    title: string,
+    message: string,
+  ): Promise<void> {
+    const options = { type: "warning" as const, title, message };
+    if (!generation.win.isDestroyed()) {
+      await dialog.showMessageBox(generation.win, options);
+      return;
+    }
+    await dialog.showMessageBox(options);
+  }
+
+  private async approveHttp(generation: BrowserGeneration): Promise<boolean> {
+    const options = {
+      type: "warning" as const,
+      title: "连接未加密",
+      message: "该网站使用 HTTP，登录信息可能被窃取。是否仅本次继续？",
+      buttons: ["取消", "继续"],
+      defaultId: 0,
+      cancelId: 0,
+    };
+    const result = !generation.win.isDestroyed()
+      ? await dialog.showMessageBox(generation.win, options)
+      : await dialog.showMessageBox(options);
+    return result.response === 1 && this.isCurrentGeneration(generation);
+  }
+
+  private async loadAfterApproval(
+    generation: BrowserGeneration,
+    url: URL,
+  ): Promise<void> {
+    const navigationId = this.startNavigation(generation);
+    if (url.protocol === "http:") {
+      const approved = await this.approveHttp(generation);
+      if (!approved || !this.isActiveNavigation(generation, navigationId)) {
+        return;
+      }
+      this.setHttpApproval(generation, url, navigationId);
+    }
+    if (!this.isActiveNavigation(generation, navigationId)) return;
+    const target = url.toString();
+    try {
+      await generation.view.webContents.loadURL(target);
+      if (this.isActiveNavigation(generation, navigationId)) {
+        this.notifyUrlChanged(generation, target);
+      }
+    } finally {
+      if (
+        generation.approvedHttpNavigationId === navigationId &&
+        generation.approvedHttpUrl === target
+      ) {
+        this.clearHttpApproval(generation);
+      }
+    }
+  }
+
+  private guardRemoteNavigation(
+    generation: BrowserGeneration,
+    event: Electron.Event,
+    rawUrl: string,
+    isMainFrame: boolean,
+    isRedirect: boolean,
+  ): void {
+    const parsed = validateImportUrl(rawUrl);
+    if (!parsed || !this.isCurrentGeneration(generation)) {
+      this.clearHttpApproval(generation);
+      event.preventDefault();
+      return;
+    }
+    if (!isMainFrame) {
+      if (parsed.protocol !== "https:") event.preventDefault();
+      return;
+    }
+    if (
+      parsed.protocol === "http:" &&
+      generation.approvedHttpNavigationId === generation.navigationId &&
+      generation.approvedHttpUrl === parsed.toString()
+    ) {
+      this.clearHttpApproval(generation);
+      return;
+    }
+    const requestedNavigationId = isRedirect
+      ? generation.navigationId
+      : this.startNavigation(generation);
+    if (parsed.protocol === "https:") {
+      this.clearHttpApproval(generation);
+      return;
+    }
+    this.clearHttpApproval(generation);
+    event.preventDefault();
+    void this.enqueueNavigation(generation, () =>
+      this.isActiveNavigation(generation, requestedNavigationId)
+        ? this.loadAfterApproval(generation, parsed)
+        : Promise.resolve(),
+    ).catch((error: unknown) => {
+      console.error(
+        `[ImportBrowserService] navigation approval failed: ${(error as Error).message}`,
+      );
+    });
+  }
+
+  private async navigateHistory(
+    generation: BrowserGeneration,
+    offset: -1 | 1,
+  ): Promise<void> {
+    const contents = generation.view.webContents;
+    const history = contents.navigationHistory;
+    const targetIndex = history.getActiveIndex() + offset;
+    const entry = history.getEntryAtIndex(targetIndex);
+    const target = entry ? validateImportUrl(entry.url) : null;
+    if (!target || !this.isCurrentGeneration(generation)) return;
+    const navigationId = this.startNavigation(generation);
+    if (target.protocol === "http:" && !(await this.approveHttp(generation))) {
+      return;
+    }
+    if (!this.isActiveNavigation(generation, navigationId)) return;
+    this.runApprovedHttpNavigation(generation, target, navigationId, () => {
+      contents.goToIndex(targetIndex);
+    });
+  }
+
+  private async reload(generation: BrowserGeneration): Promise<void> {
+    const target = validateImportUrl(generation.view.webContents.getURL());
+    if (!target || !this.isCurrentGeneration(generation)) return;
+    const navigationId = this.startNavigation(generation);
+    if (target.protocol === "http:" && !(await this.approveHttp(generation))) {
+      return;
+    }
+    if (!this.isActiveNavigation(generation, navigationId)) return;
+    this.runApprovedHttpNavigation(generation, target, navigationId, () => {
+      generation.view.webContents.reload();
+    });
+  }
+
+  private runApprovedHttpNavigation(
+    generation: BrowserGeneration,
+    target: URL,
+    navigationId: number,
+    navigate: () => void,
+  ): void {
+    if (target.protocol !== "http:") {
+      navigate();
+      return;
+    }
+    this.setHttpApproval(generation, target, navigationId);
+    try {
+      navigate();
+    } catch (error) {
+      if (generation.approvedHttpNavigationId === navigationId) {
+        this.clearHttpApproval(generation);
+      }
+      throw error;
+    }
+  }
+
+  private async performExtraction(
+    generation: BrowserGeneration,
+  ): Promise<void> {
+    const contents = generation.view.webContents;
+    if (!this.isCurrentGeneration(generation)) return;
+    try {
+      // 课表页常渲染在 iframe 内层（如正方 zhuti），只取顶层会零命中；
+      // 注入自包含函数在顶层与同源 iframe 中挑选最像课表的文档。
+      const html = (await contents.executeJavaScript(
+        `(${pickBestDocumentHtml.toString()})(document)`,
+      )) as unknown;
+      if (
+        typeof html !== "string" ||
+        Buffer.byteLength(html, "utf8") > MAX_DOM_BYTES
+      ) {
+        throw new Error("页面内容超过 8 MiB 限制");
+      }
+      if (this.isCurrentGeneration(generation)) this.cachedDom = html;
+      const png = (await contents.capturePage()).toPNG();
+      if (png.byteLength > MAX_SCREENSHOT_BYTES) {
+        throw new Error("页面截图超过 20 MiB 限制");
+      }
+      if (this.isCurrentGeneration(generation)) {
+        this.cachedScreenshotBase64 = png.toString("base64");
+      }
+    } catch (error) {
+      if (this.activeGeneration === generation) {
+        this.cachedDom = null;
+        this.cachedScreenshotBase64 = null;
+      }
+      console.error(
+        `[ImportBrowserService] extraction failed: ${(error as Error).message}`,
+      );
+    } finally {
+      await this.cleanupBrowser(generation);
+    }
+  }
+
+  async openBrowser(): Promise<CleanupResult> {
+    if (this.disposing) return this.closingResult();
+    if (this.cleanupPromise) {
+      const cleanup = await this.cleanupPromise;
+      if (!cleanup.ok) return cleanup;
+    }
+    if (this.disposing) return this.closingResult();
+    if (this.cleanupFailure && this.failedCleanupGeneration) {
+      const retry = await this.cleanupBrowser(this.failedCleanupGeneration);
+      if (!retry.ok) return retry;
+    }
+    if (this.disposing) return this.closingResult();
+    if (this.cleanupFailure) return this.cleanupFailure;
+    const current = this.activeGeneration;
+    if (current) {
+      if (
+        !current.win.isDestroyed() &&
+        !current.view.webContents.isDestroyed()
+      ) {
+        current.win.focus();
+        return current.completion;
+      }
+      const cleanup = await this.cleanupBrowser(current);
+      if (!cleanup.ok) return cleanup;
+    }
+    const generation = this.createGeneration();
+    this.attachGeneration(generation);
+    try {
+      await generation.win.loadURL(
+        `data:text/html;charset=utf-8,${encodeURIComponent(TOOLBAR_HTML)}`,
+      );
+    } catch (error) {
+      const cleanup = await this.cleanupBrowser(generation);
+      if (!cleanup.ok) return cleanup;
+      return {
+        ok: false,
+        error: `无法打开导入窗口：${(error as Error).message}`,
+      };
+    }
+    if (this.disposing) {
+      const cleanup = await this.cleanupBrowser(generation);
+      return cleanup.ok ? this.closingResult() : cleanup;
+    }
+    if (!this.isCurrentGeneration(generation)) {
+      const cleanup = await this.cleanupBrowser(generation);
+      return cleanup.ok
+        ? { ok: false, error: "导入窗口初始化期间已关闭，请重试" }
+        : cleanup;
+    }
+    return generation.completion;
+  }
+
+  private createGeneration(): BrowserGeneration {
+    const remoteSession = session.fromPartition(
+      `import-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      { cache: false },
+    );
+    remoteSession.setPermissionCheckHandler(() => false);
+    remoteSession.setPermissionRequestHandler(
+      (_contents, _permission, callback) => callback(false),
+    );
+    remoteSession.on("will-download", (_event, item) => item.cancel());
     const win = new BrowserWindow({
       width: 1100,
       height: 720,
       modal: true,
-      title: '课程表导入',
+      title: "教务系统导入",
       autoHideMenuBar: true,
       webPreferences: {
-        preload: path.join(__dirname, '../preload/importBrowserPreload.js'),
+        preload: path.join(__dirname, "../preload/importBrowserPreload.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
-        webSecurity: false, // 允许跨域加载教务系统页面（部分系统 http）
+        sandbox: true,
+        webSecurity: true,
       },
     });
-    this.browserWin = win;
-
-    // 加载工具栏页面
-    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(TOOLBAR_HTML));
-    // 工具栏加载完成后，在工具栏内动态创建 iframe 并附加 webContents 监听
-    this.attachIframeWebContents(win);
-
-    return new Promise<IpcResult<boolean>>((resolve) => {
-      this.openResolver = resolve;
-      win.on('closed', () => {
-        this.browserWin = null;
-        this.targetWebContents = null;
-        if (this.openResolver) {
-          this.openResolver({ ok: true, data: true });
-          this.openResolver = null;
-        }
-      });
+    const view = new WebContentsView({
+      webPreferences: {
+        session: remoteSession,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+      },
     });
-  }
-
-  /** 在工具栏页面中创建 iframe 并把主 webContents 设为提取目标 */
-  private attachIframeWebContents(win: BrowserWindow): void {
-    // 通过 executeJavaScript 动态设置 iframe src 至 about:blank
-    win.webContents.executeJavaScript(`
-      (function () {
-        var f = document.getElementById('frame');
-        f.src = 'about:blank';
-      })();
-    `).catch((err: unknown) => {
-      console.error(`[ImportBrowserService] iframe 初始化失败: ${(err as Error).message}`);
+    let resolveCompletion!: (result: CleanupResult) => void;
+    const completion = new Promise<CleanupResult>((resolve) => {
+      resolveCompletion = resolve;
     });
-    // 主 webContents 作为提取目标：capturePage 截取整个窗口，mainFrame.frames 访问 iframe DOM
-    this.targetWebContents = win.webContents;
-    // 监听 iframe 内导航：frame-created 在 iframe 加载新页面时触发，用于同步工具栏 URL
-    win.webContents.on('frame-created', (_e, { frame }) => {
-      const url = frame.url;
-      if (url && url !== 'about:blank' && !url.startsWith('data:')) {
-        this.notifyUrlChanged(url);
-      }
+    return {
+      id: ++this.generationCounter,
+      win,
+      view,
+      remoteSession,
+      approvedHttpUrl: null,
+      approvedHttpNavigationId: null,
+      navigationId: 0,
+      navigationQueue: Promise.resolve(),
+      completion,
+      resolveCompletion,
+      completionSettled: false,
+      cleanupPromise: null,
+      cleanupCompleted: false,
+      cleanupResult: null,
+    };
+  }
+
+  private attachGeneration(generation: BrowserGeneration): void {
+    this.activeGeneration = generation;
+    this.browserWin = generation.win;
+    this.remoteView = generation.view;
+    this.remoteSession = generation.remoteSession;
+    generation.win.contentView.addChildView(generation.view);
+    this.setViewBounds(generation);
+    this.registerGenerationHandlers(generation);
+    generation.win.on("resize", () => this.setViewBounds(generation));
+    generation.win.on("closed", () => {
+      void this.cleanupBrowser(generation);
     });
-    // 拦截 iframe 内 window.open() / target=_blank，强制在当前 iframe 内导航
-    // 部分教务系统会唤起多个标签页，此 handler 确保浏览器始终维持单标签页
-    win.webContents.setWindowOpenHandler(({ url }) => {
-      if (url && url !== 'about:blank') {
-        // 将新窗口 URL 重定向到 iframe 内，避免弹出多个窗口
-        win.webContents.executeJavaScript(`
-          (function () {
-            var f = document.getElementById('frame');
-            if (f) { f.src = ${JSON.stringify(url)}; }
-          })();
-        `).catch((err: unknown) => {
-          console.error(`[ImportBrowserService] 拦截新窗口导航失败: ${(err as Error).message}`);
-        });
-        this.notifyUrlChanged(url);
-      }
-      return { action: 'deny' };
+    generation.view.webContents.on("render-process-gone", () => {
+      void this.cleanupBrowser(generation);
     });
-  }
-
-  /** 通知工具栏 URL 已变更 */
-  private notifyUrlChanged(url: string): void {
-    if (this.browserWin && !this.browserWin.isDestroyed()) {
-      this.browserWin.webContents.send('import-browser:action', { type: 'urlChanged', url });
-    }
-  }
-
-  /** 关闭子窗口 */
-  async closeBrowser(): Promise<IpcResult<boolean>> {
-    if (this.browserWin && !this.browserWin.isDestroyed()) {
-      this.browserWin.close();
-    }
-    return { ok: true, data: true };
-  }
-
-  /** 返回缓存的 DOM；未提取过则返回空字符串 */
-  async extractDom(): Promise<IpcResult<string>> {
-    if (this.cachedDom === null) {
-      return { ok: false, error: '尚未提取 DOM，请先在浏览器中点击"开始识别"' };
-    }
-    return { ok: true, data: this.cachedDom };
-  }
-
-  /** 返回缓存的截图 base64；未提取过则返回错误 */
-  async capturePage(): Promise<IpcResult<string>> {
-    if (this.cachedScreenshotBase64 === null) {
-      return { ok: false, error: '尚未截图，请先在浏览器中点击"开始识别"' };
-    }
-    return { ok: true, data: this.cachedScreenshotBase64 };
-  }
-
-  async dispose(): Promise<void> {
-    if (this.browserWin && !this.browserWin.isDestroyed()) {
-      this.browserWin.close();
-    }
-    this.browserWin = null;
-    this.targetWebContents = null;
+    generation.view.webContents.on("destroyed", () => {
+      void this.cleanupBrowser(generation);
+    });
+    generation.win.webContents.on("render-process-gone", () => {
+      void this.cleanupBrowser(generation);
+    });
+    generation.win.webContents.on("destroyed", () => {
+      void this.cleanupBrowser(generation);
+    });
     this.cachedDom = null;
     this.cachedScreenshotBase64 = null;
-    this.initialized = false;
+  }
+
+  private setViewBounds(generation: BrowserGeneration): void {
+    if (
+      generation.win.isDestroyed() ||
+      generation.view.webContents.isDestroyed()
+    ) {
+      return;
+    }
+    const [width, height] = generation.win.getContentSize();
+    generation.view.setBounds({
+      x: 0,
+      y: TOOLBAR_HEIGHT,
+      width,
+      height: Math.max(0, height - TOOLBAR_HEIGHT),
+    });
+  }
+
+  private registerGenerationHandlers(generation: BrowserGeneration): void {
+    const contents = generation.view.webContents;
+    contents.setWindowOpenHandler(({ url }) => {
+      if (url) {
+        void this.enqueueNavigation(generation, () =>
+          this.navigate(generation, url),
+        ).catch((error: unknown) => {
+          console.error(
+            `[ImportBrowserService] popup navigation failed: ${(error as Error).message}`,
+          );
+        });
+      }
+      return { action: "deny" };
+    });
+    contents.on("will-frame-navigate", (details) => {
+      this.guardRemoteNavigation(
+        generation,
+        details,
+        details.url,
+        details.isMainFrame,
+        false,
+      );
+    });
+    contents.on("will-redirect", (details) => {
+      this.guardRemoteNavigation(
+        generation,
+        details,
+        details.url,
+        details.isMainFrame,
+        true,
+      );
+    });
+    contents.on("did-navigate", (_event, url) => {
+      // 迟到事件不能覆盖已经开始的后续导航的地址栏或 HTTP 审批状态。
+      if (!this.isCurrentGeneration(generation) || contents.getURL() !== url)
+        return;
+      this.clearHttpApproval(generation);
+      this.notifyUrlChanged(generation, url);
+    });
+  }
+
+  private notifyUrlChanged(generation: BrowserGeneration, url: string): void {
+    if (!generation.win.isDestroyed()) {
+      generation.win.webContents.send(ACTION_CHANNEL, {
+        type: "urlChanged",
+        url,
+      });
+    }
+  }
+
+  private cleanupBrowser(
+    generation?: BrowserGeneration,
+  ): Promise<CleanupResult> {
+    if (!generation && this.cleanupPromise) return this.cleanupPromise;
+    const target =
+      generation ?? this.activeGeneration ?? this.failedCleanupGeneration;
+    if (!target) {
+      return Promise.resolve(this.cleanupFailure ?? { ok: true, data: true });
+    }
+    if (target.cleanupCompleted && target.cleanupResult) {
+      return Promise.resolve(target.cleanupResult);
+    }
+    if (target.cleanupPromise) return target.cleanupPromise;
+    const tracksServiceCleanup =
+      this.activeGeneration === target ||
+      this.failedCleanupGeneration === target;
+    const task = Promise.resolve()
+      .then(() => this.performBrowserCleanup(target))
+      .catch(
+        (error: unknown): CleanupResult => ({
+          ok: false,
+          error: `导入窗口清理失败：${(error as Error).message}`,
+        }),
+      );
+    const wrapped = task.then((result) => {
+      if (this.activeGeneration === target) {
+        this.activeGeneration = null;
+        this.browserWin = null;
+        this.remoteView = null;
+        this.remoteSession = null;
+      }
+      if (result.ok) {
+        if (this.failedCleanupGeneration === target) {
+          this.failedCleanupGeneration = null;
+          this.cleanupFailure = null;
+        }
+      } else {
+        if (tracksServiceCleanup) {
+          this.failedCleanupGeneration = target;
+          this.cleanupFailure = result;
+        }
+      }
+      target.cleanupResult = result;
+      target.cleanupCompleted = result.ok;
+      target.cleanupPromise = null;
+      if (!target.completionSettled) {
+        target.completionSettled = true;
+        target.resolveCompletion(result);
+      }
+      if (this.cleanupPromise === wrapped) this.cleanupPromise = null;
+      return result;
+    });
+    target.cleanupPromise = wrapped;
+    if (tracksServiceCleanup) this.cleanupPromise = wrapped;
+    return wrapped;
+  }
+
+  private async performBrowserCleanup(
+    generation: BrowserGeneration,
+  ): Promise<CleanupResult> {
+    if (this.activeGeneration === generation) {
+      this.activeGeneration = null;
+      this.browserWin = null;
+      this.remoteView = null;
+      this.remoteSession = null;
+    }
+    this.clearHttpApproval(generation);
+    const sessionCleared = await this.clearSessionData(
+      generation.remoteSession,
+    );
+    if (!generation.view.webContents.isDestroyed()) {
+      generation.view.webContents.close();
+    }
+    if (!generation.win.isDestroyed()) generation.win.destroy();
+    if (sessionCleared) {
+      return { ok: true, data: true };
+    }
+    return {
+      ok: false,
+      error: "无法确认教务临时会话已清理，请重试或重启应用后再试",
+    };
+  }
+
+  private async clearSessionData(
+    remoteSession: Electron.Session,
+  ): Promise<boolean> {
+    const clearers: Array<[string, () => Promise<void>]> = [
+      ["认证缓存", () => remoteSession.clearAuthCache()],
+      ["存储数据", () => remoteSession.clearStorageData()],
+      ["HTTP 缓存", () => remoteSession.clearCache()],
+    ];
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const failures: string[] = [];
+      for (const [label, clear] of clearers) {
+        try {
+          await clear();
+        } catch (error) {
+          failures.push(`${label}: ${(error as Error).message}`);
+        }
+      }
+      if (failures.length === 0) return true;
+      console.error(
+        `[ImportBrowserService] session cleanup attempt ${attempt} failed: ${failures.join(
+          "; ",
+        )}`,
+      );
+    }
+    return false;
+  }
+
+  closeBrowser(): Promise<CleanupResult> {
+    return this.cleanupBrowser();
+  }
+
+  async extractDom(): Promise<IpcResult<string>> {
+    return this.cachedDom === null
+      ? { ok: false, error: "尚未提取 DOM，请先在浏览器中点击“开始识别”" }
+      : { ok: true, data: this.cachedDom };
+  }
+
+  async capturePage(): Promise<IpcResult<string>> {
+    return this.cachedScreenshotBase64 === null
+      ? { ok: false, error: "尚未截图，请先在浏览器中点击“开始识别”" }
+      : { ok: true, data: this.cachedScreenshotBase64 };
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposing = true;
+    const handler = this.toolbarActionHandler;
+    this.disposePromise = (async () => {
+      const cleanup = await this.closeBrowser();
+      if (!cleanup.ok) {
+        console.error(
+          `[ImportBrowserService] shutdown cleanup failed: ${cleanup.error}`,
+        );
+      }
+      if (handler) ipcMain.removeListener(ACTION_CHANNEL, handler);
+      if (this.toolbarActionHandler === handler)
+        this.toolbarActionHandler = null;
+      this.cachedDom = null;
+      this.cachedScreenshotBase64 = null;
+      this.initialized = false;
+    })().finally(() => {
+      this.disposePromise = null;
+      this.disposing = false;
+    });
+    return this.disposePromise;
   }
 }
 
-// 修正 getInstance 实现（避免上面写法歧义）
-// (已直接在 class 内实现，此处无需覆盖)
 export const importBrowserService = ImportBrowserService.getInstance();
 
-// 注册 IPC handler（在 main.ts 中 import 本模块即自动注册）
-// 注意：handler 必须在 app.whenReady 后调用，因此在 main.ts 的 registerIpcHandlers 中触发
-export function registerImportBrowserIpcHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_OPEN_BROWSER, () =>
-    importBrowserService.openBrowser()
+let importBrowserIpcRegistered = false;
+
+export function registerImportBrowserIpcHandlers(
+  authorize: (event: Electron.IpcMainInvokeEvent) => boolean,
+): void {
+  if (importBrowserIpcRegistered) return;
+  const invoke = <T>(
+    event: Electron.IpcMainInvokeEvent,
+    operation: () => T,
+  ): T | IpcResult<never> => {
+    if (!authorize(event))
+      return {
+        ok: false,
+        error: "未授权的 IPC 调用",
+        errorCode: "IPC_UNAUTHORIZED",
+      };
+    return operation();
+  };
+  ipcMain.handle(IPC_CHANNELS.TIMETABLE_OPEN_BROWSER, (event) =>
+    invoke(event, () => importBrowserService.openBrowser()),
   );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_CLOSE_BROWSER, () =>
-    importBrowserService.closeBrowser()
+  ipcMain.handle(IPC_CHANNELS.TIMETABLE_CLOSE_BROWSER, (event) =>
+    invoke(event, () => importBrowserService.closeBrowser()),
   );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_EXTRACT_DOM, () =>
-    importBrowserService.extractDom()
+  ipcMain.handle(IPC_CHANNELS.TIMETABLE_EXTRACT_DOM, (event) =>
+    invoke(event, () => importBrowserService.extractDom()),
   );
-  ipcMain.handle(IPC_CHANNELS.TIMETABLE_CAPTURE_PAGE, () =>
-    importBrowserService.capturePage()
+  ipcMain.handle(IPC_CHANNELS.TIMETABLE_CAPTURE_PAGE, (event) =>
+    invoke(event, () => importBrowserService.capturePage()),
   );
+  importBrowserIpcRegistered = true;
+}
+
+declare global {
+  interface Window {
+    importBrowser?: ImportBrowserWindowApi;
+  }
 }

@@ -10,11 +10,12 @@ import {
   nativeImage,
   screen,
   type WebContents,
-} from 'electron';
-import * as path from 'node:path';
-import * as os from 'node:os';
-import Store from 'electron-store';
-import { IPC_CHANNELS } from '../../shared/types';
+} from "electron";
+import * as path from "node:path";
+import * as os from "node:os";
+import { fileURLToPath } from "node:url";
+import Store from "electron-store";
+import { IPC_CHANNELS } from "../../shared/types";
 
 /** 窗口状态持久化字段 */
 interface WindowStateSchema {
@@ -33,10 +34,53 @@ const DEFAULT_BOUNDS: WindowStateSchema = {
 };
 
 /** 全局快捷键：Ctrl+Shift+T 显示/隐藏主窗口 */
-const TOGGLE_SHORTCUT = 'CommandOrControl+Shift+T';
+const TOGGLE_SHORTCUT = "CommandOrControl+Shift+T";
 
 /** 标题栏 overlay 高度（px），与渲染进程 Header 高度一致 */
 const TITLEBAR_HEIGHT = 40;
+
+function normalizeOrigin(rawUrl: string | undefined): string | null {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username ||
+      parsed.password
+    )
+      return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** 只允许应用入口文件或显式配置的开发服务器来源。 */
+export function isTrustedApplicationUrl(
+  rawUrl: string,
+  entryPath: string,
+  developmentOrigin?: string | null,
+): boolean {
+  if (!rawUrl) return false;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol === "file:") {
+      const candidate = path.normalize(fileURLToPath(parsed));
+      const expected = path.normalize(entryPath);
+      return process.platform === "win32"
+        ? candidate.toLowerCase() === expected.toLowerCase()
+        : candidate === expected;
+    }
+    return Boolean(
+      developmentOrigin &&
+        !parsed.username &&
+        !parsed.password &&
+        parsed.origin === developmentOrigin,
+    );
+  } catch {
+    return false;
+  }
+}
 
 export class WindowService {
   private static instance: WindowService | null = null;
@@ -45,6 +89,7 @@ export class WindowService {
   private tray: Tray | null = null;
   /** 主窗口引用，单例 */
   private mainWindow: BrowserWindow | null = null;
+  private trustedDevelopmentOrigin: string | null = null;
   /**
    * 退出标志：区分"用户点关闭按钮隐藏到托盘"与"真正退出"。
    * before-quit 事件触发时置 true，close 事件据此决定是否 preventDefault。
@@ -63,16 +108,21 @@ export class WindowService {
   async init(): Promise<void> {
     if (this.initialized) return;
     this.store = new Store<WindowStateSchema>({
-      name: 'window-state',
+      name: "window-state",
       defaults: DEFAULT_BOUNDS,
     });
     this.initialized = true;
   }
 
   /** 创建主窗口，恢复上次位置/大小，并挂载托盘、快捷键、右键菜单 */
-  createMainWindow(loadHandler: (win: BrowserWindow) => void): BrowserWindow {
+  createMainWindow(
+    loadHandler: (win: BrowserWindow) => void,
+    developmentUrl?: string,
+  ): BrowserWindow {
     // 读取持久化的窗口状态；store 未初始化时回退到默认尺寸
-    const state: WindowStateSchema = this.store ? this.store.store : DEFAULT_BOUNDS;
+    const state: WindowStateSchema = this.store
+      ? this.store.store
+      : DEFAULT_BOUNDS;
     // 确保窗口不出现在不可见的显示器上（如外接屏拔掉后坐标越界）
     const bounds = this.clampBoundsToVisible({
       x: state.x,
@@ -88,24 +138,24 @@ export class WindowService {
       height: bounds.height,
       minWidth: 1024,
       minHeight: 600,
-      title: '大学生工具组',
+      title: "大学生工具组",
       show: false,
       autoHideMenuBar: true,
       // 透明背景色，配合亚克力材质效果（Win11 backgroundMaterial 生效时需要）
-      backgroundColor: '#00000000',
+      backgroundColor: "#00000000",
       // Windows 11 自定义标题栏：隐藏原生标题栏但保留窗口控制按钮
       // 配合 titleBarOverlay 使最小化/最大化/关闭按钮仍可用
-      titleBarStyle: 'hidden',
+      titleBarStyle: "hidden",
       titleBarOverlay: {
-        color: '#001529',
-        symbolColor: '#ffffff',
+        color: "#001529",
+        symbolColor: "#ffffff",
         height: TITLEBAR_HEIGHT,
       },
       webPreferences: {
-        preload: path.join(__dirname, '../preload/preload.js'),
+        preload: path.join(__dirname, "../preload/preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
       },
     });
 
@@ -115,24 +165,26 @@ export class WindowService {
     }
 
     this.mainWindow = win;
+    this.trustedDevelopmentOrigin = normalizeOrigin(developmentUrl);
     this.attachWindowStateListeners(win);
     this.setupTray();
     this.registerShortcuts();
     this.attachContextMenu(win.webContents);
+    this.attachNavigationGuards(win);
 
-    win.once('ready-to-show', () => {
+    win.once("ready-to-show", () => {
       win.show();
     });
 
     // 拦截关闭：首次点关闭按钮时隐藏到托盘而非退出
-    win.on('close', (event) => {
+    win.on("close", (event) => {
       if (!this.isQuitting) {
         event.preventDefault();
         win.hide();
       }
     });
 
-    win.on('closed', () => {
+    win.on("closed", () => {
       this.mainWindow = null;
     });
 
@@ -143,6 +195,27 @@ export class WindowService {
   /** 获取当前主窗口引用（可能为 null） */
   getMainWindow(): BrowserWindow | null {
     return this.mainWindow;
+  }
+
+  /** 验证 IPC 只来自当前主窗口的受信任主 frame。 */
+  isTrustedMainFrameEvent(
+    event: Pick<Electron.IpcMainInvokeEvent, "sender" | "senderFrame">,
+  ): boolean {
+    const win = this.mainWindow;
+    if (!win || win.isDestroyed()) return false;
+    try {
+      return (
+        event.sender === win.webContents &&
+        event.senderFrame === event.sender.mainFrame &&
+        isTrustedApplicationUrl(
+          event.senderFrame.url,
+          path.join(__dirname, "../../dist/index.html"),
+          this.trustedDevelopmentOrigin,
+        )
+      );
+    } catch {
+      return false;
+    }
   }
 
   /** 标记应用正在退出，使 close 事件不再 preventDefault */
@@ -170,28 +243,52 @@ export class WindowService {
       if (timer) clearTimeout(timer);
       timer = setTimeout(save, 500);
     };
-    win.on('resize', debouncedSave);
-    win.on('move', debouncedSave);
-    win.on('maximize', () => {
-      this.store?.set('isMaximized', true);
+    win.on("resize", debouncedSave);
+    win.on("move", debouncedSave);
+    win.on("maximize", () => {
+      this.store?.set("isMaximized", true);
       // 通知渲染进程切换标题栏最大化按钮图标
       win.webContents.send(IPC_CHANNELS.WINDOW_ON_MAXIMIZE_CHANGE, true);
     });
-    win.on('unmaximize', () => {
-      this.store?.set('isMaximized', false);
+    win.on("unmaximize", () => {
+      this.store?.set("isMaximized", false);
       win.webContents.send(IPC_CHANNELS.WINDOW_ON_MAXIMIZE_CHANGE, false);
     });
-    win.on('close', () => {
+    win.on("close", () => {
       // 同步写入，确保关闭前状态不丢失
       if (timer) clearTimeout(timer);
       save();
     });
   }
 
+  private attachNavigationGuards(win: BrowserWindow): void {
+    const rejectUntrusted = (event: Electron.Event, url: string): void => {
+      if (
+        !isTrustedApplicationUrl(
+          url,
+          path.join(__dirname, "../../dist/index.html"),
+          this.trustedDevelopmentOrigin,
+        )
+      ) {
+        event.preventDefault();
+      }
+    };
+    win.webContents.on("will-navigate", (event) => {
+      rejectUntrusted(event, event.url);
+    });
+    win.webContents.on("will-redirect", (event) => {
+      rejectUntrusted(event, event.url);
+    });
+    win.webContents.on("will-frame-navigate", (event) => {
+      rejectUntrusted(event, event.url);
+    });
+    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  }
+
   private saveWindowState(win: BrowserWindow): void {
     if (!this.store) return;
     if (win.isMaximized()) {
-      this.store.set('isMaximized', true);
+      this.store.set("isMaximized", true);
       return;
     }
     const bounds = win.getBounds();
@@ -215,7 +312,11 @@ export class WindowService {
     height: number;
   }): { x?: number; y?: number; width: number; height: number } {
     const displays = screen.getAllDisplays();
-    if (displays.length === 0 || bounds.x === undefined || bounds.y === undefined) {
+    if (
+      displays.length === 0 ||
+      bounds.x === undefined ||
+      bounds.y === undefined
+    ) {
       return bounds;
     }
     const visible = displays.some((display) => {
@@ -232,8 +333,12 @@ export class WindowService {
     // 不可见时居中到主显示器
     const primary = screen.getPrimaryDisplay();
     return {
-      x: Math.round(primary.bounds.x + (primary.bounds.width - bounds.width) / 2),
-      y: Math.round(primary.bounds.y + (primary.bounds.height - bounds.height) / 2),
+      x: Math.round(
+        primary.bounds.x + (primary.bounds.width - bounds.width) / 2,
+      ),
+      y: Math.round(
+        primary.bounds.y + (primary.bounds.height - bounds.height) / 2,
+      ),
       width: bounds.width,
       height: bounds.height,
     };
@@ -244,7 +349,7 @@ export class WindowService {
   private setupTray(): void {
     if (this.tray) return;
     // 托盘图标使用应用图标，Windows 需要 16x16 或 32x32 ico/png
-    const iconPath = path.join(__dirname, '../../resources/icon.png');
+    const iconPath = path.join(__dirname, "../../resources/icon.png");
     let icon = nativeImage.createFromPath(iconPath);
     // 缩小到托盘合适尺寸（Windows 推荐 16x16）
     if (!icon.isEmpty()) {
@@ -252,16 +357,16 @@ export class WindowService {
     }
 
     this.tray = new Tray(icon);
-    this.tray.setToolTip('大学生工具组');
+    this.tray.setToolTip("大学生工具组");
 
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: '显示主窗口',
+        label: "显示主窗口",
         click: () => this.showMainWindow(),
       },
-      { type: 'separator' },
+      { type: "separator" },
       {
-        label: '退出',
+        label: "退出",
         click: () => {
           this.isQuitting = true;
           app.quit();
@@ -271,7 +376,7 @@ export class WindowService {
     this.tray.setContextMenu(contextMenu);
 
     // 单击托盘图标也显示主窗口
-    this.tray.on('click', () => this.showMainWindow());
+    this.tray.on("click", () => this.showMainWindow());
   }
 
   // ==================== 全局快捷键 ====================
@@ -289,7 +394,9 @@ export class WindowService {
       }
     });
     if (!success) {
-      console.warn(`[WindowService] 全局快捷键 ${TOGGLE_SHORTCUT} 注册失败，可能被其他应用占用`);
+      console.warn(
+        `[WindowService] 全局快捷键 ${TOGGLE_SHORTCUT} 注册失败，可能被其他应用占用`,
+      );
     }
   }
 
@@ -306,47 +413,49 @@ export class WindowService {
    * 使用 Electron Menu API 而非 DOM 模拟，保证与系统原生行为一致。
    */
   private attachContextMenu(webContents: WebContents): void {
-    webContents.on('context-menu', (_event, params) => {
+    webContents.on("context-menu", (_event, params) => {
       const menu = Menu.buildFromTemplate(this.buildContextMenuItems(params));
       menu.popup();
     });
   }
 
-  private buildContextMenuItems(params: Electron.ContextMenuParams): Electron.MenuItemConstructorOptions[] {
+  private buildContextMenuItems(
+    params: Electron.ContextMenuParams,
+  ): Electron.MenuItemConstructorOptions[] {
     const items: Electron.MenuItemConstructorOptions[] = [];
 
     // 撤销/重做（仅在有编辑区域时显示）
     if (params.isEditable) {
       if (params.editFlags.canUndo) {
-        items.push({ label: '撤销', role: 'undo' });
+        items.push({ label: "撤销", role: "undo" });
       }
       if (params.editFlags.canRedo) {
-        items.push({ label: '重做', role: 'redo' });
+        items.push({ label: "重做", role: "redo" });
       }
-      if (items.length > 0) items.push({ type: 'separator' });
+      if (items.length > 0) items.push({ type: "separator" });
 
       // 剪切/复制/粘贴
       if (params.editFlags.canCut) {
-        items.push({ label: '剪切', role: 'cut' });
+        items.push({ label: "剪切", role: "cut" });
       }
       if (params.editFlags.canCopy) {
-        items.push({ label: '复制', role: 'copy' });
+        items.push({ label: "复制", role: "copy" });
       }
       if (params.editFlags.canPaste) {
-        items.push({ label: '粘贴', role: 'paste' });
+        items.push({ label: "粘贴", role: "paste" });
       }
       if (params.editFlags.canDelete) {
-        items.push({ label: '删除', role: 'delete' });
+        items.push({ label: "删除", role: "delete" });
       }
       if (params.editFlags.canSelectAll) {
-        items.push({ type: 'separator' });
-        items.push({ label: '全选', role: 'selectAll' });
+        items.push({ type: "separator" });
+        items.push({ label: "全选", role: "selectAll" });
       }
     }
 
     // 有选中文本时也提供复制
     if (params.selectionText && !params.isEditable) {
-      items.push({ label: '复制', role: 'copy' });
+      items.push({ label: "复制", role: "copy" });
     }
 
     return items;
@@ -359,10 +468,10 @@ export class WindowService {
    * Windows 11 22H2+ (build >= 22621) 支持 Electron 的 setBackgroundMaterial API。
    */
   static isAcrylicSupported(): boolean {
-    if (process.platform !== 'win32') return false;
+    if (process.platform !== "win32") return false;
     const release = os.release();
     // Windows release 格式为 "MajorVersion.MinorVersion.BuildNumber"
-    const parts = release.split('.');
+    const parts = release.split(".");
     const build = parts.length >= 3 ? parseInt(parts[2], 10) : 0;
     return build >= 22621;
   }
@@ -372,7 +481,7 @@ export class WindowService {
    * 仅 Windows 11 22H2+ 生效，其他系统静默忽略。
    * acrylic 模式下窗口背景半透明，透出桌面壁纸。
    */
-  setBackgroundMaterial(material: 'none' | 'acrylic'): void {
+  setBackgroundMaterial(material: "none" | "acrylic"): void {
     const win = this.mainWindow;
     if (!win) return;
     if (!WindowService.isAcrylicSupported()) return;
@@ -380,7 +489,9 @@ export class WindowService {
       // Electron 30+ 原生 API，类型定义在 30.0+ 已包含
       win.setBackgroundMaterial(material);
     } catch (err) {
-      console.warn(`[WindowService] setBackgroundMaterial 失败: ${(err as Error).message}`);
+      console.warn(
+        `[WindowService] setBackgroundMaterial 失败: ${(err as Error).message}`,
+      );
     }
   }
 

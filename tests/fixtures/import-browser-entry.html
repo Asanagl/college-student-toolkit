@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>脱敏教务系统入口</title>
+  </head>
+  <body>
+    <h1>脱敏教务系统</h1>
+    <p>这是仅供自动化验收使用的本地入口。</p>
+    <button id="open-schedule" type="button">打开课程表</button>
+    <script>
+      document.getElementById("open-schedule").addEventListener("click", () => {
+        window.open("/schedule", "_blank", "noopener");
+      });
+    </script>
+  </body>
+</html>
