@@ -22,8 +22,14 @@ import {
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import type { Exam, ParsedExam } from "../../shared/types";
+import { findCrossBoardConflicts } from "../../shared/conflicts";
 import ExamDialog from "../components/exam/ExamDialog";
 import ExamConflictResolver from "../components/exam/ExamConflictResolver";
+import ConflictTag from "../components/ConflictTag";
+import {
+  SEMESTER_START_EVENT,
+  useConflictData,
+} from "../services/useConflictData";
 
 const { Title, Text } = Typography;
 
@@ -88,6 +94,33 @@ export default function ExamPage() {
   useEffect(() => {
     loadExams();
   }, [loadExams]);
+
+  // 跨板块撞课：考试 vs 课程（semesterStart 未设置时自动为空，不显示标记）
+  const conflictData = useConflictData();
+  const examConflicts = useMemo(
+    () =>
+      findCrossBoardConflicts({
+        courses: conflictData.courses,
+        semesterStart: conflictData.semesterStart,
+        periods: conflictData.periods,
+        exams,
+        labs: [],
+        schedules: [],
+      }).exams,
+    [
+      conflictData.courses,
+      conflictData.semesterStart,
+      conflictData.periods,
+      exams,
+    ],
+  );
+
+  // 学期开始日期在设置弹窗修改后本页不重挂载，订阅变更事件重载撞课数据
+  useEffect(() => {
+    const onChanged = () => void conflictData.reload();
+    window.addEventListener(SEMESTER_START_EVENT, onChanged);
+    return () => window.removeEventListener(SEMESTER_START_EVENT, onChanged);
+  }, [conflictData.reload]);
 
   // 按日期升序排序
   const sortedExams = useMemo(() => {
@@ -242,7 +275,12 @@ export default function ExamPage() {
         title: "课程名",
         dataIndex: "courseName",
         key: "courseName",
-        render: (text: string) => <Text strong>{text}</Text>,
+        render: (text: string, row: Exam) => (
+          <span>
+            <Text strong>{text}</Text>
+            <ConflictTag refs={examConflicts.get(row.id) ?? []} />
+          </span>
+        ),
       },
       {
         title: "日期",
@@ -333,7 +371,7 @@ export default function ExamPage() {
         ),
       },
     ],
-    [],
+    [examConflicts],
   );
 
   return (
@@ -367,6 +405,12 @@ export default function ExamPage() {
           </Button>
         </Space>
       </div>
+
+      {conflictData.error && (
+        <Text type="warning" style={{ fontSize: 12, display: "block", marginBottom: 8 }}>
+          撞课数据加载失败，撞课标记不可用：{conflictData.error}
+        </Text>
+      )}
 
       <Spin spinning={loading}>
         <Card styles={{ body: { padding: 12 } }}>

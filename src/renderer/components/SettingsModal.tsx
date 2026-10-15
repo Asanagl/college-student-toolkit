@@ -1,5 +1,5 @@
 // 0.3.0 统一设置：把课程、通知、外观、OCR、备份和更新放入同一入口。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Button,
   Card,
@@ -33,6 +33,7 @@ import type {
   TimetablePreferences,
   UpdateChannel,
 } from "../../shared/types";
+import { notifySemesterStartChanged } from "../services/useConflictData";
 
 const { Paragraph, Text } = Typography;
 
@@ -72,6 +73,11 @@ export default function SettingsModal({ open, onClose }: Props) {
   });
   const [history, setHistory] = useState<NotificationRecord[]>([]);
   const [appearance, setAppearance] = useState<AppearanceConfig | null>(null);
+  const [appearanceDraft, setAppearanceDraft] = useState({
+    blurRadius: 0,
+    clarity: 100,
+  });
+  const appearanceDragging = useRef(false);
   const [ocr, setOcr] = useState<OcrComponentStatus | null>(null);
   const [version, setVersion] = useState("");
   const [updateChannel, setUpdateChannel] =
@@ -116,14 +122,28 @@ export default function SettingsModal({ open, onClose }: Props) {
       if (results[0].ok && results[0].data) setPreferences(results[0].data);
       if (results[1].ok && results[1].data) setDnd(results[1].data);
       if (results[2].ok && results[2].data) setHistory(results[2].data);
-      if (results[3].ok && results[3].data) setAppearance(results[3].data);
+      if (results[3].ok && results[3].data) {
+        setAppearance(results[3].data);
+        setAppearanceDraft({
+          blurRadius: results[3].data.blurRadius,
+          clarity: results[3].data.clarity,
+        });
+      }
       if (results[4].ok && results[4].data) setOcr(results[4].data);
       if (results[5].ok && results[5].data) setVersion(results[5].data);
       if (results[6].ok && results[6].data) setUpdateChannel(results[6].data);
       if (results[7].ok && results[7].data) setAcmStatus(results[7].data);
     };
     void load();
-    const offAppearance = window.api.appearance.onChange(setAppearance);
+    const offAppearance = window.api.appearance.onChange((next) => {
+      setAppearance(next);
+      if (!appearanceDragging.current) {
+        setAppearanceDraft({
+          blurRadius: next.blurRadius,
+          clarity: next.clarity,
+        });
+      }
+    });
     const offOcr = window.api.ocrComponent.onStatusChange(setOcr);
     const offRestore = window.api.data.onRestoreCompleted(() => void load());
     return () => {
@@ -141,10 +161,13 @@ export default function SettingsModal({ open, onClose }: Props) {
     );
     setSavingSemester(false);
     if (!result.ok) message.error(result.error ?? "保存学期设置失败");
-    else
+    else {
+      // 撞课检测依赖 semesterStart，广播给已挂载的课程表/考试/实验/日程页面
+      notifySemesterStartChanged();
       message.success(
         preferences.semesterStart ? "学期起始日期已保存" : "已暂停课程提醒",
       );
+    }
   };
 
   const saveDnd = async (): Promise<void> => {
@@ -264,7 +287,7 @@ export default function SettingsModal({ open, onClose }: Props) {
       >
         <Radio value="none">标准</Radio>
         <Radio value="acrylic" disabled={!appearance.acrylicSupported}>
-          亚克力
+          亚克力{!appearance.acrylicSupported && "（需要 Windows 11 22H2+）"}
         </Radio>
       </Radio.Group>
       <Space>
@@ -304,28 +327,48 @@ export default function SettingsModal({ open, onClose }: Props) {
       <Text type="secondary">
         支持 JPG/PNG/WEBP/BMP/GIF，最大 10 MiB。文件由主进程复制并校验。
       </Text>
-      <div>
-        <Text>模糊度：{appearance.blurRadius}px</Text>
-        <Slider
-          min={0}
-          max={50}
-          value={appearance.blurRadius}
-          onChange={(value) => {
-            void window.api.appearance.setBlur(value);
-          }}
-        />
-      </div>
-      <div>
-        <Text>清晰度：{appearance.clarity}%</Text>
-        <Slider
-          min={0}
-          max={100}
-          value={appearance.clarity}
-          onChange={(value) => {
-            void window.api.appearance.setClarity(value);
-          }}
-        />
-      </div>
+      {appearance.backgroundImage && (
+        <>
+          <div>
+            <Text>模糊度：{appearanceDraft.blurRadius}px</Text>
+            <Slider
+              min={0}
+              max={50}
+              value={appearanceDraft.blurRadius}
+              onChange={(value) => {
+                appearanceDragging.current = true;
+                setAppearanceDraft((current) => ({
+                  ...current,
+                  blurRadius: value,
+                }));
+              }}
+              onChangeComplete={(value) => {
+                appearanceDragging.current = false;
+                void window.api.appearance.setBlur(value);
+              }}
+            />
+          </div>
+          <div>
+            <Text>清晰度：{appearanceDraft.clarity}%</Text>
+            <Slider
+              min={0}
+              max={100}
+              value={appearanceDraft.clarity}
+              onChange={(value) => {
+                appearanceDragging.current = true;
+                setAppearanceDraft((current) => ({
+                  ...current,
+                  clarity: value,
+                }));
+              }}
+              onChangeComplete={(value) => {
+                appearanceDragging.current = false;
+                void window.api.appearance.setClarity(value);
+              }}
+            />
+          </div>
+        </>
+      )}
     </Space>
   ) : (
     <Text type="secondary">正在加载外观设置…</Text>

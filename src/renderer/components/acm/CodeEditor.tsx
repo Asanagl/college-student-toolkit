@@ -1,5 +1,6 @@
 import { indentWithTab } from "@codemirror/commands";
 import { cpp } from "@codemirror/lang-cpp";
+import { indentUnit } from "@codemirror/language";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -83,6 +84,8 @@ export default function CodeEditor({
         basicSetup,
         cpp(),
         EditorView.lineWrapping,
+        indentUnit.of("    "),
+        EditorState.tabSize.of(4),
         readOnlyRef.current.of([
           EditorState.readOnly.of(readOnly),
           EditorView.editable.of(!readOnly),

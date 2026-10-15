@@ -48,6 +48,10 @@ function initialStatus(): OcrComponentStatus {
 }
 
 function isAllowedResponseUrl(responseUrl: unknown): boolean {
+  // Electron 30 may leave Response.url empty for a successful net.fetch
+  // response after following GitHub's redirect. The fixed request URL plus
+  // the compressed and extracted hashes still bind the payload to this asset.
+  if (responseUrl === "") return true;
   if (responseUrl === OCR_COMPONENT_ASSET_URL) return true;
   if (typeof responseUrl !== "string") return false;
   try {

@@ -12,6 +12,18 @@ export interface ParsedCourse {
   color?: string;
 }
 
+/** 课表下方"未安排上课时间"的课程：无法进入周课表，跳过导入但需提示用户 */
+export interface SkippedUnscheduledCourse {
+  name: string;
+  teacher?: string;
+}
+
+/** 解析结果：课程列表 + 因无时间安排被跳过的课程（供导入流程提示手动补录） */
+export interface ParseResult {
+  courses: ParsedCourse[];
+  skippedUnscheduled: SkippedUnscheduledCourse[];
+}
+
 /** 教务系统解析器抽象接口 */
 export interface Parser {
   /** 解析器名称，用于日志与调试 */

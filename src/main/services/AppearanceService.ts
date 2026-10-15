@@ -64,17 +64,13 @@ export class AppearanceService {
     } catch {
       // 目录已存在或其他错误，忽略
     }
-    // 应用初始材质到主窗口
-    const material = this.store.get("material");
-    if (material === "acrylic") {
-      windowService.setBackgroundMaterial("acrylic");
-    }
+    // 主窗口在服务初始化之后才创建；窗口创建完成后由 main.ts 应用材质。
     this.initialized = true;
   }
 
   /** 获取当前完整外观配置（含运行时 acrylicSupported 标志）。 */
   getConfig(): AppearanceConfig {
-    const material = this.store?.get("material") ?? DEFAULT_CONFIG.material;
+    const material = this.getEffectiveMaterial();
     const backgroundFileName =
       this.store?.get("backgroundImage") ?? DEFAULT_CONFIG.backgroundImage;
     const blurRadius =
@@ -95,13 +91,22 @@ export class AppearanceService {
 
   /** 设置材质模式并应用到主窗口 */
   setMaterial(mode: MaterialMode): void {
-    this.store?.set("material", mode);
-    if (mode === "acrylic") {
-      windowService.setBackgroundMaterial("acrylic");
-    } else {
-      windowService.setBackgroundMaterial("none");
-    }
+    const effective =
+      mode === "acrylic" && !WindowService.isAcrylicSupported() ? "none" : mode;
+    this.store?.set("material", effective);
+    portableSettingsService.update({
+      appearance: {
+        ...portableSettingsService.get().appearance,
+        material: effective,
+      },
+    });
+    windowService.setBackgroundMaterial(effective);
     this.broadcast();
+  }
+
+  /** 在主窗口创建或重新创建后应用当前有效材质。 */
+  applyMaterial(): void {
+    windowService.setBackgroundMaterial(this.getEffectiveMaterial());
   }
 
   /** 上传背景图，并在新资源与设置均落盘后才淘汰旧资源。 */
@@ -118,7 +123,10 @@ export class AppearanceService {
     const fileName = `${uniquePart}${ext}`;
     const destPath = path.join(this.backgroundsDir, fileName);
     // 临时文件仍保留真实扩展名，才能在提交前再次检查 source 的 TOCTOU 变化。
-    const tempPath = path.join(this.backgroundsDir, `.${uniquePart}.pending${ext}`);
+    const tempPath = path.join(
+      this.backgroundsDir,
+      `.${uniquePart}.pending${ext}`,
+    );
     try {
       await fs.copyFile(filePath, tempPath);
       await validateImageFile(tempPath);
@@ -183,7 +191,10 @@ export class AppearanceService {
         // 主配置仍由 portable settings 决定，不能用回滚失败掩盖原始异常。
       }
       try {
-        if (portableSettingsService.get().appearance.backgroundImage !== previousPortableValue) {
+        if (
+          portableSettingsService.get().appearance.backgroundImage !==
+          previousPortableValue
+        ) {
           portableSettingsService.update({
             appearance: {
               ...portableSettingsService.get().appearance,
@@ -253,10 +264,15 @@ export class AppearanceService {
   applyPortableSettings(): void {
     const appearance = portableSettingsService.get().appearance;
     this.store?.set(appearance);
-    if (appearance.material === "acrylic")
-      windowService.setBackgroundMaterial("acrylic");
-    else windowService.setBackgroundMaterial("none");
+    this.applyMaterial();
     this.broadcast();
+  }
+
+  private getEffectiveMaterial(): MaterialMode {
+    const material = this.store?.get("material") ?? DEFAULT_CONFIG.material;
+    return material === "acrylic" && !WindowService.isAcrylicSupported()
+      ? "none"
+      : material;
   }
 
   async dispose(): Promise<void> {

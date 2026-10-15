@@ -62,7 +62,7 @@ import { acmLifecycleQueue } from "./services/AcmLifecycleQueue";
 import { acmRunnerService } from "./services/AcmRunnerService";
 import { acmDifferService } from "./services/AcmDifferService";
 import { writeTextFileAtomically } from "./services/AtomicFile";
-import { parseDomWithAllParsers } from "./services/parsers";
+import { parseDomWithMeta } from "./services/parsers";
 import { parseDomForExams } from "./services/parsers/exam";
 import { parseOcrToExams } from "./services/ExamOcrParser";
 import { parseDomForLabs } from "./services/parsers/lab";
@@ -145,6 +145,7 @@ function createMainWindow(): void {
     if (devUrl) void win.loadURL(devUrl);
     else void win.loadFile(path.join(__dirname, "../../dist/index.html"));
   }, devUrl);
+  appearanceService.applyMaterial();
 }
 
 function errorCode(error: unknown): IpcErrorCode | undefined {
@@ -521,7 +522,7 @@ function registerImportHandlers(): void {
   registerIpcHandler(
     IPC_CHANNELS.TIMETABLE_PARSE_DOM,
     (_event, html: unknown) =>
-      wrap(() => parseDomWithAllParsers(parseIpc(htmlSchema, html))),
+      wrap(() => parseDomWithMeta(parseIpc(htmlSchema, html))),
   );
   registerIpcHandler(IPC_CHANNELS.EXAM_PARSE_DOM, (_event, html: unknown) =>
     wrap(() => parseDomForExams(parseIpc(htmlSchema, html))),

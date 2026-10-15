@@ -9,6 +9,7 @@ import {
 } from "electron";
 import * as path from "node:path";
 import { IPC_CHANNELS, type IpcResult } from "../../shared/types";
+import { pickBestDocumentHtml } from "./domExtraction";
 
 const TOOLBAR_HEIGHT = 88;
 const MAX_DOM_BYTES = 8 * 1024 * 1024;
@@ -423,8 +424,10 @@ export class ImportBrowserService {
     const contents = generation.view.webContents;
     if (!this.isCurrentGeneration(generation)) return;
     try {
+      // 课表页常渲染在 iframe 内层（如正方 zhuti），只取顶层会零命中；
+      // 注入自包含函数在顶层与同源 iframe 中挑选最像课表的文档。
       const html = (await contents.executeJavaScript(
-        "document.documentElement.outerHTML",
+        `(${pickBestDocumentHtml.toString()})(document)`,
       )) as unknown;
       if (
         typeof html !== "string" ||

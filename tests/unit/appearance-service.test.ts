@@ -107,6 +107,15 @@ afterEach(async () => {
 });
 
 describe("AppearanceService background replacement", () => {
+  it("normalizes unsupported acrylic and keeps portable settings in sync", async () => {
+    await initializeWithBackground();
+
+    appearanceService.setMaterial("acrylic");
+
+    expect(appearanceService.getConfig().material).toBe("none");
+    expect(portableSettingsService.get().appearance.material).toBe("none");
+  });
+
   it("commits a new background before deleting the old owned file", async () => {
     await initializeWithBackground("old.png");
     const source = path.join(electronState.userData, "new.png");

@@ -1,16 +1,16 @@
 // React 渲染进程入口
 // 职责：挂载根组件、注入 Ant Design 中文 locale、管理主题（跟随系统 + 手动切换）+ 外观（材质/背景图）
-import { useState, useEffect } from 'react';
-import { createRoot } from 'react-dom/client';
-import { ConfigProvider, theme, type ThemeConfig } from 'antd';
-import zhCN from 'antd/locale/zh_CN';
-import App from './App';
-import type { ResolvedTheme, AppearanceConfig } from '../shared/types';
-import './styles/global.css';
+import { useState, useEffect } from "react";
+import { createRoot } from "react-dom/client";
+import { ConfigProvider, theme, type ThemeConfig } from "antd";
+import zhCN from "antd/locale/zh_CN";
+import App from "./App";
+import type { ResolvedTheme, AppearanceConfig } from "../shared/types";
+import "./styles/global.css";
 
-const container = document.getElementById('root');
+const container = document.getElementById("root");
 if (!container) {
-  throw new Error('找不到根挂载节点 #root');
+  throw new Error("找不到根挂载节点 #root");
 }
 
 /** 可读性遮罩的浓度下限：clarity=100 时也留薄薄一层，否则页面标题直接压在照片上读不清 */
@@ -24,19 +24,23 @@ const OVERLAY_ALPHA_RANGE = 0.6;
  * 不透明的 colorBgLayout，它会把底层的背景图与原生亚克力整块盖住，功能因此完全看不到效果。
  * 侧栏配色（siderBg）与主色刻意不动，保持既有设计语言。
  */
-function buildThemeConfig(resolved: ResolvedTheme, transparent: boolean): ThemeConfig {
-  const algorithm = resolved === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm;
+function buildThemeConfig(
+  resolved: ResolvedTheme,
+  transparent: boolean,
+): ThemeConfig {
+  const algorithm =
+    resolved === "dark" ? theme.darkAlgorithm : theme.defaultAlgorithm;
   if (!transparent) {
     return { algorithm };
   }
-  const dark = resolved === 'dark';
+  const dark = resolved === "dark";
   return {
     algorithm,
     token: {
-      colorBgContainer: dark ? 'rgba(20,20,20,0.72)' : 'rgba(255,255,255,0.72)',
-      colorBgElevated: dark ? 'rgba(20,20,20,0.85)' : 'rgba(255,255,255,0.85)',
+      colorBgContainer: dark ? "rgba(20,20,20,0.72)" : "rgba(255,255,255,0.72)",
+      colorBgElevated: dark ? "rgba(20,20,20,0.85)" : "rgba(255,255,255,0.85)",
     },
-    components: { Layout: { bodyBg: 'transparent' } },
+    components: { Layout: { bodyBg: "transparent" } },
   };
 }
 
@@ -47,7 +51,7 @@ function buildThemeConfig(resolved: ResolvedTheme, transparent: boolean): ThemeC
  */
 function useThemeBodyClass(resolved: ResolvedTheme) {
   useEffect(() => {
-    document.body.classList.toggle('theme-dark', resolved === 'dark');
+    document.body.classList.toggle("theme-dark", resolved === "dark");
   }, [resolved]);
 }
 
@@ -64,17 +68,18 @@ function AppearanceBackground({
   resolved: ResolvedTheme;
 }) {
   const { token } = theme.useToken();
-  const isAcrylic = config?.material === 'acrylic';
+  const isAcrylic =
+    config?.material === "acrylic" && config.acrylicSupported === true;
 
   useEffect(() => {
     // 亚克力模式下让 body 背景透明，透出原生亚克力效果
     if (isAcrylic) {
-      document.body.classList.add('acrylic-mode');
+      document.body.classList.add("acrylic-mode");
     } else {
-      document.body.classList.remove('acrylic-mode');
+      document.body.classList.remove("acrylic-mode");
     }
     return () => {
-      document.body.classList.remove('acrylic-mode');
+      document.body.classList.remove("acrylic-mode");
     };
   }, [isAcrylic]);
 
@@ -88,14 +93,19 @@ function AppearanceBackground({
   // 遮罩浓度与清晰度反向：clarity 越高遮罩越淡；亮色主题压白、暗色主题压黑
   const alpha = OVERLAY_MIN_ALPHA + (1 - clarity / 100) * OVERLAY_ALPHA_RANGE;
   const overlay =
-    resolved === 'dark' ? `rgba(0, 0, 0, ${alpha})` : `rgba(255, 255, 255, ${alpha})`;
+    resolved === "dark"
+      ? `rgba(0, 0, 0, ${alpha})`
+      : `rgba(255, 255, 255, ${alpha})`;
 
   return (
     <>
       {/* 底色层：Layout 已透明，clarity<100 的半透明背景图需要一个跟随主题的不透明底，
           否则会与窗口画布混合，暗色主题下整体发灰。亚克力模式不铺，否则挡住原生材质 */}
       {!isAcrylic && (
-        <div className="appearance-base" style={{ background: token.colorBgLayout }} />
+        <div
+          className="appearance-base"
+          style={{ background: token.colorBgLayout }}
+        />
       )}
       <div
         className="appearance-background"
@@ -119,7 +129,7 @@ function AppearanceBackground({
  * 同时管理外观配置，当亚克力或背景图启用时让 antd 容器半透明。
  */
 function ThemedApp() {
-  const [resolved, setResolved] = useState<ResolvedTheme>('light');
+  const [resolved, setResolved] = useState<ResolvedTheme>("light");
   const [appearance, setAppearance] = useState<AppearanceConfig | null>(null);
 
   useEffect(() => {
@@ -159,10 +169,15 @@ function ThemedApp() {
   useThemeBodyClass(resolved);
 
   // 当启用亚克力材质或有背景图时，让 antd 容器背景半透明，让效果透出
-  const isTransparent = appearance?.material === 'acrylic' || !!appearance?.backgroundImage;
+  const isTransparent =
+    (appearance?.material === "acrylic" && appearance.acrylicSupported) ||
+    !!appearance?.backgroundImage;
 
   return (
-    <ConfigProvider locale={zhCN} theme={buildThemeConfig(resolved, isTransparent)}>
+    <ConfigProvider
+      locale={zhCN}
+      theme={buildThemeConfig(resolved, isTransparent)}
+    >
       <AppearanceBackground config={appearance} resolved={resolved} />
       <App />
     </ConfigProvider>

@@ -1,0 +1,125 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "GitHub Release tag"
+        required: true
+        default: "v0.5.0"
+        type: string
+      appx_version:
+        description: "Partner Center three-part package version"
+        required: true
+        default: "0.5.0"
+        type: string
+      publish_release:
+        description: "Create or update the GitHub Release"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-2022
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      ACM_MINGW_SOURCE: "C:\\msys64\\mingw64"
+      APPX_OUTPUT_DIR: "release-v0.5.0-msix-store"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up MinGW toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+
+      - name: Install dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Verify source and tests
+        shell: pwsh
+        run: npm run verify
+
+      - name: Build Electron application
+        shell: pwsh
+        run: npm run build:electron
+
+      - name: Build Windows EXE installer
+        shell: pwsh
+        run: npm run package:win
+
+      - name: Stage ACM toolchain and helper
+        shell: pwsh
+        run: |
+          npm run stage:toolchain
+          npm run build:runner-helper
+
+      - name: Build formal Store MSIX
+        shell: pwsh
+        env:
+          APPX_IDENTITY_NAME: ${{ secrets.APPX_IDENTITY_NAME }}
+          APPX_APPLICATION_ID: ${{ secrets.APPX_APPLICATION_ID }}
+          APPX_PUBLISHER: ${{ secrets.APPX_PUBLISHER }}
+          APPX_PUBLISHER_DISPLAY_NAME: ${{ secrets.APPX_PUBLISHER_DISPLAY_NAME }}
+          APPX_PACKAGE_VERSION: ${{ inputs.appx_version }}
+        run: npm run package:store
+
+      - name: Verify formal MSIX
+        shell: pwsh
+        env:
+          APPX_EXPECTED_VERSION: ${{ inputs.appx_version }}.0
+          APPX_EXPECTED_PUBLISHER: ${{ secrets.APPX_PUBLISHER }}
+          APPX_EXPECTED_APPLICATION_ID: ${{ secrets.APPX_APPLICATION_ID }}
+          APPX_EXPECTED_PUBLISHER_DISPLAY_NAME: ${{ secrets.APPX_PUBLISHER_DISPLAY_NAME }}
+        run: npm run verify:appx
+
+      - name: Run packaged smoke checks
+        shell: pwsh
+        run: npm run test:smoke:appx
+
+      - name: Collect release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
+          Copy-Item -LiteralPath (Get-ChildItem -Path "release" -Filter "*.exe" -File | Select-Object -ExpandProperty FullName) -Destination "release-assets" -Force
+          Copy-Item -LiteralPath (Get-ChildItem -Path "$env:APPX_OUTPUT_DIR" -Filter "*.msix" -File | Select-Object -ExpandProperty FullName) -Destination "release-assets" -Force
+          Get-ChildItem -Path "release-assets" -File | Select-Object Name,Length
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ inputs.tag }}
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.publish_release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $assets = Get-ChildItem -Path "release-assets" -File | Select-Object -ExpandProperty FullName
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --clobber @assets
+          } else {
+            gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title $env:RELEASE_TAG --generate-notes @assets
+          }

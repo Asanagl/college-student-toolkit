@@ -73,6 +73,52 @@ body.acrylic-mode #root {
   pointer-events: none;
 }
 
+/* 周视图切换只移动网格本身，避免工具栏和页面布局抖动。 */
+.timetable-grid-motion {
+  animation: timetable-week-enter 180ms ease-out both;
+  transform-origin: center top;
+}
+
+.timetable-grid-motion-next {
+  --timetable-week-offset: 14px;
+}
+
+.timetable-grid-motion-previous {
+  --timetable-week-offset: -14px;
+}
+
+.timetable-date-label {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: inherit;
+  opacity: 0.72;
+}
+
+.timetable-week-range {
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+@keyframes timetable-week-enter {
+  from {
+    opacity: 0.35;
+    transform: translateX(var(--timetable-week-offset, 0)) scale(0.995);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timetable-grid-motion {
+    animation: none;
+  }
+}
+
 .onboarding-step-content {
   display: grid;
   min-height: 150px;

@@ -120,6 +120,18 @@ export interface ParsedCourse {
   color?: string;
 }
 
+/** 课表下方"未安排上课时间"的课程：无法进入周课表，跳过导入但需提示用户 */
+export interface SkippedUnscheduledCourse {
+  name: string;
+  teacher?: string;
+}
+
+/** 课程 DOM 解析结果：课程列表 + 被跳过的无时间安排课程 */
+export interface ParsedCourseResult {
+  courses: ParsedCourse[];
+  skippedUnscheduled: SkippedUnscheduledCourse[];
+}
+
 // ==================== 考试 Exam ====================
 
 export interface Exam extends BaseEntity {
@@ -885,8 +897,8 @@ export interface RendererApi {
     extractDom: () => Promise<IpcResult<string>>;
     /** 截图子窗口当前页，返回 base64 字符串 */
     capturePage: () => Promise<IpcResult<string>>;
-    /** 用 cheerio 解析 HTML 为课程列表 */
-    parseDom: (html: string) => Promise<IpcResult<ParsedCourse[]>>;
+    /** 用 cheerio 解析 HTML 为课程列表与跳过的无时间安排课程 */
+    parseDom: (html: string) => Promise<IpcResult<ParsedCourseResult>>;
     /** 对 base64 图片执行 OCR 识别并解析为课程列表 */
     runOcr: (imageBase64: string) => Promise<IpcResult<ParsedCourse[]>>;
   };

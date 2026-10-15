@@ -164,7 +164,7 @@ test("OCR 未安装时 packaged DOM 导入仍可用", async () => {
     });
     expect(parsed).toMatchObject({
       ok: true,
-      data: [{ name: "数据结构", location: "教学楼C303" }],
+      data: { courses: [{ name: "数据结构", location: "教学楼C303" }] },
     });
   } finally {
     await closeSession(session);
@@ -225,7 +225,7 @@ test("fixture 教务站支持 HTTP 确认、window.open、DOM/OCR 冲突合并",
     );
     expect(parsedDom).toMatchObject({ ok: true });
     expect(
-      parsedDom.ok && parsedDom.data?.map((course) => course.name),
+      parsedDom.ok && parsedDom.data?.courses.map((course) => course.name),
     ).toContain("数据结构");
 
     const conflict = page

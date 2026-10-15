@@ -21,8 +21,14 @@ import {
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import type { Lab, ParsedLab } from "../../shared/types";
+import { findCrossBoardConflicts } from "../../shared/conflicts";
 import LabDialog from "../components/lab/LabDialog";
 import LabConflictResolver from "../components/lab/LabConflictResolver";
+import ConflictTag from "../components/ConflictTag";
+import {
+  SEMESTER_START_EVENT,
+  useConflictData,
+} from "../services/useConflictData";
 
 const { Title, Text } = Typography;
 
@@ -86,6 +92,33 @@ export default function LabPage() {
   useEffect(() => {
     loadLabs();
   }, [loadLabs]);
+
+  // 跨板块撞课：实验 vs 课程（semesterStart 未设置时自动为空，不显示标记）
+  const conflictData = useConflictData();
+  const labConflicts = useMemo(
+    () =>
+      findCrossBoardConflicts({
+        courses: conflictData.courses,
+        semesterStart: conflictData.semesterStart,
+        periods: conflictData.periods,
+        exams: [],
+        labs,
+        schedules: [],
+      }).labs,
+    [
+      conflictData.courses,
+      conflictData.semesterStart,
+      conflictData.periods,
+      labs,
+    ],
+  );
+
+  // 学期开始日期在设置弹窗修改后本页不重挂载，订阅变更事件重载撞课数据
+  useEffect(() => {
+    const onChanged = () => void conflictData.reload();
+    window.addEventListener(SEMESTER_START_EVENT, onChanged);
+    return () => window.removeEventListener(SEMESTER_START_EVENT, onChanged);
+  }, [conflictData.reload]);
 
   // 按日期升序排序
   const sortedLabs = useMemo(() => {
@@ -238,7 +271,12 @@ export default function LabPage() {
         title: "实验名",
         dataIndex: "name",
         key: "name",
-        render: (text: string) => <Text strong>{text}</Text>,
+        render: (text: string, row: Lab) => (
+          <span>
+            <Text strong>{text}</Text>
+            <ConflictTag refs={labConflicts.get(row.id) ?? []} />
+          </span>
+        ),
       },
       {
         title: "日期",
@@ -328,7 +366,7 @@ export default function LabPage() {
         ),
       },
     ],
-    [],
+    [labConflicts],
   );
 
   return (
@@ -361,6 +399,12 @@ export default function LabPage() {
           </Button>
         </Space>
       </div>
+
+      {conflictData.error && (
+        <Text type="warning" style={{ fontSize: 12, display: "block", marginBottom: 8 }}>
+          撞课数据加载失败，撞课标记不可用：{conflictData.error}
+        </Text>
+      )}
 
       <Spin spinning={loading}>
         <Card styles={{ body: { padding: 12 } }}>

@@ -378,6 +378,20 @@ describe("可选 OCR 组件", () => {
     expect(fs.readFileSync(languagePath())).toEqual(payload);
   });
 
+  it("allows Electron net.fetch responses whose final URL is empty", async () => {
+    const payload = Buffer.from("electron-empty-response-url-model");
+    const compressed = configureManifest(payload);
+    electronMock.fetch.mockResolvedValue(responseFor(compressed, ""));
+
+    const service = OcrComponentService.getInstance();
+    await service.init();
+    await expect(service.install()).resolves.toMatchObject({
+      ok: true,
+      data: { state: "ready" },
+    });
+    expect(fs.readFileSync(languagePath())).toEqual(payload);
+  });
+
   it.each([
     "http://release-assets.githubusercontent.com/github-production-release-asset/1290461151/dcbc1ea0-066c-4dcc-9285-c6ab238f9d24?sig=test",
     "https://evil.example/github-production-release-asset/1290461151/dcbc1ea0-066c-4dcc-9285-c6ab238f9d24?sig=test",

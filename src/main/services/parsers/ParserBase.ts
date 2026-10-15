@@ -1,11 +1,16 @@
 // 解析器基类：提供周次/节次字符串解析等通用工具，具体解析逻辑由子类实现。
 // 抽象方法 detect/parse 由各教务系统解析器覆盖。
-import type { ParsedCourse } from './types';
+import type { ParsedCourse, ParseResult } from './types';
 
 export abstract class ParserBase {
   abstract get name(): string;
   abstract detect(html: string): boolean;
   abstract parse(html: string): ParsedCourse[];
+
+  /** 带跳过清单的解析入口；默认包装 parse，子类有跳过语义时覆盖 */
+  parseWithMeta(html: string): ParseResult {
+    return { courses: this.parse(html), skippedUnscheduled: [] };
+  }
 
   /**
    * 解析周次字符串为 [startWeek, endWeek]。
