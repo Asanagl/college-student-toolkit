@@ -26,7 +26,7 @@
     "verify:appx": "node scripts/verify-appx.cjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "lint": "eslint src tests scripts --max-warnings 0",
-    "format:check": "prettier --check \"tests/**/*.{ts,tsx}\" \"*.{json,mjs,ts}\" \"scripts/**/*.{cjs,ts}\"",
+    "format:check": "prettier --end-of-line auto --check \"tests/**/*.{ts,tsx}\" \"*.{json,mjs,ts}\" \"scripts/**/*.{cjs,ts}\"",
     "pretest:unit": "npm rebuild better-sqlite3",
     "test:unit": "vitest run --config vitest.config.ts",
     "pretest:coverage": "npm rebuild better-sqlite3",
