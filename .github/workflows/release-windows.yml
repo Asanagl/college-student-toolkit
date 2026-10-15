@@ -25,6 +25,7 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-2022
+    timeout-minutes: 120
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       APPX_OUTPUT_DIR: "release-v0.5.0-msix-store"
@@ -43,9 +44,27 @@ jobs:
         shell: pwsh
         run: npm ci
 
-      - name: Verify source and tests
+      - name: Typecheck
         shell: pwsh
-        run: npm run verify
+        run: npm run typecheck
+
+      - name: Lint
+        shell: pwsh
+        run: npm run lint
+
+      - name: Format check
+        shell: pwsh
+        run: npm run format:check
+
+      - name: Unit tests
+        shell: pwsh
+        timeout-minutes: 20
+        run: npm run test:unit
+
+      - name: Coverage tests
+        shell: pwsh
+        timeout-minutes: 25
+        run: npm run test:coverage
 
       - name: Build Electron application
         shell: pwsh
